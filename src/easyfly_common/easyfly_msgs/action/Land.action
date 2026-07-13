@@ -1,0 +1,9 @@
+# 降落
+float64 landing_speed     # 降落速度 [m/s], 0=默认
+---
+# 反馈
+float64 current_altitude  # 当前高度 [m]
+---
+# 结果
+bool success
+string message

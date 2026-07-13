@@ -1,0 +1,4 @@
+# 查询指定范围内的障碍物
+float32 range_limit   # 查询范围 [m], <=0表示不限制
+---
+ObstacleInfoArray obstacles

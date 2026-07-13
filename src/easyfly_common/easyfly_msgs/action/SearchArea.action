@@ -1,0 +1,18 @@
+# 区域搜索
+float64 center_x           # 搜索区域中心x [m]
+float64 center_y           # 搜索区域中心y [m]
+float64 area_width         # 搜索区域宽度 [m]
+float64 area_height        # 搜索区域高度 [m]
+float64 search_altitude    # 搜索高度 [m]
+uint8   search_pattern     # 搜索模式 (0=螺旋, 1=弓字形, 2=栅格)
+float64 search_speed       # 搜索速度 [m/s]
+---
+# 反馈
+float64 area_covered       # 已搜索面积 [m²]
+float32 progress           # 进度 [0.0-1.0]
+int32   targets_found      # 已发现目标数
+---
+# 结果
+bool success
+int32 total_targets_found
+string message

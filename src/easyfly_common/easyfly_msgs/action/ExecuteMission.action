@@ -1,0 +1,9 @@
+# 执行完整任务
+string mission_file        # 任务文件路径 (YAML/JSON)
+---
+# 反馈
+MissionStatus current_status
+---
+# 结果
+bool success
+string message

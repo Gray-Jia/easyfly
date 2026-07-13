@@ -1,0 +1,5 @@
+# 解锁/锁定电机
+bool arm    # true=解锁, false=锁定
+---
+bool success
+string message

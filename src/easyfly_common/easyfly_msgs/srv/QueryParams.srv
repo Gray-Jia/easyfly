@@ -1,0 +1,7 @@
+# 参数读写
+string param_name     # 参数名
+string param_value    # 要写入的值 (空字符串=只读)
+---
+bool success
+string current_value
+string message

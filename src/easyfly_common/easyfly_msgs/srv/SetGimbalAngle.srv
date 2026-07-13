@@ -1,0 +1,7 @@
+# 设置云台角度
+float32 pitch_angle   # 俯仰角 [度]
+float32 yaw_angle     # 偏航角 [度]
+float32 roll_angle    # 横滚角 [度] (通常为0)
+---
+bool success
+string message

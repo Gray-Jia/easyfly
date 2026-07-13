@@ -1,0 +1,4 @@
+uint8 flight_mode   # 飞行模式编号
+---
+bool success
+string message

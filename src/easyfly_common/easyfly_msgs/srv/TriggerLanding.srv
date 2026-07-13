@@ -1,0 +1,7 @@
+# 触发精确降落
+float64 landing_x       # 降落点x (ENU), NaN表示当前悬停点降落
+float64 landing_y       # 降落点y
+float64 landing_speed   # 降落速度 [m/s], 0表示默认
+---
+bool accepted
+string message
