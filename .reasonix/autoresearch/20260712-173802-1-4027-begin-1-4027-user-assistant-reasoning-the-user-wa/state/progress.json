@@ -1,0 +1,9 @@
+{
+  "status": "running",
+  "iteration": 1,
+  "current_direction": "全部审计通过。以下是阶段0 最终状态：",
+  "stale_count": 1,
+  "pivot_count": 0,
+  "blocked_reason": "",
+  "updated_at": "2026-07-12T17:39:15.242684639Z"
+}

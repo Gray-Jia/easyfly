@@ -10,7 +10,7 @@ px4_sitl.launch.py — 启动 Gazebo Classic + PX4 SITL
   px4 (simulator_mavlink ↔ Gazebo mavlink_interface plugin via TCP 4560)
 
 环境要求:
-  - ~/PX4-Autopilot 已编译
+  - PX4-Autopilot 已编译
   - Gazebo Classic 11 已安装 (gzserver / gzclient)
 """
 
@@ -100,7 +100,7 @@ def generate_launch_description():
     # 使用 SYS_AUTOSTART=10015（gazebo-classic iris），
     # simulator_mavlink 通过 TCP 4560 与 Gazebo mavlink 插件通信
     sitl_env = {
-        "PX4_SIM_MODEL": "gazebo-classic_" + model_name,
+        "PX4_SIM_MODEL": "gazebo-classic_iris",   # PX4 standard airframe (10015_gazebo-classic_iris)
         "PX4_HOME_LAT":  "30.5123",
         "PX4_HOME_LON":  "114.4218",
         "PX4_HOME_ALT":  "50.0",

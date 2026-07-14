@@ -1,0 +1,11 @@
+# mavlink_bridge.yaml — easyfly_mavlink_bridge 参数
+#
+# 阶段一只配置聚合频率，后续阶段可扩展更多参数。
+#
+/**:
+  ros__parameters:
+    # /uav_state 聚合发布频率 (Hz)
+    publish_rate: 20.0
+
+    # 是否发布 /gimbal_state（阶段一无云台数据源，默认为 false）
+    enable_gimbal: false

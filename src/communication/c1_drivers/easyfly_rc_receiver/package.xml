@@ -3,14 +3,15 @@
 <package format="3">
   <name>easyfly_rc_receiver</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_rc_receiver</description>
+  <description>C1: RC receiver — reads /mavros/rc/in and publishes /rc_channels</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <depend>rclcpp</depend>
+  <depend>mavros_msgs</depend>
+  <depend>std_msgs</depend>
 
   <export>
     <build_type>ament_cmake</build_type>
