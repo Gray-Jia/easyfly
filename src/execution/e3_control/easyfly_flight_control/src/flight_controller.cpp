@@ -1,21 +1,17 @@
 #include "easyfly_flight_control/flight_controller.hpp"
-
 #include <cmath>
 #include <chrono>
 
 namespace easyfly_flight_control
 {
-
 using namespace std::placeholders;
 using namespace std::chrono_literals;
 
 double PID::update(double error, double dt)
 {
   if (dt <= 0.0) return 0.0;
-  integral += error * dt;
-  integral = std::clamp(integral, -limit_i, limit_i);
-  double deriv = (error - prev_error) / dt;
-  prev_error = error;
+  integral += error * dt; integral = std::clamp(integral, -limit_i, limit_i);
+  double deriv = (error - prev_error) / dt; prev_error = error;
   return kp * error + ki * integral + kd * deriv;
 }
 void PID::reset() { integral = 0.0; prev_error = 0.0; }
@@ -28,7 +24,6 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   pid_y_.kp=2.0; pid_y_.ki=0.05; pid_y_.kd=0.3;
   pid_z_.kp=2.5; pid_z_.ki=0.05; pid_z_.kd=0.4;
   pid_yaw_.kp=2.0;
-
   auto period = std::chrono::milliseconds(static_cast<int>(1000.0 / ctl_rate_));
   auto qos = rclcpp::QoS(10);
 
@@ -41,10 +36,8 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   pub_uav_cmd_ = create_publisher<easyfly_msgs::msg::UAVCommand>("/uav_command", qos);
 
   cli_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  cli_arm_  = create_client<easyfly_msgs::srv::ArmMotors>(
-    "/arm_motors", rmw_qos_profile_services_default, cli_cb_group_);
-  cli_mode_ = create_client<easyfly_msgs::srv::SetFlightMode>(
-    "/set_flight_mode", rmw_qos_profile_services_default, cli_cb_group_);
+  cli_arm_ = create_client<easyfly_msgs::srv::ArmMotors>("/arm_motors", rmw_qos_profile_services_default, cli_cb_group_);
+  cli_mode_= create_client<easyfly_msgs::srv::SetFlightMode>("/set_flight_mode", rmw_qos_profile_services_default, cli_cb_group_);
 
   as_takeoff_ = rclcpp_action::create_server<Takeoff>(this, "/takeoff",
     std::bind(&FlightController::handle_takeoff_goal,   this, _1, _2),
@@ -60,9 +53,8 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
     std::bind(&FlightController::handle_waypoint_accepted, this, _1));
 
   ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  timer_ctl_ = create_wall_timer(period,
-    std::bind(&FlightController::control_loop, this), ctl_cb_group_);
-  RCLCPP_INFO(get_logger(), "FlightController v4 — landed_state detection");
+  timer_ctl_ = create_wall_timer(period, std::bind(&FlightController::control_loop, this), ctl_cb_group_);
+  RCLCPP_INFO(get_logger(), "FlightController v4");
 }
 
 void FlightController::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
@@ -124,28 +116,28 @@ void FlightController::control_loop()
       cmd.position_x = land_target_x_; cmd.position_y = land_target_y_;
       cmd.position_z = tz; cmd.yaw = uav_.yaw;
       pub_uav_cmd_->publish(cmd);
-
       auto fb = std::make_shared<Land::Feedback>();
-      fb->current_altitude = uav_.position_z;
-      gh_land_->publish_feedback(fb);
+      fb->current_altitude = uav_.position_z; gh_land_->publish_feedback(fb);
 
-      // PX4 landed_state: 1=ON_GROUND → 触地后可安全上锁
-      if (t > 15.0 && landed_state_ == 1) {
-        call_arm(false);
-        auto r = std::make_shared<Land::Result>(); r->success = true;
-        r->message = "landed"; gh_land_->succeed(r); gh_land_.reset();
-        active_ = NONE;
+      // PX4 landed_state==1 → ON_GROUND → 触地后等 3s 上锁
+      if (landed_state_ == 1) {
+        if (!landed_seen_) { landed_at_ = now(); landed_seen_ = true; }
+        if ((now() - landed_at_).seconds() > 3.0) {
+          call_arm(false);
+          auto r = std::make_shared<Land::Result>(); r->success = true;
+          r->message = "landed"; gh_land_->succeed(r); gh_land_.reset();
+          active_ = NONE; landed_seen_ = false;
+        }
       } else if (t > 60.0) {
         call_arm(false);
         auto r = std::make_shared<Land::Result>(); r->success = true;
-        r->message = "land timeout"; gh_land_->succeed(r); gh_land_.reset();
+        r->message = "timeout"; gh_land_->succeed(r); gh_land_.reset();
         active_ = NONE;
       }
     }
   }
 }
 
-// ---- Takeoff ----
 rclcpp_action::GoalResponse FlightController::handle_takeoff_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const Takeoff::Goal> g)
 { if (active_!=NONE || g->target_altitude<=0) return rclcpp_action::GoalResponse::REJECT;
@@ -169,7 +161,6 @@ void FlightController::handle_takeoff_accepted(
   if (!call_set_mode(3)) { auto r=std::make_shared<Takeoff::Result>(); r->success=false; gh->abort(r); active_=NONE; return; }
 }
 
-// ---- Land ----
 rclcpp_action::GoalResponse FlightController::handle_land_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const Land::Goal>)
 { if (active_!=HOVER) return rclcpp_action::GoalResponse::REJECT;
@@ -182,7 +173,6 @@ void FlightController::handle_land_accepted(
 { land_target_x_=uav_.position_x; land_target_y_=uav_.position_y;
   land_start_z_=uav_.position_z; gh_land_=gh; active_=LANDING; land_start_time_=now(); }
 
-// ---- Waypoint ----
 rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const GoToWaypoint::Goal>)
 { if (active_!=HOVER) return rclcpp_action::GoalResponse::REJECT;
@@ -204,7 +194,6 @@ void FlightController::handle_waypoint_accepted(
   gh_waypoint_=gh; active_=WAYPOINT;
 }
 
-// ---- helpers ----
 bool FlightController::call_arm(bool arm)
 {
   if (!cli_arm_->wait_for_service(3s)) return false;

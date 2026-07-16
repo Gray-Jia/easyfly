@@ -112,6 +112,8 @@ private:
   double takeoff_start_x_{0.0}, takeoff_start_y_{0.0}, takeoff_start_z_{0.0};
   rclcpp::Time takeoff_start_time_;
   rclcpp::Time land_start_time_;
+  rclcpp::Time landed_at_;            // 首次检测到触地的时间
+  bool         landed_seen_{false};   // 已检测到过触地
   double land_target_x_{0.0}, land_target_y_{0.0}, land_target_z_{0.0};
   double land_start_z_{0.0};
   uint8_t landed_state_{0};
