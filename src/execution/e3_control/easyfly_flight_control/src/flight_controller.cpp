@@ -1,6 +1,5 @@
 #include "easyfly_flight_control/flight_controller.hpp"
 
-#include <thread>
 #include <cmath>
 #include <chrono>
 
@@ -80,7 +79,7 @@ void FlightController::control_loop()
     cmd.position_x = takeoff_start_x_; cmd.position_y = takeoff_start_y_;
     cmd.position_z = tz; cmd.yaw = uav_.yaw;
     pub_uav_cmd_->publish(cmd);
-    if (gh_takeoff_ && std::abs(takeoff_target_z_ - uav_.position_z) < 0.3) {
+    if (gh_takeoff_ && std::abs(takeoff_target_z_ - uav_.position_z) < 0.5) {
       auto r = std::make_shared<Takeoff::Result>(); r->success = true;
       gh_takeoff_->succeed(r); gh_takeoff_.reset();
       hover_x_ = takeoff_start_x_; hover_y_ = takeoff_start_y_;

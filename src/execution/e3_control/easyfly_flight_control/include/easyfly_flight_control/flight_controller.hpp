@@ -112,7 +112,6 @@ private:
   rclcpp::Time land_start_time_;
   double land_target_x_{0.0}, land_target_y_{0.0}, land_target_z_{0.0};
   double land_start_z_{0.0};
-  int    landed_count_{0};    // 连续着陆帧计数，需≥40(2s)才判定着陆
 
   // waypoint state
   double wp_target_x_{0.0}, wp_target_y_{0.0}, wp_target_z_{0.0}, wp_target_yaw_{0.0};
