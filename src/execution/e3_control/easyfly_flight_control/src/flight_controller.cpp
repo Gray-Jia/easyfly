@@ -146,7 +146,7 @@ void FlightController::handle_takeoff_accepted(
   ic.position_z=uav_.position_z; ic.yaw=uav_.yaw;
   pub_uav_cmd_->publish(ic);
   gh_takeoff_=gh; active_=TAKEOFF;
-  if (!call_set_mode(3)) { auto r=std::make_shared<Takeoff::Result>(); r->success=false; gh->abort(r); active_=NONE; return; }
+  if (!call_set_mode(3)) { call_arm(false); auto r=std::make_shared<Takeoff::Result>(); r->success=false; gh->abort(r); active_=NONE; return; }
 }
 
 rclcpp_action::GoalResponse FlightController::handle_land_goal(
@@ -159,8 +159,8 @@ rclcpp_action::CancelResponse FlightController::handle_land_cancel(
 void FlightController::handle_land_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh)
 {
-  // 切 AUTO.LAND，PX4 接管一切
-  call_set_mode(7);
+  
+  if (!call_set_mode(7)) RCLCPP_WARN(get_logger(), "AUTO.LAND switch failed");
   gh_land_ = gh; active_ = LANDING; land_start_time_ = now();
 }
 

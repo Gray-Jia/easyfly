@@ -269,7 +269,7 @@ bool MissionFSM::execute_step(const MissionStep & step, int idx, int total,
     goal.climb_speed = step.climb_speed;
 
     auto gh_future = cli_takeoff_->async_send_goal(goal);
-    if (gh_future.wait_for(60s) != std::future_status::ready) { RCLCPP_ERROR(get_logger(), "Land goal timeout"); return false; }
+    if (gh_future.wait_for(60s) != std::future_status::ready) { RCLCPP_ERROR(get_logger(), "Takeoff goal timeout"); return false; }
 
     auto goal_handle = gh_future.get();
     auto res_future = cli_takeoff_->async_get_result(goal_handle);
