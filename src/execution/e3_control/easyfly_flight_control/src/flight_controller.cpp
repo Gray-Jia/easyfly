@@ -149,14 +149,16 @@ void FlightController::control_loop()
         0.0f, 1.0f);
       gh_takeoff_->publish_feedback(fb);
 
-      if (dist < 0.2) {  // arrived
+      if (dist < 0.2) {  // arrived → 切到悬停
         auto res = std::make_shared<Takeoff::Result>();
         res->success = true;
         res->message = "takeoff complete";
         gh_takeoff_->succeed(res);
         gh_takeoff_.reset();
-        active_ = NONE;
-        RCLCPP_INFO(get_logger(), "Takeoff done at z=%.2f", uav_.position_z);
+        hover_x_ = uav_.position_x; hover_y_ = uav_.position_y;
+        hover_z_ = takeoff_target_z_; hover_yaw_ = uav_.yaw;
+        active_ = HOVER;
+        RCLCPP_INFO(get_logger(), "Takeoff done, now hovering at z=%.2f", hover_z_);
       }
     }
 
@@ -207,11 +209,19 @@ void FlightController::control_loop()
         res->message = "waypoint reached";
         gh_waypoint_->succeed(res);
         gh_waypoint_.reset();
-        active_ = NONE;
-        RCLCPP_INFO(get_logger(), "Waypoint reached (dist=%.2f)", dist);
+        active_ = HOVER;
+        RCLCPP_INFO(get_logger(), "Waypoint reached, now hovering");
       }
     }
 
+
+  } else if (active_ == HOVER) {
+    // ---- hover: 保持当前位置不漂移 ----
+    cmd.position_x = hover_x_;
+    cmd.position_y = hover_y_;
+    cmd.position_z = hover_z_;
+    cmd.yaw         = hover_yaw_;
+    pub_uav_cmd_->publish(cmd);
   } else if (active_ == LANDING) {
     // LAND mode is handled once in land_accepted;
     // here we just monitor until relative_altitude near 0, then disarm.
@@ -229,7 +239,7 @@ void FlightController::control_loop()
         res->message = "landed";
         gh_land_->succeed(res);
         gh_land_.reset();
-        active_ = NONE;
+        active_ = HOVER;
         RCLCPP_INFO(get_logger(), "Land done");
       }
     }
@@ -243,7 +253,7 @@ void FlightController::control_loop()
 rclcpp_action::GoalResponse FlightController::handle_takeoff_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const Takeoff::Goal> goal)
 {
-  if (active_ != NONE) {
+  if (active_ != NONE && active_ != HOVER) {
     RCLCPP_WARN(get_logger(), "Takeoff rejected: another action is active");
     return rclcpp_action::GoalResponse::REJECT;
   }
@@ -257,7 +267,7 @@ rclcpp_action::GoalResponse FlightController::handle_takeoff_goal(
 rclcpp_action::CancelResponse FlightController::handle_takeoff_cancel(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>>)
 {
-  active_ = NONE;
+  active_ = HOVER;
   gh_takeoff_.reset();
   return rclcpp_action::CancelResponse::ACCEPT;
 }
@@ -309,7 +319,7 @@ void FlightController::handle_takeoff_accepted(
 rclcpp_action::GoalResponse FlightController::handle_land_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const Land::Goal>)
 {
-  if (active_ != NONE) {
+  if (active_ != NONE && active_ != HOVER) {
     return rclcpp_action::GoalResponse::REJECT;
   }
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
@@ -318,7 +328,7 @@ rclcpp_action::GoalResponse FlightController::handle_land_goal(
 rclcpp_action::CancelResponse FlightController::handle_land_cancel(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>>)
 {
-  active_ = NONE;
+  active_ = HOVER;
   gh_land_.reset();
   return rclcpp_action::CancelResponse::ACCEPT;
 }
@@ -346,7 +356,7 @@ void FlightController::handle_land_accepted(
 rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const GoToWaypoint::Goal> goal)
 {
-  if (active_ != NONE) {
+  if (active_ != NONE && active_ != HOVER) {
     return rclcpp_action::GoalResponse::REJECT;
   }
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
@@ -355,7 +365,7 @@ rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
 rclcpp_action::CancelResponse FlightController::handle_waypoint_cancel(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>>)
 {
-  active_ = NONE;
+  active_ = HOVER;
   gh_waypoint_.reset();
   return rclcpp_action::CancelResponse::ACCEPT;
 }

@@ -98,8 +98,11 @@ private:
   PID pid_x_, pid_y_, pid_z_, pid_yaw_;
 
   // ---- active action ----
-  enum Action { NONE, TAKEOFF, LANDING, WAYPOINT };
+  enum Action { NONE, TAKEOFF, LANDING, WAYPOINT, HOVER };
   Action active_{NONE};
+
+  // hover 目标位置（takeoff/waypoint 完成后保持的位置）
+  double hover_x_{0.0}, hover_y_{0.0}, hover_z_{0.0}, hover_yaw_{0.0};
 
   // takeoff state
   double takeoff_target_z_{0.0};
