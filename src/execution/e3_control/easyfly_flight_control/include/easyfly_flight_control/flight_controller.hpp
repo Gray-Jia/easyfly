@@ -110,6 +110,8 @@ private:
   double takeoff_start_x_{0.0}, takeoff_start_y_{0.0}, takeoff_start_z_{0.0};
   rclcpp::Time takeoff_start_time_;
   rclcpp::Time land_start_time_;
+  double land_target_x_{0.0}, land_target_y_{0.0}, land_target_z_{0.0};
+  double land_start_z_{0.0};
 
   // waypoint state
   double wp_target_x_{0.0}, wp_target_y_{0.0}, wp_target_z_{0.0}, wp_target_yaw_{0.0};
