@@ -28,10 +28,11 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   ctl_rate_ = declare_parameter("control_rate", 20.0);
   land_timeout_ = declare_parameter("land_timeout", 30.0);
 
-  pid_x_.kp=0.8; pid_x_.ki=0.02; pid_x_.kd=0.1;
-  pid_y_.kp=0.8; pid_y_.ki=0.02; pid_y_.kd=0.1;
-  pid_z_.kp=1.2; pid_z_.ki=0.03; pid_z_.kd=0.15;
-  pid_yaw_.kp=1.0; pid_yaw_.ki=0.0; pid_yaw_.kd=0.0;
+  // 提高 PID 增益，让航点速度更快达到 max_speed
+  pid_x_.kp=2.0; pid_x_.ki=0.05; pid_x_.kd=0.3;
+  pid_y_.kp=2.0; pid_y_.ki=0.05; pid_y_.kd=0.3;
+  pid_z_.kp=2.5; pid_z_.ki=0.05; pid_z_.kd=0.4;
+  pid_yaw_.kp=2.0;
 
   auto period = std::chrono::milliseconds(static_cast<int>(1000.0 / ctl_rate_));
   auto qos = rclcpp::QoS(10);
@@ -96,7 +97,6 @@ void FlightController::control_loop()
         hover_x_ = takeoff_start_x_; hover_y_ = takeoff_start_y_;
         hover_z_ = takeoff_target_z_; hover_yaw_ = uav_.yaw;
         active_ = HOVER;
-        RCLCPP_INFO(get_logger(), "Takeoff done, hovering z=%.2f", hover_z_);
       }
     }
   } else if (active_ == WAYPOINT) {
@@ -127,7 +127,6 @@ void FlightController::control_loop()
         hover_x_ = wp_target_x_; hover_y_ = wp_target_y_;
         hover_z_ = wp_target_z_; hover_yaw_ = wp_target_yaw_;
         active_ = HOVER;
-        RCLCPP_INFO(get_logger(), "Waypoint done (%.1f,%.1f)", hover_x_, hover_y_);
       }
     }
   } else if (active_ == HOVER) {
@@ -140,24 +139,30 @@ void FlightController::control_loop()
     if (gh_land_) {
       double t = (now() - land_start_time_).seconds();
       double tz = land_start_z_ - t * 0.3;
+      // 降到地面高度后保持贴地 setpoint
       if (tz < takeoff_start_z_ + 0.05) tz = takeoff_start_z_ + 0.05;
       cmd.position_x = land_target_x_; cmd.position_y = land_target_y_;
       cmd.position_z = tz; cmd.yaw = uav_.yaw;
       pub_uav_cmd_->publish(cmd);
+
       auto fb = std::make_shared<Land::Feedback>();
       fb->current_altitude = uav_.position_z;
       gh_land_->publish_feedback(fb);
-      bool near_ground = (uav_.relative_altitude < 0.15 && std::abs(uav_.velocity_z) < 0.2
-                     && std::abs(uav_.velocity_x) < 0.2 && std::abs(uav_.velocity_y) < 0.2);
-      if (near_ground) landed_count_++; else landed_count_ = 0;
-      bool landed = (landed_count_ >= 40);  // 2秒持续贴地才判定着陆
-      if (landed || t > 30.0) {
-        call_arm(false);
+
+      // 检测：PX4 已 disarm 或 贴地且静止 2 秒 或 超时 30 秒
+      bool on_ground = (uav_.relative_altitude < 0.15
+                        && std::abs(uav_.velocity_z) < 0.15
+                        && std::abs(uav_.velocity_x) < 0.15
+                        && std::abs(uav_.velocity_y) < 0.15);
+      if (on_ground) landed_count_++; else landed_count_ = 0;
+
+      bool done = !uav_.armed || landed_count_ >= 60 || t > 30.0;
+      if (done) {
+        if (uav_.armed) call_arm(false);   // 尝试 disarm
         auto r = std::make_shared<Land::Result>(); r->success = true;
-        r->message = landed ? "landed" : "timeout";
+        r->message = !uav_.armed ? "disarmed" : (landed_count_>=60 ? "landed" : "timeout");
         gh_land_->succeed(r); gh_land_.reset();
         active_ = NONE;
-        RCLCPP_INFO(get_logger(), "Land done (%s)", landed?"detected":"timeout");
       }
     }
   }
@@ -186,7 +191,6 @@ void FlightController::handle_takeoff_accepted(
   pub_uav_cmd_->publish(ic);
   gh_takeoff_=gh; active_=TAKEOFF;
   if (!call_set_mode(3)) { auto r=std::make_shared<Takeoff::Result>(); r->success=false; gh->abort(r); active_=NONE; return; }
-  RCLCPP_INFO(get_logger(),"Takeoff start: %.1f",takeoff_target_z_);
 }
 
 // ---- Land ----
@@ -201,8 +205,8 @@ void FlightController::handle_land_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh)
 {
   land_target_x_=uav_.position_x; land_target_y_=uav_.position_y;
-  land_start_z_=uav_.position_z; gh_land_=gh; active_=LANDING; landed_count_=0; land_start_time_=now();
-  RCLCPP_INFO(get_logger(),"Land start (%.1f,%.1f)",land_target_x_,land_target_y_);
+  land_start_z_=uav_.position_z; landed_count_=0;
+  gh_land_=gh; active_=LANDING; land_start_time_=now();
 }
 
 // ---- Waypoint ----
@@ -225,7 +229,6 @@ void FlightController::handle_waypoint_accepted(
   wp_start_dist_=std::sqrt(dx*dx+dy*dy+dz*dz);
   pid_x_.reset(); pid_y_.reset(); pid_z_.reset(); pid_yaw_.reset();
   gh_waypoint_=gh; active_=WAYPOINT;
-  RCLCPP_INFO(get_logger(),"Waypoint (%.1f,%.1f,%.1f)",wp_target_x_,wp_target_y_,wp_target_z_);
 }
 
 // ---- helpers ----
