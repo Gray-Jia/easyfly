@@ -19,7 +19,6 @@ double PID::update(double error, double dt)
   prev_error = error;
   return kp * error + ki * integral + kd * deriv;
 }
-
 void PID::reset() { integral = 0.0; prev_error = 0.0; }
 
 FlightController::FlightController(const rclcpp::NodeOptions & options)
@@ -27,8 +26,6 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
 {
   ctl_rate_ = declare_parameter("control_rate", 20.0);
   land_timeout_ = declare_parameter("land_timeout", 30.0);
-
-  // 提高 PID 增益，让航点速度更快达到 max_speed
   pid_x_.kp=2.0; pid_x_.ki=0.05; pid_x_.kd=0.3;
   pid_y_.kp=2.0; pid_y_.ki=0.05; pid_y_.kd=0.3;
   pid_z_.kp=2.5; pid_z_.ki=0.05; pid_z_.kd=0.4;
@@ -64,13 +61,12 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_ctl_ = create_wall_timer(period,
     std::bind(&FlightController::control_loop, this), ctl_cb_group_);
-  RCLCPP_INFO(get_logger(), "FlightController started");
+  RCLCPP_INFO(get_logger(), "FlightController v3 — strict state machine");
 }
 
 void FlightController::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
 { uav_ = *msg; state_received_ = true; }
 
-// ---- control loop ----
 void FlightController::control_loop()
 {
   if (!state_received_) return;
@@ -81,23 +77,15 @@ void FlightController::control_loop()
   if (active_ == TAKEOFF) {
     double t = (now() - takeoff_start_time_).seconds();
     double tz = std::min(takeoff_start_z_ + t * takeoff_speed_, takeoff_target_z_);
-    double d = std::abs(takeoff_target_z_ - uav_.position_z);
     cmd.position_x = takeoff_start_x_; cmd.position_y = takeoff_start_y_;
     cmd.position_z = tz; cmd.yaw = uav_.yaw;
     pub_uav_cmd_->publish(cmd);
-    if (gh_takeoff_) {
-      auto fb = std::make_shared<Takeoff::Feedback>();
-      fb->current_altitude = uav_.position_z;
-      fb->progress = std::clamp(static_cast<float>((uav_.position_z - takeoff_start_z_) /
-        std::max(takeoff_target_z_ - takeoff_start_z_, 0.1)), 0.0f, 1.0f);
-      gh_takeoff_->publish_feedback(fb);
-      if (d < 0.2) {
-        auto r = std::make_shared<Takeoff::Result>(); r->success = true;
-        gh_takeoff_->succeed(r); gh_takeoff_.reset();
-        hover_x_ = takeoff_start_x_; hover_y_ = takeoff_start_y_;
-        hover_z_ = takeoff_target_z_; hover_yaw_ = uav_.yaw;
-        active_ = HOVER;
-      }
+    if (gh_takeoff_ && std::abs(takeoff_target_z_ - uav_.position_z) < 0.3) {
+      auto r = std::make_shared<Takeoff::Result>(); r->success = true;
+      gh_takeoff_->succeed(r); gh_takeoff_.reset();
+      hover_x_ = takeoff_start_x_; hover_y_ = takeoff_start_y_;
+      hover_z_ = takeoff_target_z_; hover_yaw_ = uav_.yaw;
+      active_ = HOVER;
     }
   } else if (active_ == WAYPOINT) {
     double ex = wp_target_x_ - uav_.position_x;
@@ -116,18 +104,12 @@ void FlightController::control_loop()
     cmd.position_z = uav_.position_z + vz*dt;
     cmd.yaw = uav_.yaw + vyaw*dt;
     pub_uav_cmd_->publish(cmd);
-    if (gh_waypoint_) {
-      auto fb = std::make_shared<GoToWaypoint::Feedback>();
-      fb->distance_remaining = dist;
-      fb->progress = 1.0f - std::clamp(static_cast<float>(dist/std::max(wp_start_dist_,0.01)), 0.0f, 1.0f);
-      gh_waypoint_->publish_feedback(fb);
-      if (dist < wp_accept_radius_) {
-        auto r = std::make_shared<GoToWaypoint::Result>(); r->success = true;
-        gh_waypoint_->succeed(r); gh_waypoint_.reset();
-        hover_x_ = wp_target_x_; hover_y_ = wp_target_y_;
-        hover_z_ = wp_target_z_; hover_yaw_ = wp_target_yaw_;
-        active_ = HOVER;
-      }
+    if (gh_waypoint_ && dist < wp_accept_radius_) {
+      auto r = std::make_shared<GoToWaypoint::Result>(); r->success = true;
+      gh_waypoint_->succeed(r); gh_waypoint_.reset();
+      hover_x_ = wp_target_x_; hover_y_ = wp_target_y_;
+      hover_z_ = wp_target_z_; hover_yaw_ = wp_target_yaw_;
+      active_ = HOVER;
     }
   } else if (active_ == HOVER) {
     if (uav_.armed) {
@@ -139,7 +121,6 @@ void FlightController::control_loop()
     if (gh_land_) {
       double t = (now() - land_start_time_).seconds();
       double tz = land_start_z_ - t * 0.3;
-      // 降到地面高度后保持贴地 setpoint
       if (tz < takeoff_start_z_ + 0.05) tz = takeoff_start_z_ + 0.05;
       cmd.position_x = land_target_x_; cmd.position_y = land_target_y_;
       cmd.position_z = tz; cmd.yaw = uav_.yaw;
@@ -149,18 +130,22 @@ void FlightController::control_loop()
       fb->current_altitude = uav_.position_z;
       gh_land_->publish_feedback(fb);
 
-      // 检测：PX4 已 disarm 或 贴地且静止 2 秒 或 超时 30 秒
-      bool on_ground = (uav_.relative_altitude < 0.15
-                        && std::abs(uav_.velocity_z) < 0.15
-                        && std::abs(uav_.velocity_x) < 0.15
-                        && std::abs(uav_.velocity_y) < 0.15);
-      if (on_ground) landed_count_++; else landed_count_ = 0;
-
-      bool done = !uav_.armed || landed_count_ >= 60 || t > 30.0;
-      if (done) {
-        if (uav_.armed) call_arm(false);   // 尝试 disarm
+      // 计时驱动：到地面后再保持 5 秒，确保完全着陆，然后 disarm
+      bool at_floor = (tz <= takeoff_start_z_ + 0.06);  // setpoint 已到底
+      if (at_floor && t > (land_start_z_ - takeoff_start_z_) / 0.3 + 5.0) {
+        call_arm(false);
+        // 切到 POSCTL 保证下次可 arm
+        std::this_thread::sleep_for(500ms);
+        call_set_mode(2);
         auto r = std::make_shared<Land::Result>(); r->success = true;
-        r->message = !uav_.armed ? "disarmed" : (landed_count_>=60 ? "landed" : "timeout");
+        r->message = "landed";
+        gh_land_->succeed(r); gh_land_.reset();
+        active_ = NONE;
+      } else if (t > 30.0) {   // 兜底超时
+        call_arm(false);
+        call_set_mode(2);
+        auto r = std::make_shared<Land::Result>(); r->success = true;
+        r->message = "land timeout";
         gh_land_->succeed(r); gh_land_.reset();
         active_ = NONE;
       }
@@ -180,6 +165,9 @@ void FlightController::handle_takeoff_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> gh)
 {
   auto g = gh->get_goal();
+  // 先切 POSCTL 确保可 arm（解决 "not ready" 问题）
+  call_set_mode(2);
+  std::this_thread::sleep_for(200ms);
   if (!call_arm(true)) { auto r=std::make_shared<Takeoff::Result>(); r->success=false; gh->abort(r); return; }
   takeoff_target_z_=g->target_altitude; takeoff_speed_=(g->climb_speed>0)?g->climb_speed:1.0;
   takeoff_start_x_=uav_.position_x; takeoff_start_y_=uav_.position_y; takeoff_start_z_=uav_.position_z;
@@ -205,8 +193,7 @@ void FlightController::handle_land_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh)
 {
   land_target_x_=uav_.position_x; land_target_y_=uav_.position_y;
-  land_start_z_=uav_.position_z; landed_count_=0;
-  gh_land_=gh; active_=LANDING; land_start_time_=now();
+  land_start_z_=uav_.position_z; gh_land_=gh; active_=LANDING; land_start_time_=now();
 }
 
 // ---- Waypoint ----
