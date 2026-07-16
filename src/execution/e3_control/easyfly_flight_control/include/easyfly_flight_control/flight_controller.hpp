@@ -117,7 +117,6 @@ private:
   double land_target_x_{0.0}, land_target_y_{0.0}, land_target_z_{0.0};
   double land_start_z_{0.0};
   uint8_t landed_state_{0};
-  bool   land_phase2_{false};   // 已切 AUTO.LAND 等待 disarm
 
   // waypoint state
   double wp_target_x_{0.0}, wp_target_y_{0.0}, wp_target_z_{0.0}, wp_target_yaw_{0.0};
