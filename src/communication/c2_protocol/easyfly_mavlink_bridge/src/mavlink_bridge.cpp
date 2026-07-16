@@ -263,6 +263,9 @@ void MavlinkBridge::cb_uav_command(const easyfly_msgs::msg::UAVCommand::SharedPt
   last_cmd_time_ = now();
   cmd_received_  = true;
 
+  // 立即发布一次，不等 timer（PX4 OFFBOARD 要求 0.5s 内有 setpoint）
+  publish_setpoint();
+
   RCLCPP_DEBUG_STREAM(get_logger(),
     "/uav_command mode=" << static_cast<int>(msg->control_mode)
     << " pos=(" << msg->position_x << "," << msg->position_y << "," << msg->position_z << ")"
