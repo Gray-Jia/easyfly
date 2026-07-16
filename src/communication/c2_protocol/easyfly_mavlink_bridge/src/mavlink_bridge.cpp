@@ -363,7 +363,10 @@ void MavlinkBridge::cb_arm_motors(
 
   auto future = client->async_send_request(mav_req);
 
-  if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+  auto ret = rclcpp::spin_until_future_complete(
+    get_node_base_interface(), future, std::chrono::seconds(3));
+
+  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
     res->success = false;
     res->message = "arm/disarm request timed out";
     RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
@@ -410,7 +413,10 @@ void MavlinkBridge::cb_set_flight_mode(
 
   auto future = client->async_send_request(mav_req);
 
-  if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+  auto ret = rclcpp::spin_until_future_complete(
+    get_node_base_interface(), future, std::chrono::seconds(3));
+
+  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
     res->success = false;
     res->message = "set_mode request timed out";
     RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
