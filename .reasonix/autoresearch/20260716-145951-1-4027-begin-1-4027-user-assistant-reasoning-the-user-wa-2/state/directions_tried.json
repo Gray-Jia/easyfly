@@ -1,9 +1,0 @@
-[
-  {
-    "fingerprint": "mavlink-bridge-cpp-222-easyfly-flight-control-easyfly-mi-a3fc781f",
-    "summary": "数据确认完毕。编码器仍是空壳（`mavlink_bridge.cpp:222`），`easyfly_flight_control` 和 `easyfly_mission_fsm` 均为骨架。下面给出阶段\ufffd",
-    "first_seen_iteration": 1,
-    "last_seen_iteration": 1,
-    "count": 1
-  }
-]
