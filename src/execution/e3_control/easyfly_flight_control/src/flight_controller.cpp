@@ -120,7 +120,7 @@ void FlightController::control_loop()
     if (gh_land_) {
       double t = (now() - land_start_time_).seconds();
       double tz = land_start_z_ - t * 0.3;
-      if (tz < takeoff_start_z_ + 0.05) tz = takeoff_start_z_ + 0.05;
+      if (tz < takeoff_start_z_ - 0.1) tz = takeoff_start_z_ + 0.05;
       cmd.position_x = land_target_x_; cmd.position_y = land_target_y_;
       cmd.position_z = tz; cmd.yaw = uav_.yaw;
       pub_uav_cmd_->publish(cmd);
