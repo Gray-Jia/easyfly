@@ -10,10 +10,6 @@ namespace easyfly_flight_control
 using namespace std::placeholders;
 using namespace std::chrono_literals;
 
-// ================================================================
-// PID
-// ================================================================
-
 double PID::update(double error, double dt)
 {
   if (dt <= 0.0) return 0.0;
@@ -24,15 +20,7 @@ double PID::update(double error, double dt)
   return kp * error + ki * integral + kd * deriv;
 }
 
-void PID::reset()
-{
-  integral   = 0.0;
-  prev_error = 0.0;
-}
-
-// ================================================================
-// Constructor
-// ================================================================
+void PID::reset() { integral = 0.0; prev_error = 0.0; }
 
 FlightController::FlightController(const rclcpp::NodeOptions & options)
   : Node("flight_controller", options)
@@ -40,18 +28,10 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   ctl_rate_ = declare_parameter("control_rate", 20.0);
   land_timeout_ = declare_parameter("land_timeout", 30.0);
 
-  pid_x_.kp  = declare_parameter("pid_x.kp", 0.8);
-  pid_x_.ki  = declare_parameter("pid_x.ki", 0.02);
-  pid_x_.kd  = declare_parameter("pid_x.kd", 0.1);
-  pid_y_.kp  = declare_parameter("pid_y.kp", 0.8);
-  pid_y_.ki  = declare_parameter("pid_y.ki", 0.02);
-  pid_y_.kd  = declare_parameter("pid_y.kd", 0.1);
-  pid_z_.kp  = declare_parameter("pid_z.kp", 1.2);
-  pid_z_.ki  = declare_parameter("pid_z.ki", 0.03);
-  pid_z_.kd  = declare_parameter("pid_z.kd", 0.15);
-  pid_yaw_.kp = declare_parameter("pid_yaw.kp", 1.0);
-  pid_yaw_.ki = declare_parameter("pid_yaw.ki", 0.0);
-  pid_yaw_.kd = declare_parameter("pid_yaw.kd", 0.0);
+  pid_x_.kp=0.8; pid_x_.ki=0.02; pid_x_.kd=0.1;
+  pid_y_.kp=0.8; pid_y_.ki=0.02; pid_y_.kd=0.1;
+  pid_z_.kp=1.2; pid_z_.ki=0.03; pid_z_.kd=0.15;
+  pid_yaw_.kp=1.0; pid_yaw_.ki=0.0; pid_yaw_.kd=0.0;
 
   auto period = std::chrono::milliseconds(static_cast<int>(1000.0 / ctl_rate_));
   auto qos = rclcpp::QoS(10);
@@ -59,7 +39,6 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   sub_uav_state_ = create_subscription<easyfly_msgs::msg::UAVState>(
     "/uav_state", rclcpp::SensorDataQoS(),
     std::bind(&FlightController::cb_uav_state, this, _1));
-
   pub_uav_cmd_ = create_publisher<easyfly_msgs::msg::UAVCommand>("/uav_command", qos);
 
   cli_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -68,20 +47,15 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   cli_mode_ = create_client<easyfly_msgs::srv::SetFlightMode>(
     "/set_flight_mode", rmw_qos_profile_services_default, cli_cb_group_);
 
-  as_takeoff_ = rclcpp_action::create_server<Takeoff>(
-    this, "/takeoff",
+  as_takeoff_ = rclcpp_action::create_server<Takeoff>(this, "/takeoff",
     std::bind(&FlightController::handle_takeoff_goal,   this, _1, _2),
     std::bind(&FlightController::handle_takeoff_cancel, this, _1),
     std::bind(&FlightController::handle_takeoff_accepted, this, _1));
-
-  as_land_ = rclcpp_action::create_server<Land>(
-    this, "/land",
+  as_land_ = rclcpp_action::create_server<Land>(this, "/land",
     std::bind(&FlightController::handle_land_goal,   this, _1, _2),
     std::bind(&FlightController::handle_land_cancel, this, _1),
     std::bind(&FlightController::handle_land_accepted, this, _1));
-
-  as_waypoint_ = rclcpp_action::create_server<GoToWaypoint>(
-    this, "/goto_waypoint",
+  as_waypoint_ = rclcpp_action::create_server<GoToWaypoint>(this, "/goto_waypoint",
     std::bind(&FlightController::handle_waypoint_goal,   this, _1, _2),
     std::bind(&FlightController::handle_waypoint_cancel, this, _1),
     std::bind(&FlightController::handle_waypoint_accepted, this, _1));
@@ -89,308 +63,185 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_ctl_ = create_wall_timer(period,
     std::bind(&FlightController::control_loop, this), ctl_cb_group_);
-
   RCLCPP_INFO(get_logger(), "FlightController started");
 }
 
-// ================================================================
-// callbacks
-// ================================================================
-
 void FlightController::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
-{
-  uav_ = *msg;
-  state_received_ = true;
-}
+{ uav_ = *msg; state_received_ = true; }
 
-// ================================================================
-// control loop — 20Hz
-// ================================================================
-
+// ---- control loop ----
 void FlightController::control_loop()
 {
   if (!state_received_) return;
-
   double dt = 1.0 / ctl_rate_;
   easyfly_msgs::msg::UAVCommand cmd;
   cmd.control_mode = easyfly_msgs::msg::UAVCommand::POSITION;
 
   if (active_ == TAKEOFF) {
-    double elapsed = (now() - takeoff_start_time_).seconds();
-    double target_z = takeoff_start_z_ + elapsed * takeoff_speed_;
-    target_z = std::min(target_z, takeoff_target_z_);
-    double dist = std::abs(takeoff_target_z_ - uav_.position_z);
-
-    cmd.position_x = takeoff_start_x_;
-    cmd.position_y = takeoff_start_y_;
-    cmd.position_z = target_z;
-    cmd.yaw         = uav_.yaw;
+    double t = (now() - takeoff_start_time_).seconds();
+    double tz = std::min(takeoff_start_z_ + t * takeoff_speed_, takeoff_target_z_);
+    double d = std::abs(takeoff_target_z_ - uav_.position_z);
+    cmd.position_x = takeoff_start_x_; cmd.position_y = takeoff_start_y_;
+    cmd.position_z = tz; cmd.yaw = uav_.yaw;
     pub_uav_cmd_->publish(cmd);
-
     if (gh_takeoff_) {
       auto fb = std::make_shared<Takeoff::Feedback>();
       fb->current_altitude = uav_.position_z;
-      fb->progress = std::clamp(
-        static_cast<float>((uav_.position_z - takeoff_start_z_) /
-          std::max(takeoff_target_z_ - takeoff_start_z_, 0.1)),
-        0.0f, 1.0f);
+      fb->progress = std::clamp(static_cast<float>((uav_.position_z - takeoff_start_z_) /
+        std::max(takeoff_target_z_ - takeoff_start_z_, 0.1)), 0.0f, 1.0f);
       gh_takeoff_->publish_feedback(fb);
-
-      if (dist < 0.2) {
-        auto res = std::make_shared<Takeoff::Result>();
-        res->success = true; res->message = "takeoff complete";
-        gh_takeoff_->succeed(res);
-        gh_takeoff_.reset();
-        hover_x_ = uav_.position_x; hover_y_ = uav_.position_y;
+      if (d < 0.2) {
+        auto r = std::make_shared<Takeoff::Result>(); r->success = true;
+        gh_takeoff_->succeed(r); gh_takeoff_.reset();
+        hover_x_ = takeoff_start_x_; hover_y_ = takeoff_start_y_;
         hover_z_ = takeoff_target_z_; hover_yaw_ = uav_.yaw;
         active_ = HOVER;
-        RCLCPP_INFO(get_logger(), "Takeoff done, hovering at z=%.2f", hover_z_);
+        RCLCPP_INFO(get_logger(), "Takeoff done, hovering z=%.2f", hover_z_);
       }
     }
-
   } else if (active_ == WAYPOINT) {
     double ex = wp_target_x_ - uav_.position_x;
     double ey = wp_target_y_ - uav_.position_y;
     double ez = wp_target_z_ - uav_.position_z;
     double eyaw = wp_target_yaw_ - uav_.yaw;
-    while (eyaw >  M_PI) eyaw -= 2 * M_PI;
-    while (eyaw < -M_PI) eyaw += 2 * M_PI;
-    double dist = std::sqrt(ex * ex + ey * ey + ez * ez);
-
-    double vx = pid_x_.update(ex, dt);
-    double vy = pid_y_.update(ey, dt);
-    double vz = pid_z_.update(ez, dt);
-    double vyaw = pid_yaw_.update(eyaw, dt);
-    double speed = std::sqrt(vx * vx + vy * vy + vz * vz);
-    if (speed > wp_max_speed_ && speed > 0.0) {
-      double scale = wp_max_speed_ / speed;
-      vx *= scale; vy *= scale; vz *= scale;
-    }
-
-    cmd.position_x = uav_.position_x + vx * dt;
-    cmd.position_y = uav_.position_y + vy * dt;
-    cmd.position_z = uav_.position_z + vz * dt;
-    cmd.yaw         = uav_.yaw + vyaw * dt;
+    while (eyaw >  M_PI) eyaw -= 2*M_PI;
+    while (eyaw < -M_PI) eyaw += 2*M_PI;
+    double dist = std::sqrt(ex*ex + ey*ey + ez*ez);
+    double vx = pid_x_.update(ex, dt), vy = pid_y_.update(ey, dt);
+    double vz = pid_z_.update(ez, dt), vyaw = pid_yaw_.update(eyaw, dt);
+    double spd = std::sqrt(vx*vx + vy*vy + vz*vz);
+    if (spd > wp_max_speed_ && spd > 0.0) { double s = wp_max_speed_/spd; vx*=s; vy*=s; vz*=s; }
+    cmd.position_x = uav_.position_x + vx*dt;
+    cmd.position_y = uav_.position_y + vy*dt;
+    cmd.position_z = uav_.position_z + vz*dt;
+    cmd.yaw = uav_.yaw + vyaw*dt;
     pub_uav_cmd_->publish(cmd);
-
     if (gh_waypoint_) {
       auto fb = std::make_shared<GoToWaypoint::Feedback>();
       fb->distance_remaining = dist;
-      fb->progress = 1.0f - std::clamp(
-        static_cast<float>(dist / std::max(wp_start_dist_, 0.01)), 0.0f, 1.0f);
+      fb->progress = 1.0f - std::clamp(static_cast<float>(dist/std::max(wp_start_dist_,0.01)), 0.0f, 1.0f);
       gh_waypoint_->publish_feedback(fb);
-
       if (dist < wp_accept_radius_) {
-        auto res = std::make_shared<GoToWaypoint::Result>();
-        res->success = true; res->message = "waypoint reached";
-        gh_waypoint_->succeed(res);
-        gh_waypoint_.reset();
+        auto r = std::make_shared<GoToWaypoint::Result>(); r->success = true;
+        gh_waypoint_->succeed(r); gh_waypoint_.reset();
         hover_x_ = wp_target_x_; hover_y_ = wp_target_y_;
         hover_z_ = wp_target_z_; hover_yaw_ = wp_target_yaw_;
         active_ = HOVER;
-        RCLCPP_INFO(get_logger(), "Waypoint done, hovering at (%.1f,%.1f)", hover_x_, hover_y_);
+        RCLCPP_INFO(get_logger(), "Waypoint done (%.1f,%.1f)", hover_x_, hover_y_);
       }
     }
-
   } else if (active_ == HOVER) {
-    cmd.position_x = hover_x_;
-    cmd.position_y = hover_y_;
-    cmd.position_z = hover_z_;
-    cmd.yaw         = hover_yaw_;
-    pub_uav_cmd_->publish(cmd);
-
-  } else if (active_ == LANDING) {
-    // 自主降落：在 OFFBOARD 下用 POSITION setpoint 缓慢降到底，不回 home
-    if (gh_land_) {
-      double elapsed = (now() - land_start_time_).seconds();
-      double target_z = land_start_z_ - elapsed * 0.3;
-      if (target_z < takeoff_start_z_ + 0.05) target_z = takeoff_start_z_ + 0.05;
-
-      cmd.position_x = land_target_x_;
-      cmd.position_y = land_target_y_;
-      cmd.position_z = target_z;
-      cmd.yaw         = uav_.yaw;
+    if (uav_.armed) {
+      cmd.position_x = hover_x_; cmd.position_y = hover_y_;
+      cmd.position_z = hover_z_; cmd.yaw = hover_yaw_;
       pub_uav_cmd_->publish(cmd);
-
+    }
+  } else if (active_ == LANDING) {
+    if (gh_land_) {
+      double t = (now() - land_start_time_).seconds();
+      double tz = land_start_z_ - t * 0.3;
+      if (tz < takeoff_start_z_ + 0.05) tz = takeoff_start_z_ + 0.05;
+      cmd.position_x = land_target_x_; cmd.position_y = land_target_y_;
+      cmd.position_z = tz; cmd.yaw = uav_.yaw;
+      pub_uav_cmd_->publish(cmd);
       auto fb = std::make_shared<Land::Feedback>();
       fb->current_altitude = uav_.position_z;
       gh_land_->publish_feedback(fb);
-
       bool landed = (uav_.relative_altitude < 0.15 && std::abs(uav_.velocity_z) < 0.2
                      && std::abs(uav_.velocity_x) < 0.2 && std::abs(uav_.velocity_y) < 0.2);
-      elapsed = (now() - land_start_time_).seconds();
-
-      if (landed || elapsed > 30.0) {
+      if (landed || t > 30.0) {
         call_arm(false);
-        auto res = std::make_shared<Land::Result>();
-        res->success = true;
-        res->message = landed ? "landed" : "land timeout";
-        gh_land_->succeed(res);
-        gh_land_.reset();
-        active_ = HOVER;
-        RCLCPP_INFO(get_logger(), "Land done (%s)", landed ? "detected" : "timeout");
+        auto r = std::make_shared<Land::Result>(); r->success = true;
+        r->message = landed ? "landed" : "timeout";
+        gh_land_->succeed(r); gh_land_.reset();
+        active_ = NONE;
+        RCLCPP_INFO(get_logger(), "Land done (%s)", landed?"detected":"timeout");
       }
     }
   }
 }
 
-// ================================================================
-// Takeoff action
-// ================================================================
-
+// ---- Takeoff ----
 rclcpp_action::GoalResponse FlightController::handle_takeoff_goal(
-  const rclcpp_action::GoalUUID &, std::shared_ptr<const Takeoff::Goal> goal)
-{
-  if (active_ != NONE && active_ != HOVER) {
-    RCLCPP_WARN(get_logger(), "Takeoff rejected: another action is active");
-    return rclcpp_action::GoalResponse::REJECT;
-  }
-  if (goal->target_altitude <= 0.0) {
-    return rclcpp_action::GoalResponse::REJECT;
-  }
-  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-}
-
+  const rclcpp_action::GoalUUID &, std::shared_ptr<const Takeoff::Goal> g)
+{ if (active_!=NONE || g->target_altitude<=0) return rclcpp_action::GoalResponse::REJECT;
+  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE; }
 rclcpp_action::CancelResponse FlightController::handle_takeoff_cancel(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>>)
-{
-  active_ = HOVER; gh_takeoff_.reset();
-  return rclcpp_action::CancelResponse::ACCEPT;
-}
-
+{ active_=NONE; gh_takeoff_.reset(); return rclcpp_action::CancelResponse::ACCEPT; }
 void FlightController::handle_takeoff_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> gh)
 {
-  auto goal = gh->get_goal();
-  if (!call_arm(true)) {
-    auto res = std::make_shared<Takeoff::Result>();
-    res->success = false; res->message = "arm failed";
-    gh->abort(res); return;
-  }
-
-  takeoff_target_z_ = goal->target_altitude;
-  takeoff_speed_    = (goal->climb_speed > 0.0) ? goal->climb_speed : 1.0;
-  takeoff_start_x_  = uav_.position_x;
-  takeoff_start_y_  = uav_.position_y;
-  takeoff_start_z_  = uav_.position_z;
+  auto g = gh->get_goal();
+  if (!call_arm(true)) { auto r=std::make_shared<Takeoff::Result>(); r->success=false; gh->abort(r); return; }
+  takeoff_target_z_=g->target_altitude; takeoff_speed_=(g->climb_speed>0)?g->climb_speed:1.0;
+  takeoff_start_x_=uav_.position_x; takeoff_start_y_=uav_.position_y; takeoff_start_z_=uav_.position_z;
   pid_x_.reset(); pid_y_.reset(); pid_z_.reset(); pid_yaw_.reset();
-  takeoff_start_time_ = now();
-
-  easyfly_msgs::msg::UAVCommand init_cmd;
-  init_cmd.control_mode = easyfly_msgs::msg::UAVCommand::POSITION;
-  init_cmd.position_x   = uav_.position_x;
-  init_cmd.position_y   = uav_.position_y;
-  init_cmd.position_z   = uav_.position_z;
-  init_cmd.yaw          = uav_.yaw;
-  pub_uav_cmd_->publish(init_cmd);
-
-  gh_takeoff_ = gh;
-  active_ = TAKEOFF;
-
-  if (!call_set_mode(3)) {
-    auto res = std::make_shared<Takeoff::Result>();
-    res->success = false; res->message = "OFFBOARD mode switch failed";
-    gh->abort(res); active_ = NONE; return;
-  }
-  RCLCPP_INFO(get_logger(), "Takeoff started: target_z=%.1f", takeoff_target_z_);
+  takeoff_start_time_=now();
+  easyfly_msgs::msg::UAVCommand ic; ic.control_mode=easyfly_msgs::msg::UAVCommand::POSITION;
+  ic.position_x=uav_.position_x; ic.position_y=uav_.position_y;
+  ic.position_z=uav_.position_z; ic.yaw=uav_.yaw;
+  pub_uav_cmd_->publish(ic);
+  gh_takeoff_=gh; active_=TAKEOFF;
+  if (!call_set_mode(3)) { auto r=std::make_shared<Takeoff::Result>(); r->success=false; gh->abort(r); active_=NONE; return; }
+  RCLCPP_INFO(get_logger(),"Takeoff start: %.1f",takeoff_target_z_);
 }
 
-// ================================================================
-// Land action
-// ================================================================
-
+// ---- Land ----
 rclcpp_action::GoalResponse FlightController::handle_land_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const Land::Goal>)
-{
-  if (active_ != NONE && active_ != HOVER) return rclcpp_action::GoalResponse::REJECT;
-  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-}
-
+{ if (active_!=HOVER) return rclcpp_action::GoalResponse::REJECT;
+  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE; }
 rclcpp_action::CancelResponse FlightController::handle_land_cancel(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>>)
-{
-  active_ = HOVER; gh_land_.reset();
-  return rclcpp_action::CancelResponse::ACCEPT;
-}
-
+{ active_=HOVER; gh_land_.reset(); return rclcpp_action::CancelResponse::ACCEPT; }
 void FlightController::handle_land_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh)
 {
-  // 自主降落：保持 OFFBOARD，降 setpoint 到地面，不切 AUTO.LAND
-  land_target_x_ = uav_.position_x;
-  land_target_y_ = uav_.position_y;
-  land_target_z_ = uav_.position_z - 0.3;
-  land_start_z_ = uav_.position_z;
-  gh_land_ = gh;
-  active_ = LANDING;
-  land_start_time_ = now();
-  RCLCPP_INFO(get_logger(), "Land started at (%.1f,%.1f)", land_target_x_, land_target_y_);
+  land_target_x_=uav_.position_x; land_target_y_=uav_.position_y;
+  land_start_z_=uav_.position_z; gh_land_=gh; active_=LANDING; land_start_time_=now();
+  RCLCPP_INFO(get_logger(),"Land start (%.1f,%.1f)",land_target_x_,land_target_y_);
 }
 
-// ================================================================
-// Waypoint action
-// ================================================================
-
+// ---- Waypoint ----
 rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const GoToWaypoint::Goal>)
-{
-  if (active_ != NONE && active_ != HOVER) return rclcpp_action::GoalResponse::REJECT;
-  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-}
-
+{ if (active_!=HOVER) return rclcpp_action::GoalResponse::REJECT;
+  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE; }
 rclcpp_action::CancelResponse FlightController::handle_waypoint_cancel(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>>)
-{
-  active_ = HOVER; gh_waypoint_.reset();
-  return rclcpp_action::CancelResponse::ACCEPT;
-}
-
+{ active_=HOVER; gh_waypoint_.reset(); return rclcpp_action::CancelResponse::ACCEPT; }
 void FlightController::handle_waypoint_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> gh)
 {
-  auto g = gh->get_goal();
-  wp_target_x_ = g->target_x; wp_target_y_ = g->target_y; wp_target_z_ = g->target_z;
-  wp_target_yaw_ = std::isfinite(g->target_yaw) ? g->target_yaw : uav_.yaw;
-  wp_max_speed_  = (g->max_speed > 0.0) ? g->max_speed : 2.0;
-  wp_accept_radius_ = (g->acceptance_radius > 0.0) ? g->acceptance_radius : 0.5;
-  double dx = wp_target_x_ - uav_.position_x;
-  double dy = wp_target_y_ - uav_.position_y;
-  double dz = wp_target_z_ - uav_.position_z;
-  wp_start_dist_ = std::sqrt(dx * dx + dy * dy + dz * dz);
+  auto g=gh->get_goal();
+  wp_target_x_=g->target_x; wp_target_y_=g->target_y; wp_target_z_=g->target_z;
+  wp_target_yaw_=std::isfinite(g->target_yaw)?g->target_yaw:uav_.yaw;
+  wp_max_speed_=(g->max_speed>0)?g->max_speed:2.0;
+  wp_accept_radius_=(g->acceptance_radius>0)?g->acceptance_radius:0.5;
+  double dx=wp_target_x_-uav_.position_x, dy=wp_target_y_-uav_.position_y, dz=wp_target_z_-uav_.position_z;
+  wp_start_dist_=std::sqrt(dx*dx+dy*dy+dz*dz);
   pid_x_.reset(); pid_y_.reset(); pid_z_.reset(); pid_yaw_.reset();
-  gh_waypoint_ = gh;
-  active_ = WAYPOINT;
-  RCLCPP_INFO(get_logger(), "Waypoint started: (%.1f,%.1f,%.1f) dist=%.1f",
-    wp_target_x_, wp_target_y_, wp_target_z_, wp_start_dist_);
+  gh_waypoint_=gh; active_=WAYPOINT;
+  RCLCPP_INFO(get_logger(),"Waypoint (%.1f,%.1f,%.1f)",wp_target_x_,wp_target_y_,wp_target_z_);
 }
 
-// ================================================================
-// helpers
-// ================================================================
-
+// ---- helpers ----
 bool FlightController::call_arm(bool arm)
 {
-  if (!cli_arm_->wait_for_service(3s)) { return false; }
-  auto req = std::make_shared<easyfly_msgs::srv::ArmMotors::Request>();
-  req->arm = arm;
-  auto future = cli_arm_->async_send_request(req);
-  if (future.wait_for(5s) != std::future_status::ready) return false;
-  return future.get()->success;
+  if (!cli_arm_->wait_for_service(3s)) return false;
+  auto r=std::make_shared<easyfly_msgs::srv::ArmMotors::Request>(); r->arm=arm;
+  auto f=cli_arm_->async_send_request(r);
+  if (f.wait_for(5s)!=std::future_status::ready) return false;
+  return f.get()->success;
 }
-
-bool FlightController::call_set_mode(uint8_t mode)
+bool FlightController::call_set_mode(uint8_t m)
 {
-  if (!cli_mode_->wait_for_service(3s)) { return false; }
-  auto req = std::make_shared<easyfly_msgs::srv::SetFlightMode::Request>();
-  req->flight_mode = mode;
-  auto future = cli_mode_->async_send_request(req);
-  if (future.wait_for(5s) != std::future_status::ready) return false;
-  return future.get()->success;
-}
-
-double FlightController::clamp(double v, double lo, double hi)
-{
-  return std::max(lo, std::min(hi, v));
+  if (!cli_mode_->wait_for_service(3s)) return false;
+  auto r=std::make_shared<easyfly_msgs::srv::SetFlightMode::Request>(); r->flight_mode=m;
+  auto f=cli_mode_->async_send_request(r);
+  if (f.wait_for(5s)!=std::future_status::ready) return false;
+  return f.get()->success;
 }
 
 }  // namespace easyfly_flight_control
