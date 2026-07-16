@@ -1,0 +1,11 @@
+# takeoff_hover_land.mission — 阶段二验收任务
+# 格式: key=value, --- 分隔步骤
+
+type=takeoff
+altitude=10.0
+climb_speed=1.0
+---
+type=hover
+wait=3.0
+---
+type=land
