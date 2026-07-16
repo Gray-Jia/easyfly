@@ -129,18 +129,25 @@ void FlightController::control_loop()
       fb->current_altitude = uav_.position_z;
       gh_land_->publish_feedback(fb);
 
-      // 等 PX4 自动检测着陆并 disarm（不主动上锁，避免 denied）
-      if (!uav_.armed && t > 25.0) {
+      // 降到底后切 AUTO.LAND 触发 PX4 着陆检测
+      if (t > 20.0 && !land_phase2_) {
+        call_set_mode(7);   // AUTO.LAND
+        land_phase2_ = true;
+        RCLCPP_INFO(get_logger(), "Switched to AUTO.LAND for touchdown");
+      }
+      if (!uav_.armed && land_phase2_) {
         auto r = std::make_shared<Land::Result>(); r->success = true;
         r->message = "landed";
         gh_land_->succeed(r); gh_land_.reset();
         active_ = NONE;
-      } else if (t > 60.0) {   // 兜底
+        land_phase2_ = false;
+      } else if (t > 60.0) {
         call_arm(false);
         auto r = std::make_shared<Land::Result>(); r->success = true;
         r->message = "land timeout";
         gh_land_->succeed(r); gh_land_.reset();
         active_ = NONE;
+        land_phase2_ = false;
       }
     }
   }
