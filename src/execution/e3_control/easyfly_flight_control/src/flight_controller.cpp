@@ -130,8 +130,6 @@ void FlightController::control_loop()
     // ---- takeoff: 固定爬升轨迹（非追赶式） ----
     double elapsed = (now() - takeoff_start_time_).seconds();
     double target_z = takeoff_start_z_ + elapsed * takeoff_speed_;
-  takeoff_start_x_ = uav_.position_x;
-  takeoff_start_y_ = uav_.position_y;
     target_z = std::min(target_z, takeoff_target_z_);
     double dist = std::abs(takeoff_target_z_ - uav_.position_z);
 
