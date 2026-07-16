@@ -1,11 +1,14 @@
 # mavlink_bridge.yaml — easyfly_mavlink_bridge 参数
 #
-# 阶段一只配置聚合频率，后续阶段可扩展更多参数。
+# 阶段二: 编码器完整实现，支持 setpoint 翻译 + arm/mode 服务
 #
 /**:
   ros__parameters:
     # /uav_state 聚合发布频率 (Hz)
     publish_rate: 20.0
 
-    # 是否发布 /gimbal_state（阶段一无云台数据源，默认为 false）
+    # encoder setpoint 超时 (秒)，超时后停止发布 setpoint
+    setpoint_timeout: 1.0
+
+    # 是否发布 /gimbal_state（阶段二仍无云台数据源，默认 false）
     enable_gimbal: false

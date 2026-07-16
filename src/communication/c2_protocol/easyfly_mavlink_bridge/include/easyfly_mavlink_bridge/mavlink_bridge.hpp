@@ -14,9 +14,14 @@
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/msg/altitude.hpp>
 #include <mavros_msgs/msg/rc_in.hpp>
+#include <mavros_msgs/msg/attitude_target.hpp>
+#include <mavros_msgs/srv/command_bool.hpp>
+#include <mavros_msgs/srv/set_mode.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <easyfly_msgs/srv/arm_motors.hpp>
+#include <easyfly_msgs/srv/set_flight_mode.hpp>
 
 namespace easyfly_mavlink_bridge
 {
@@ -24,8 +29,9 @@ namespace easyfly_mavlink_bridge
 /**
  * @brief MAVLink ↔ easyfly_msgs 桥接节点
  *
- * decoder: 订阅 mavros2 topic → 聚合发布 /uav_state 等
- * encoder: 订阅 /uav_command → 阶段一仅日志（阶段二翻译为 mavros2 setpoint）
+ * decoder: 订阅 mavros2 topic → 聚合发布 /uav_state、/mission_status
+ * encoder: 订阅 /uav_command → 翻译为 mavros2 setpoint + 20Hz 持续发布
+ * services: /arm_motors、/set_flight_mode → 封装 mavros2 服务调用
  */
 class MavlinkBridge : public rclcpp::Node
 {
@@ -45,8 +51,17 @@ private:
 
   void publish_state();
 
-  // ---- encoder callback (阶段一仅日志) ----
+  // ---- encoder ----
   void cb_uav_command(const easyfly_msgs::msg::UAVCommand::SharedPtr msg);
+  void publish_setpoint();
+
+  // ---- service handlers ----
+  void cb_arm_motors(
+    const std::shared_ptr<easyfly_msgs::srv::ArmMotors::Request>  req,
+    std::shared_ptr<easyfly_msgs::srv::ArmMotors::Response>       res);
+  void cb_set_flight_mode(
+    const std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Request>  req,
+    std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Response>       res);
 
   // ---- 静态转换工具 ----
   static double quat_to_yaw(double x, double y, double z, double w);
@@ -65,14 +80,28 @@ private:
   // ---- 发布者 ----
   rclcpp::Publisher<easyfly_msgs::msg::UAVState>::SharedPtr      pub_uav_state_;
   rclcpp::Publisher<easyfly_msgs::msg::MissionStatus>::SharedPtr pub_mission_status_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr  pub_setpoint_pos_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr        pub_setpoint_vel_;
+  rclcpp::Publisher<mavros_msgs::msg::AttitudeTarget>::SharedPtr pub_setpoint_att_;
+
+  // ---- 服务端 ----
+  rclcpp::Service<easyfly_msgs::srv::ArmMotors>::SharedPtr      srv_arm_;
+  rclcpp::Service<easyfly_msgs::srv::SetFlightMode>::SharedPtr  srv_mode_;
 
   // ---- 定时器 ----
-  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr timer_state_;
+  rclcpp::TimerBase::SharedPtr timer_setpoint_;
 
   // ---- 聚合缓存 ----
   easyfly_msgs::msg::UAVState uav_;
 
-  // 标志位——至少收到一次对应 topic 的数据
+  // ---- encoder 缓存 ----
+  easyfly_msgs::msg::UAVCommand last_cmd_;
+  rclcpp::Time last_cmd_time_;
+  bool     cmd_received_    {false};
+  double   setpoint_timeout_{1.0};   // 超时秒数，超时后停止发 setpoint (via param)
+
+  // 标志位
   bool rcvd_armed_        {false};
   bool rcvd_pose_         {false};
   bool rcvd_vel_          {false};

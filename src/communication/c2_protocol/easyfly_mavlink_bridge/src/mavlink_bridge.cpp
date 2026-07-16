@@ -25,6 +25,12 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   auto sensor_qos = rclcpp::SensorDataQoS();
   auto default_qos = rclcpp::QoS(10);
 
+  // ---- 参数 ----
+  double publish_rate = declare_parameter("publish_rate", 20.0);
+  setpoint_timeout_   = declare_parameter("setpoint_timeout", 1.0);
+
+  auto period_ms = std::chrono::milliseconds(static_cast<int>(1000.0 / publish_rate));
+
   // ---- decoder 订阅 ----
   sub_state_ = create_subscription<mavros_msgs::msg::State>(
     "/mavros/state", default_qos,
@@ -70,10 +76,33 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   pub_mission_status_ = create_publisher<easyfly_msgs::msg::MissionStatus>(
     "/mission_status", default_qos);
 
-  // ---- 20Hz 定时发布 ----
-  timer_ = create_wall_timer(
-    std::chrono::milliseconds(50),
+  // ---- encoder 发布者 (到 mavros2 setpoint topics) ----
+  pub_setpoint_pos_ = create_publisher<geometry_msgs::msg::PoseStamped>(
+    "/mavros/setpoint_position/local", default_qos);
+
+  pub_setpoint_vel_ = create_publisher<geometry_msgs::msg::Twist>(
+    "/mavros/setpoint_velocity/cmd_vel_unstamped", default_qos);
+
+  pub_setpoint_att_ = create_publisher<mavros_msgs::msg::AttitudeTarget>(
+    "/mavros/setpoint_raw/attitude", default_qos);
+
+  // ---- 服务端 (封装 mavros2 服务) ----
+  srv_arm_ = create_service<easyfly_msgs::srv::ArmMotors>(
+    "/arm_motors",
+    std::bind(&MavlinkBridge::cb_arm_motors, this, _1, _2));
+
+  srv_mode_ = create_service<easyfly_msgs::srv::SetFlightMode>(
+    "/set_flight_mode",
+    std::bind(&MavlinkBridge::cb_set_flight_mode, this, _1, _2));
+
+  // ---- 定时器 ----
+  timer_state_ = create_wall_timer(
+    period_ms,
     std::bind(&MavlinkBridge::publish_state, this));
+
+  timer_setpoint_ = create_wall_timer(
+    period_ms,
+    std::bind(&MavlinkBridge::publish_setpoint, this));
 
   // ---- 初始化缓存 ----
   uav_.header.frame_id = "map";
@@ -81,7 +110,11 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   uav_.flight_mode = 0;
   uav_.flight_mode_name = "";
 
-  RCLCPP_INFO(get_logger(), "MavlinkBridge started — 20Hz /uav_state, /mission_status");
+  last_cmd_time_ = now();
+
+  RCLCPP_INFO(get_logger(),
+    "MavlinkBridge started — %gHz /uav_state, encoder, /arm_motors, /set_flight_mode",
+    publish_rate);
 }
 
 // ================================================================
@@ -210,16 +243,190 @@ void MavlinkBridge::publish_state()
 }
 
 // ================================================================
-// encoder: 阶段一只做日志
+// encoder: UAVCommand → mavros2 setpoint
 // ================================================================
 
 void MavlinkBridge::cb_uav_command(const easyfly_msgs::msg::UAVCommand::SharedPtr msg)
 {
-  RCLCPP_INFO_STREAM(get_logger(),
-    "Received /uav_command mode=" << static_cast<int>(msg->control_mode)
+  last_cmd_      = *msg;
+  last_cmd_time_ = now();
+  cmd_received_  = true;
+
+  RCLCPP_DEBUG_STREAM(get_logger(),
+    "/uav_command mode=" << static_cast<int>(msg->control_mode)
     << " pos=(" << msg->position_x << "," << msg->position_y << "," << msg->position_z << ")"
     << " yaw=" << msg->yaw);
-  // TODO(阶段二): 翻译为 mavros2 setpoint 并下发
+}
+
+void MavlinkBridge::publish_setpoint()
+{
+  // 超时保护：超过 setpoint_timeout_ 秒无新指令则停止发布
+  auto elapsed = (now() - last_cmd_time_).seconds();
+  if (!cmd_received_ || elapsed > setpoint_timeout_) {
+    return;  // 不发 setpoint，PX4 会在 OFFBOARD 模式下自动切回 POSITION
+  }
+
+  switch (last_cmd_.control_mode) {
+    case easyfly_msgs::msg::UAVCommand::POSITION: {
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header.stamp    = now();
+      pose.header.frame_id = "map";
+      pose.pose.position.x = last_cmd_.position_x;
+      pose.pose.position.y = last_cmd_.position_y;
+      pose.pose.position.z = last_cmd_.position_z;
+
+      // yaw → 四元数
+      double half_yaw = last_cmd_.yaw * 0.5;
+      pose.pose.orientation.z = std::sin(half_yaw);
+      pose.pose.orientation.w = std::cos(half_yaw);
+
+      pub_setpoint_pos_->publish(pose);
+      break;
+    }
+    case easyfly_msgs::msg::UAVCommand::VELOCITY: {
+      geometry_msgs::msg::Twist vel;
+      vel.linear.x  = last_cmd_.velocity_x;
+      vel.linear.y  = last_cmd_.velocity_y;
+      vel.linear.z  = last_cmd_.velocity_z;
+      vel.angular.z = last_cmd_.yaw_rate;
+
+      pub_setpoint_vel_->publish(vel);
+      break;
+    }
+    case easyfly_msgs::msg::UAVCommand::ATTITUDE:
+    case easyfly_msgs::msg::UAVCommand::ATTITUDE_THRUST: {
+      mavros_msgs::msg::AttitudeTarget att;
+      att.header.stamp = now();
+
+      // roll/pitch/yaw → 四元数
+      double half_r = last_cmd_.roll  * 0.5;
+      double half_p = last_cmd_.pitch * 0.5;
+      double half_y = last_cmd_.yaw_att * 0.5;
+
+      double cr = std::cos(half_r), sr = std::sin(half_r);
+      double cp = std::cos(half_p), sp = std::sin(half_p);
+      double cy = std::cos(half_y), sy = std::sin(half_y);
+
+      att.orientation.w = cr * cp * cy + sr * sp * sy;
+      att.orientation.x = sr * cp * cy - cr * sp * sy;
+      att.orientation.y = cr * sp * cy + sr * cp * sy;
+      att.orientation.z = cr * cp * sy - sr * sp * cy;
+
+      att.thrust      = static_cast<float>(last_cmd_.thrust);
+      att.type_mask   = 0b111;  // 忽略角速率，使用姿态+推力
+      att.body_rate.x = 0.0f;
+      att.body_rate.y = 0.0f;
+      att.body_rate.z = 0.0f;
+
+      pub_setpoint_att_->publish(att);
+      break;
+    }
+    case easyfly_msgs::msg::UAVCommand::ANGULAR_RATE: {
+      mavros_msgs::msg::AttitudeTarget att;
+      att.header.stamp = now();
+
+      att.body_rate.x = static_cast<float>(last_cmd_.roll_rate);
+      att.body_rate.y = static_cast<float>(last_cmd_.pitch_rate);
+      att.body_rate.z = static_cast<float>(last_cmd_.yaw_rate_cmd);
+      att.thrust      = static_cast<float>(last_cmd_.thrust);
+      att.type_mask   = 0b10000111;  // 忽略姿态+推力 (bit0 使用角速率)
+
+      pub_setpoint_att_->publish(att);
+      break;
+    }
+    default:
+      RCLCPP_WARN_STREAM(get_logger(),
+        "Unknown control_mode=" << static_cast<int>(last_cmd_.control_mode));
+      break;
+  }
+}
+
+// ================================================================
+// service handlers: arm / set_mode (封装 mavros2 服务调用)
+// ================================================================
+
+void MavlinkBridge::cb_arm_motors(
+  const std::shared_ptr<easyfly_msgs::srv::ArmMotors::Request>  req,
+  std::shared_ptr<easyfly_msgs::srv::ArmMotors::Response>       res)
+{
+  auto client = create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
+
+  if (!client->wait_for_service(std::chrono::seconds(3))) {
+    res->success = false;
+    res->message = "mavros /cmd/arming service unavailable";
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  auto mav_req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
+  mav_req->value = req->arm;
+
+  auto future = client->async_send_request(mav_req);
+
+  if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+    res->success = false;
+    res->message = "arm/disarm request timed out";
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  auto mav_res = future.get();
+  res->success = mav_res->success;
+  res->message = req->arm ? "armed" : "disarmed";
+  RCLCPP_INFO(get_logger(), "Arm=%s → success=%d", req->arm ? "true" : "false", mav_res->success);
+}
+
+void MavlinkBridge::cb_set_flight_mode(
+  const std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Request>  req,
+  std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Response>       res)
+{
+  auto client = create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
+
+  if (!client->wait_for_service(std::chrono::seconds(3))) {
+    res->success = false;
+    res->message = "mavros /set_mode service unavailable";
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  auto mav_req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
+
+  // 枚举值 → PX4 模式字符串
+  switch (req->flight_mode) {
+    case 0:  mav_req->custom_mode = "MANUAL";     break;
+    case 1:  mav_req->custom_mode = "ALTCTL";     break;
+    case 2:  mav_req->custom_mode = "POSCTL";     break;
+    case 3:  mav_req->custom_mode = "OFFBOARD";   break;
+    case 4:  mav_req->custom_mode = "STABILIZED"; break;
+    case 5:  mav_req->custom_mode = "ACRO";       break;
+    case 6:  mav_req->custom_mode = "RTL";        break;
+    case 7:  mav_req->custom_mode = "LAND";       break;
+    default:
+      res->success = false;
+      res->message = "unknown flight_mode=" + std::to_string(req->flight_mode);
+      RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+      return;
+  }
+
+  auto future = client->async_send_request(mav_req);
+
+  if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+    res->success = false;
+    res->message = "set_mode request timed out";
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  auto mav_res = future.get();
+  res->success = mav_res->mode_sent;
+  res->message = "mode=" + mav_req->custom_mode;
+  RCLCPP_INFO(get_logger(), "SetMode → %s (success=%d)",
+    mav_req->custom_mode.c_str(), mav_res->mode_sent);
+
+  // 切到 OFFBOARD 后重置超时时钟
+  if (req->flight_mode == 3) {
+    last_cmd_time_ = now();
+  }
 }
 
 }  // namespace easyfly_mavlink_bridge
