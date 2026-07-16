@@ -7,12 +7,12 @@ float64 search_altitude    # 搜索高度 [m]
 uint8   search_pattern     # 搜索模式 (0=螺旋, 1=弓字形, 2=栅格)
 float64 search_speed       # 搜索速度 [m/s]
 ---
-# 反馈
-float64 area_covered       # 已搜索面积 [m²]
-float32 progress           # 进度 [0.0-1.0]
-int32   targets_found      # 已发现目标数
----
 # 结果
 bool success
 int32 total_targets_found
 string message
+---
+# 反馈
+float64 area_covered       # 已搜索面积 [m²]
+float32 progress           # 进度 [0.0-1.0]
+int32   targets_found      # 已发现目标数

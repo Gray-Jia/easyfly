@@ -1,0 +1,23 @@
+# flight_control.yaml — easyfly_flight_control PID 参数
+#
+flight_controller:
+  ros__parameters:
+    control_rate: 20.0
+    land_timeout: 30.0
+
+    pid_x:
+      kp: 0.8
+      ki: 0.02
+      kd: 0.1
+    pid_y:
+      kp: 0.8
+      ki: 0.02
+      kd: 0.1
+    pid_z:
+      kp: 1.2
+      ki: 0.03
+      kd: 0.15
+    pid_yaw:
+      kp: 1.0
+      ki: 0.0
+      kd: 0.0

@@ -6,10 +6,10 @@ float64 target_yaw        # 目标偏航 [rad], NaN=保持当前朝向
 float64 max_speed         # 最大速度 [m/s], 0=默认
 float64 acceptance_radius # 到达判定半径 [m], 0=默认
 ---
-# 反馈
-float64 distance_remaining  # 剩余距离 [m]
-float32 progress            # 进度 [0.0-1.0]
----
 # 结果
 bool success
 string message
+---
+# 反馈
+float64 distance_remaining  # 剩余距离 [m]
+float32 progress            # 进度 [0.0-1.0]

@@ -3,11 +3,11 @@ int32  target_id          # 目标ID (-1=跟踪最近目标, -2=停止跟踪)
 float64 follow_distance   # 跟随距离 [m]
 float64 follow_height     # 跟随相对高度 [m]
 ---
+# 结果
+bool success
+string message
+---
 # 反馈
 int32  current_target_id  # 当前跟踪目标ID
 float64 distance_to_target # 到目标距离 [m]
 bool   target_visible      # 目标是否可见
----
-# 结果
-bool success
-string message
