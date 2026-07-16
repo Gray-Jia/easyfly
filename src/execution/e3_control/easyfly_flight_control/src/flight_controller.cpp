@@ -126,13 +126,11 @@ void FlightController::control_loop()
   cmd.control_mode = easyfly_msgs::msg::UAVCommand::POSITION;
 
   if (active_ == TAKEOFF) {
-    // ---- takeoff: smooth ascent ----
-    double step = takeoff_speed_ * dt;
-    double target_z = uav_.position_z + step;
-
-    // 用简单线性插值代替 PID（起飞阶段需要平滑爬升）
+    // ---- takeoff: 固定爬升轨迹（非追赶式） ----
+    double elapsed = (now() - takeoff_start_time_).seconds();
+    double target_z = takeoff_start_z_ + elapsed * takeoff_speed_;
     target_z = std::min(target_z, takeoff_target_z_);
-    double dist = std::abs(takeoff_target_z_ - uav_.position_z);  // 到目标高度剩余距离
+    double dist = std::abs(takeoff_target_z_ - uav_.position_z);
 
     cmd.position_x = uav_.position_x;
     cmd.position_y = uav_.position_y;
@@ -281,6 +279,7 @@ void FlightController::handle_takeoff_accepted(
   takeoff_speed_    = (goal->climb_speed > 0.0) ? goal->climb_speed : 1.0;
   takeoff_start_z_  = uav_.position_z;
   pid_x_.reset(); pid_y_.reset(); pid_z_.reset(); pid_yaw_.reset();
+  takeoff_start_time_ = now();
 
   easyfly_msgs::msg::UAVCommand init_cmd;
   init_cmd.control_mode = easyfly_msgs::msg::UAVCommand::POSITION;
@@ -379,6 +378,7 @@ void FlightController::handle_waypoint_accepted(
   wp_start_dist_ = std::sqrt(dx * dx + dy * dy + dz * dz);
 
   pid_x_.reset(); pid_y_.reset(); pid_z_.reset(); pid_yaw_.reset();
+  takeoff_start_time_ = now();
 
   gh_waypoint_ = gh;
   active_ = WAYPOINT;
