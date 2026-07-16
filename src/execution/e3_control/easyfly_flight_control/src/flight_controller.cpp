@@ -223,24 +223,28 @@ void FlightController::control_loop()
     cmd.yaw         = hover_yaw_;
     pub_uav_cmd_->publish(cmd);
   } else if (active_ == LANDING) {
-    // LAND mode is handled once in land_accepted;
-    // here we just monitor until relative_altitude near 0, then disarm.
+    // LAND mode: PX4 handles descent; we just monitor until disarm or timeout
     if (gh_land_) {
       auto fb = std::make_shared<Land::Feedback>();
       fb->current_altitude = uav_.position_z;
       gh_land_->publish_feedback(fb);
 
-      if (uav_.flight_mode == 7 && uav_.relative_altitude < 0.15 &&
-          std::abs(uav_.velocity_z) < 0.2) {
-        // Landed — disarm
-        call_arm(false);
+      // 条件：已锁定(disarmed) 或 贴地+静止
+      bool landed = (!uav_.armed) ||
+        (uav_.relative_altitude < 0.15 && std::abs(uav_.velocity_z) < 0.2
+         && std::abs(uav_.velocity_x) < 0.2 && std::abs(uav_.velocity_y) < 0.2);
+
+      auto elapsed = (now() - land_start_time_).seconds();
+
+      if (landed || elapsed > 30.0) {
+        if (!uav_.armed) call_arm(false);  // ensure disarm
         auto res = std::make_shared<Land::Result>();
         res->success = true;
-        res->message = "landed";
+        res->message = landed ? "landed" : "land timeout";
         gh_land_->succeed(res);
         gh_land_.reset();
         active_ = HOVER;
-        RCLCPP_INFO(get_logger(), "Land done");
+        RCLCPP_INFO(get_logger(), "Land done (%s)", landed ? "detected" : "timeout");
       }
     }
   }
@@ -346,6 +350,7 @@ void FlightController::handle_land_accepted(
 
   gh_land_ = gh;
   active_ = LANDING;
+  land_start_time_ = now();
   RCLCPP_INFO(get_logger(), "Land started");
 }
 
