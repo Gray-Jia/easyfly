@@ -267,32 +267,30 @@ void FlightController::handle_takeoff_accepted(
 {
   auto goal = gh->get_goal();
 
-  // arm first
+  // 1. arm
   if (!call_arm(true)) {
     auto res = std::make_shared<Takeoff::Result>();
-    res->success = false;
-    res->message = "arm failed";
-    gh->abort(res);
-    return;
+    res->success = false; res->message = "arm failed";
+    gh->abort(res); return;
   }
 
-  // switch to OFFBOARD
-  if (!call_set_mode(3)) {
-    auto res = std::make_shared<Takeoff::Result>();
-    res->success = false;
-    res->message = "OFFBOARD mode switch failed";
-    gh->abort(res);
-    return;
-  }
-
+  // 2. 先激活 control loop，让桥接层收到 setpoint、PX4 有有效 setpoint
   takeoff_target_z_ = goal->target_altitude;
   takeoff_speed_    = (goal->climb_speed > 0.0) ? goal->climb_speed : 1.0;
   takeoff_start_z_  = uav_.position_z;
-
   pid_x_.reset(); pid_y_.reset(); pid_z_.reset(); pid_yaw_.reset();
-
   gh_takeoff_ = gh;
   active_ = TAKEOFF;
+
+  // 3. 等桥接层收到 setpoint 并开始转发（20Hz ≈ 需要 ~200ms）
+  rclcpp::sleep_for(std::chrono::milliseconds(300));
+
+  // 4. 切 OFFBOARD（此时 setpoint 已就绪，PX4 不会拒绝）
+  if (!call_set_mode(3)) {
+    auto res = std::make_shared<Takeoff::Result>();
+    res->success = false; res->message = "OFFBOARD mode switch failed";
+    gh->abort(res); active_ = NONE; return;
+  }
 
   RCLCPP_INFO(get_logger(), "Takeoff started: target_z=%.1f", takeoff_target_z_);
 }
