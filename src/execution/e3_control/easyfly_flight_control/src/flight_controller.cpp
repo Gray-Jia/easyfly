@@ -94,8 +94,10 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
     std::bind(&FlightController::handle_waypoint_cancel, this, _1),
     std::bind(&FlightController::handle_waypoint_accepted, this, _1));
 
-  // ---- control timer ----
-  timer_ctl_ = create_wall_timer(period, std::bind(&FlightController::control_loop, this));
+  // ---- control timer (独立 callback group，不受 action 回调阻塞) ----
+  ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  timer_ctl_ = create_wall_timer(period,
+    std::bind(&FlightController::control_loop, this), ctl_cb_group_);
 
   RCLCPP_INFO(get_logger(), "FlightController started — %gHz, /takeoff, /land, /goto_waypoint",
     ctl_rate_);

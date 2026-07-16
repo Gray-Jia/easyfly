@@ -69,6 +69,7 @@ private:
 
   // ---- 独立 callback group (client 与 action 回调分离，避免死锁) ----
   rclcpp::CallbackGroup::SharedPtr cli_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr ctl_cb_group_;   // control loop 专用
 
   // ---- helpers ----
   bool call_arm(bool arm);
