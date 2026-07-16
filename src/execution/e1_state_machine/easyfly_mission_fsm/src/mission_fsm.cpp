@@ -269,11 +269,13 @@ bool MissionFSM::execute_step(const MissionStep & step, int idx, int total,
     goal.climb_speed = step.climb_speed;
 
     auto gh_future = cli_takeoff_->async_send_goal(goal);
-    if (gh_future.wait_for(60s) != std::future_status::ready) { return false; }
+    if (gh_future.wait_for(60s) != std::future_status::ready) { RCLCPP_ERROR(get_logger(), "Takeoff goal timeout"); return false; }
 
     auto goal_handle = gh_future.get();
+    if (!goal_handle) { RCLCPP_ERROR(get_logger(), "Land goal rejected"); return false; }
+    if (!goal_handle) { RCLCPP_ERROR(get_logger(), "Takeoff goal rejected"); return false; }
     auto res_future = cli_takeoff_->async_get_result(goal_handle);
-    if (res_future.wait_for(30s) != std::future_status::ready) { return false; }
+    if (res_future.wait_for(120s) != std::future_status::ready) { RCLCPP_ERROR(get_logger(), "Takeoff result timeout"); return false; }
     auto wrapped = res_future.get();
     RCLCPP_INFO(get_logger(), "Takeoff %s", wrapped.result->success ? "OK" : "FAIL");
     return wrapped.result->success;
@@ -295,12 +297,28 @@ bool MissionFSM::execute_step(const MissionStep & step, int idx, int total,
     goal.acceptance_radius = 0.5;
 
     auto gh_future = cli_waypoint_->async_send_goal(goal);
-    if (gh_future.wait_for(60s) != std::future_status::ready) { return false; }
+    if (gh_future.wait_for(60s) != std::future_status::ready) {
+      RCLCPP_ERROR(get_logger(), "Waypoint goal timeout");
+      return false;
+    }
 
     auto goal_handle = gh_future.get();
+    if (!goal_handle) { RCLCPP_ERROR(get_logger(), "Land goal rejected"); return false; }
+    if (!goal_handle) { RCLCPP_ERROR(get_logger(), "Takeoff goal rejected"); return false; }
+    if (!goal_handle) {
+      RCLCPP_ERROR(get_logger(), "Waypoint goal rejected");
+      return false;
+    }
+
     auto res_future = cli_waypoint_->async_get_result(goal_handle);
-    if (res_future.wait_for(30s) != std::future_status::ready) { return false; }
+    if (res_future.wait_for(120s) != std::future_status::ready) {
+      RCLCPP_ERROR(get_logger(), "Waypoint result timeout");
+      return false;
+    }
     auto wrapped = res_future.get();
+    RCLCPP_INFO(get_logger(), "Waypoint result: success=%d code=%d",
+      wrapped.result ? wrapped.result->success : -1,
+      static_cast<int>(wrapped.code));
     RCLCPP_INFO(get_logger(), "Waypoint %s", wrapped.result->success ? "OK" : "FAIL");
     return wrapped.result->success;
 
@@ -314,11 +332,13 @@ bool MissionFSM::execute_step(const MissionStep & step, int idx, int total,
 
     auto goal = Land::Goal();
     auto gh_future = cli_land_->async_send_goal(goal);
-    if (gh_future.wait_for(60s) != std::future_status::ready) { return false; }
+    if (gh_future.wait_for(60s) != std::future_status::ready) { RCLCPP_ERROR(get_logger(), "Takeoff goal timeout"); return false; }
 
     auto goal_handle = gh_future.get();
+    if (!goal_handle) { RCLCPP_ERROR(get_logger(), "Land goal rejected"); return false; }
+    if (!goal_handle) { RCLCPP_ERROR(get_logger(), "Takeoff goal rejected"); return false; }
     auto res_future = cli_land_->async_get_result(goal_handle);
-    if (res_future.wait_for(30s) != std::future_status::ready) { return false; }
+    if (res_future.wait_for(120s) != std::future_status::ready) { RCLCPP_ERROR(get_logger(), "Land result timeout"); return false; }
     auto wrapped = res_future.get();
     RCLCPP_INFO(get_logger(), "Land %s", wrapped.result->success ? "OK" : "FAIL");
     return wrapped.result->success;
