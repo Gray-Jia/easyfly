@@ -129,15 +129,13 @@ void FlightController::control_loop()
       fb->current_altitude = uav_.position_z;
       gh_land_->publish_feedback(fb);
 
-      // 计时驱动：到地面后再保持 5 秒，确保完全着陆，然后 disarm
-      bool at_floor = (tz <= takeoff_start_z_ + 0.06);  // setpoint 已到底
-      if (at_floor && t > (land_start_z_ - takeoff_start_z_) / 0.3 + 5.0) {
-        call_arm(false);
+      // 等 PX4 自动检测着陆并 disarm（不主动上锁，避免 denied）
+      if (!uav_.armed && t > 25.0) {
         auto r = std::make_shared<Land::Result>(); r->success = true;
         r->message = "landed";
         gh_land_->succeed(r); gh_land_.reset();
         active_ = NONE;
-      } else if (t > 30.0) {   // 兜底超时
+      } else if (t > 60.0) {   // 兜底
         call_arm(false);
         auto r = std::make_shared<Land::Result>(); r->success = true;
         r->message = "land timeout";
