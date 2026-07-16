@@ -95,6 +95,10 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
     "/set_flight_mode",
     std::bind(&MavlinkBridge::cb_set_flight_mode, this, _1, _2));
 
+  // ---- mavros 客户端（预创建，避免每次回调内新建） ----
+  client_arming_    = create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
+  client_set_mode_  = create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
+
   // ---- 定时器 ----
   timer_state_ = create_wall_timer(
     period_ms,
@@ -349,9 +353,7 @@ void MavlinkBridge::cb_arm_motors(
   const std::shared_ptr<easyfly_msgs::srv::ArmMotors::Request>  req,
   std::shared_ptr<easyfly_msgs::srv::ArmMotors::Response>       res)
 {
-  auto client = create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
-
-  if (!client->wait_for_service(std::chrono::seconds(3))) {
+  if (!client_arming_->wait_for_service(std::chrono::seconds(3))) {
     res->success = false;
     res->message = "mavros /cmd/arming service unavailable";
     RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
@@ -361,16 +363,18 @@ void MavlinkBridge::cb_arm_motors(
   auto mav_req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
   mav_req->value = req->arm;
 
-  auto future = client->async_send_request(mav_req);
+  auto future = client_arming_->async_send_request(mav_req);
 
-  auto ret = rclcpp::spin_until_future_complete(
-    get_node_base_interface(), future, std::chrono::seconds(3));
-
-  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
-    res->success = false;
-    res->message = "arm/disarm request timed out";
-    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
-    return;
+  // spin_some 轮询：在单线程 callback 内处理异步响应
+  auto start = std::chrono::steady_clock::now();
+  while (future.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
+    rclcpp::spin_some(this->get_node_base_interface());
+    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
+      res->success = false;
+      res->message = "arm/disarm request timed out";
+      RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+      return;
+    }
   }
 
   auto mav_res = future.get();
@@ -383,9 +387,7 @@ void MavlinkBridge::cb_set_flight_mode(
   const std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Request>  req,
   std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Response>       res)
 {
-  auto client = create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
-
-  if (!client->wait_for_service(std::chrono::seconds(3))) {
+  if (!client_set_mode_->wait_for_service(std::chrono::seconds(3))) {
     res->success = false;
     res->message = "mavros /set_mode service unavailable";
     RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
@@ -394,7 +396,6 @@ void MavlinkBridge::cb_set_flight_mode(
 
   auto mav_req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
 
-  // 枚举值 → PX4 模式字符串
   switch (req->flight_mode) {
     case 0:  mav_req->custom_mode = "MANUAL";     break;
     case 1:  mav_req->custom_mode = "ALTCTL";     break;
@@ -411,16 +412,17 @@ void MavlinkBridge::cb_set_flight_mode(
       return;
   }
 
-  auto future = client->async_send_request(mav_req);
+  auto future = client_set_mode_->async_send_request(mav_req);
 
-  auto ret = rclcpp::spin_until_future_complete(
-    get_node_base_interface(), future, std::chrono::seconds(3));
-
-  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
-    res->success = false;
-    res->message = "set_mode request timed out";
-    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
-    return;
+  auto start = std::chrono::steady_clock::now();
+  while (future.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
+    rclcpp::spin_some(this->get_node_base_interface());
+    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(3)) {
+      res->success = false;
+      res->message = "set_mode request timed out";
+      RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+      return;
+    }
   }
 
   auto mav_res = future.get();
@@ -429,7 +431,6 @@ void MavlinkBridge::cb_set_flight_mode(
   RCLCPP_INFO(get_logger(), "SetMode → %s (success=%d)",
     mav_req->custom_mode.c_str(), mav_res->mode_sent);
 
-  // 切到 OFFBOARD 后重置超时时钟
   if (req->flight_mode == 3) {
     last_cmd_time_ = now();
   }

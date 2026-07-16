@@ -1,0 +1,9 @@
+{
+  "status": "complete",
+  "iteration": 1,
+  "current_direction": "数据确认完毕。编码器仍是空壳（`mavlink_bridge.cpp:222`），`easyfly_flight_control` 和 `easyfly_mission_fsm` 均为骨架。下面给出阶段�",
+  "stale_count": 0,
+  "pivot_count": 0,
+  "blocked_reason": "",
+  "updated_at": "2026-07-16T15:05:17.957090726Z"
+}

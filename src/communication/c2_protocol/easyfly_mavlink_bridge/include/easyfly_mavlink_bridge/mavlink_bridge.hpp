@@ -88,6 +88,10 @@ private:
   rclcpp::Service<easyfly_msgs::srv::ArmMotors>::SharedPtr      srv_arm_;
   rclcpp::Service<easyfly_msgs::srv::SetFlightMode>::SharedPtr  srv_mode_;
 
+  // ---- mavros 客户端 (预创建，避免每次回调重建) ----
+  rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr client_arming_;
+  rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr     client_set_mode_;
+
   // ---- 定时器 ----
   rclcpp::TimerBase::SharedPtr timer_state_;
   rclcpp::TimerBase::SharedPtr timer_setpoint_;
