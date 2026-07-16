@@ -274,18 +274,24 @@ void FlightController::handle_takeoff_accepted(
     gh->abort(res); return;
   }
 
-  // 2. 先激活 control loop，让桥接层收到 setpoint、PX4 有有效 setpoint
+  // 2. 直接发初始 setpoint（不等 timer），确保桥接层有有效 setpoint 再切 OFFBOARD
   takeoff_target_z_ = goal->target_altitude;
   takeoff_speed_    = (goal->climb_speed > 0.0) ? goal->climb_speed : 1.0;
   takeoff_start_z_  = uav_.position_z;
   pid_x_.reset(); pid_y_.reset(); pid_z_.reset(); pid_yaw_.reset();
+
+  easyfly_msgs::msg::UAVCommand init_cmd;
+  init_cmd.control_mode = easyfly_msgs::msg::UAVCommand::POSITION;
+  init_cmd.position_x   = uav_.position_x;
+  init_cmd.position_y   = uav_.position_y;
+  init_cmd.position_z   = uav_.position_z;  // 保持当前位置
+  init_cmd.yaw          = uav_.yaw;
+  pub_uav_cmd_->publish(init_cmd);
+
   gh_takeoff_ = gh;
   active_ = TAKEOFF;
 
-  // 3. 等桥接层收到 setpoint 并开始转发（20Hz ≈ 需要 ~200ms）
-  rclcpp::sleep_for(std::chrono::milliseconds(300));
-
-  // 4. 切 OFFBOARD（此时 setpoint 已就绪，PX4 不会拒绝）
+  // 3. 切 OFFBOARD（setpoint 已经发出，PX4 会接受）
   if (!call_set_mode(3)) {
     auto res = std::make_shared<Takeoff::Result>();
     res->success = false; res->message = "OFFBOARD mode switch failed";
