@@ -134,16 +134,12 @@ void FlightController::control_loop()
       bool at_floor = (tz <= takeoff_start_z_ + 0.06);  // setpoint 已到底
       if (at_floor && t > (land_start_z_ - takeoff_start_z_) / 0.3 + 5.0) {
         call_arm(false);
-        // 切到 POSCTL 保证下次可 arm
-        std::this_thread::sleep_for(500ms);
-        call_set_mode(2);
         auto r = std::make_shared<Land::Result>(); r->success = true;
         r->message = "landed";
         gh_land_->succeed(r); gh_land_.reset();
         active_ = NONE;
       } else if (t > 30.0) {   // 兜底超时
         call_arm(false);
-        call_set_mode(2);
         auto r = std::make_shared<Land::Result>(); r->success = true;
         r->message = "land timeout";
         gh_land_->succeed(r); gh_land_.reset();
@@ -165,9 +161,6 @@ void FlightController::handle_takeoff_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> gh)
 {
   auto g = gh->get_goal();
-  // 先切 POSCTL 确保可 arm（解决 "not ready" 问题）
-  call_set_mode(2);
-  std::this_thread::sleep_for(200ms);
   if (!call_arm(true)) { auto r=std::make_shared<Takeoff::Result>(); r->success=false; gh->abort(r); return; }
   takeoff_target_z_=g->target_altitude; takeoff_speed_=(g->climb_speed>0)?g->climb_speed:1.0;
   takeoff_start_x_=uav_.position_x; takeoff_start_y_=uav_.position_y; takeoff_start_z_=uav_.position_z;
