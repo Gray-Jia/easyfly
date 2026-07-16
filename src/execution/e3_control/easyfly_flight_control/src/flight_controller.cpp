@@ -147,8 +147,10 @@ void FlightController::control_loop()
       auto fb = std::make_shared<Land::Feedback>();
       fb->current_altitude = uav_.position_z;
       gh_land_->publish_feedback(fb);
-      bool landed = (uav_.relative_altitude < 0.15 && std::abs(uav_.velocity_z) < 0.2
+      bool near_ground = (uav_.relative_altitude < 0.15 && std::abs(uav_.velocity_z) < 0.2
                      && std::abs(uav_.velocity_x) < 0.2 && std::abs(uav_.velocity_y) < 0.2);
+      if (near_ground) landed_count_++; else landed_count_ = 0;
+      bool landed = (landed_count_ >= 40);  // 2秒持续贴地才判定着陆
       if (landed || t > 30.0) {
         call_arm(false);
         auto r = std::make_shared<Land::Result>(); r->success = true;
@@ -199,7 +201,7 @@ void FlightController::handle_land_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh)
 {
   land_target_x_=uav_.position_x; land_target_y_=uav_.position_y;
-  land_start_z_=uav_.position_z; gh_land_=gh; active_=LANDING; land_start_time_=now();
+  land_start_z_=uav_.position_z; gh_land_=gh; active_=LANDING; landed_count_=0; land_start_time_=now();
   RCLCPP_INFO(get_logger(),"Land start (%.1f,%.1f)",land_target_x_,land_target_y_);
 }
 
