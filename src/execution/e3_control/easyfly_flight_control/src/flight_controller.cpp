@@ -132,7 +132,7 @@ void FlightController::control_loop()
 
     // 用简单线性插值代替 PID（起飞阶段需要平滑爬升）
     target_z = std::min(target_z, takeoff_target_z_);
-    double dist = std::abs(target_z - uav_.position_z);
+    double dist = std::abs(takeoff_target_z_ - uav_.position_z);  // 到目标高度剩余距离
 
     cmd.position_x = uav_.position_x;
     cmd.position_y = uav_.position_y;
