@@ -1,9 +1,17 @@
-# takeoff_hover_land.mission — 阶段二验收任务
-# 格式: key=value, --- 分隔步骤
+# demo.mission — 起飞5m → 悬停3s → 航点(1,1,5) → 悬停3s → 降落
 
 type=takeoff
-altitude=10.0
+altitude=5.0
 climb_speed=1.0
+---
+type=hover
+wait=3.0
+---
+type=waypoint
+x=1.0
+y=1.0
+z=5.0
+max_speed=1.0
 ---
 type=hover
 wait=3.0

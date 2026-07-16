@@ -1,5 +1,6 @@
 #include "easyfly_flight_control/flight_controller.hpp"
 
+#include <thread>
 #include <cmath>
 #include <chrono>
 
@@ -340,11 +341,23 @@ rclcpp_action::CancelResponse FlightController::handle_land_cancel(
 void FlightController::handle_land_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh)
 {
-  if (!call_set_mode(7)) {  // LAND mode
+  // 发一轮当前位置 setpoint，锚定 PX4 降落点
+  hover_x_ = uav_.position_x;
+  hover_y_ = uav_.position_y;
+  hover_z_ = uav_.position_z;
+  hover_yaw_ = uav_.yaw;
+  active_ = HOVER;
+  // 让 HOVER 状态跑几帧（50ms）确保 setpoint 到达 PX4
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  // 切 LAND 模式
+  active_ = LANDING;
+  if (!call_set_mode(7)) {
     auto res = std::make_shared<Land::Result>();
     res->success = false;
     res->message = "LAND mode switch failed";
     gh->abort(res);
+    active_ = HOVER;
     return;
   }
 
