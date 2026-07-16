@@ -86,14 +86,21 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   pub_setpoint_att_ = create_publisher<mavros_msgs::msg::AttitudeTarget>(
     "/mavros/setpoint_raw/attitude", default_qos);
 
+  // ---- service 专用 callback group (避免与 client response 死锁) ----
+  srv_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
   // ---- 服务端 (封装 mavros2 服务) ----
   srv_arm_ = create_service<easyfly_msgs::srv::ArmMotors>(
     "/arm_motors",
-    std::bind(&MavlinkBridge::cb_arm_motors, this, _1, _2));
+    std::bind(&MavlinkBridge::cb_arm_motors, this, _1, _2),
+    rmw_qos_profile_services_default,
+    srv_cb_group_);
 
   srv_mode_ = create_service<easyfly_msgs::srv::SetFlightMode>(
     "/set_flight_mode",
-    std::bind(&MavlinkBridge::cb_set_flight_mode, this, _1, _2));
+    std::bind(&MavlinkBridge::cb_set_flight_mode, this, _1, _2),
+    rmw_qos_profile_services_default,
+    srv_cb_group_);
 
   // ---- mavros 客户端（预创建，避免每次回调内新建） ----
   client_arming_    = create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
@@ -358,6 +365,11 @@ void MavlinkBridge::cb_arm_motors(
   auto mav_req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
   mav_req->value = req->arm;
 
+  if (!client_arming_->wait_for_service(std::chrono::seconds(3))) {
+    res->success = false;
+    res->message = "mavros /cmd/arming unavailable";
+    return;
+  }
   auto future = client_arming_->async_send_request(mav_req);
 
   if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
@@ -393,6 +405,11 @@ void MavlinkBridge::cb_set_flight_mode(
       return;
   }
 
+  if (!client_set_mode_->wait_for_service(std::chrono::seconds(3))) {
+    res->success = false;
+    res->message = "mavros /set_mode unavailable";
+    return;
+  }
   auto future = client_set_mode_->async_send_request(mav_req);
 
   if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {

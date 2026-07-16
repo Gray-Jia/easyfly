@@ -92,6 +92,9 @@ private:
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr client_arming_;
   rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr     client_set_mode_;
 
+  // ---- 独立 callback group (service 与 client 分离，避免死锁) ----
+  rclcpp::CallbackGroup::SharedPtr srv_cb_group_;
+
   // ---- 定时器 ----
   rclcpp::TimerBase::SharedPtr timer_state_;
   rclcpp::TimerBase::SharedPtr timer_setpoint_;
