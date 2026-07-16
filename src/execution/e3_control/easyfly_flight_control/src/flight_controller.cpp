@@ -51,7 +51,7 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
 
   ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_ctl_ = create_wall_timer(period, std::bind(&FlightController::control_loop, this), ctl_cb_group_);
-  RCLCPP_INFO(get_logger(), "FlightController — Prometheus-style land");
+  RCLCPP_INFO(get_logger(), "FlightController Start");
 }
 
 void FlightController::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
