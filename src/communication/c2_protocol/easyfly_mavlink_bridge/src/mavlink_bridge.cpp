@@ -355,21 +355,12 @@ void MavlinkBridge::cb_arm_motors(
 {
   RCLCPP_INFO(get_logger(), "cb_arm_motors CALLED arm=%d", req->arm);
 
-  if (!client_arming_->wait_for_service(std::chrono::seconds(3))) {
-    res->success = false;
-    res->message = "mavros /cmd/arming unavailable";
-    return;
-  }
-
   auto mav_req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
   mav_req->value = req->arm;
 
   auto future = client_arming_->async_send_request(mav_req);
 
-  auto ret = rclcpp::spin_until_future_complete(
-    this->get_node_base_interface(), future, std::chrono::seconds(3));
-
-  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
+  if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
     res->success = false;
     res->message = "arm/disarm request timed out";
     return;
@@ -385,12 +376,6 @@ void MavlinkBridge::cb_set_flight_mode(
   const std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Request>  req,
   std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Response>       res)
 {
-  if (!client_set_mode_->wait_for_service(std::chrono::seconds(3))) {
-    res->success = false;
-    res->message = "mavros /set_mode unavailable";
-    return;
-  }
-
   auto mav_req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
 
   switch (req->flight_mode) {
@@ -410,10 +395,7 @@ void MavlinkBridge::cb_set_flight_mode(
 
   auto future = client_set_mode_->async_send_request(mav_req);
 
-  auto ret = rclcpp::spin_until_future_complete(
-    this->get_node_base_interface(), future, std::chrono::seconds(3));
-
-  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
+  if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
     res->success = false;
     res->message = "set_mode request timed out";
     return;
