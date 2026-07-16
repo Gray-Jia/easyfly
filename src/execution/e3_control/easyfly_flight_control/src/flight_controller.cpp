@@ -30,9 +30,6 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   sub_uav_state_ = create_subscription<easyfly_msgs::msg::UAVState>(
     "/uav_state", rclcpp::SensorDataQoS(),
     std::bind(&FlightController::cb_uav_state, this, _1));
-  sub_landed_ = create_subscription<mavros_msgs::msg::ExtendedState>(
-    "/mavros/extended_state", rclcpp::SensorDataQoS(),
-    [this](const mavros_msgs::msg::ExtendedState::SharedPtr m) { landed_state_ = m->landed_state; });
   pub_uav_cmd_ = create_publisher<easyfly_msgs::msg::UAVCommand>("/uav_command", qos);
 
   cli_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -54,7 +51,7 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
 
   ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_ctl_ = create_wall_timer(period, std::bind(&FlightController::control_loop, this), ctl_cb_group_);
-  RCLCPP_INFO(get_logger(), "FlightController v4");
+  RCLCPP_INFO(get_logger(), "FlightController — Prometheus-style land");
 }
 
 void FlightController::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
@@ -109,25 +106,16 @@ void FlightController::control_loop()
       pub_uav_cmd_->publish(cmd);
     }
   } else if (active_ == LANDING) {
+    // Prometheus 风格：AUTO.LAND 接管一切，只等 PX4 自己 disarm
     if (gh_land_) {
-      double t = (now() - land_start_time_).seconds();
-      double tz = land_start_z_ - t * 0.3;
-      if (tz < takeoff_start_z_ - 0.15) tz = takeoff_start_z_ - 0.15;
-      cmd.position_x = land_target_x_; cmd.position_y = land_target_y_;
-      cmd.position_z = tz; cmd.yaw = uav_.yaw;
-      pub_uav_cmd_->publish(cmd);
       auto fb = std::make_shared<Land::Feedback>();
       fb->current_altitude = uav_.position_z; gh_land_->publish_feedback(fb);
 
-      // PX4 landed_state==1 → ON_GROUND → 触地后等 3s 上锁
-      if (landed_state_ == 1) {
-        if (!landed_seen_) { landed_at_ = now(); landed_seen_ = true; }
-        if ((now() - landed_at_).seconds() > 3.0) {
-          call_arm(false);
-          auto r = std::make_shared<Land::Result>(); r->success = true;
-          r->message = "landed"; gh_land_->succeed(r); gh_land_.reset();
-          active_ = NONE; landed_seen_ = false;
-        }
+      double t = (now() - land_start_time_).seconds();
+      if (!uav_.armed) {
+        auto r = std::make_shared<Land::Result>(); r->success = true;
+        r->message = "landed"; gh_land_->succeed(r); gh_land_.reset();
+        active_ = NONE;
       } else if (t > 60.0) {
         call_arm(false);
         auto r = std::make_shared<Land::Result>(); r->success = true;
@@ -170,8 +158,11 @@ rclcpp_action::CancelResponse FlightController::handle_land_cancel(
 { active_=HOVER; gh_land_.reset(); return rclcpp_action::CancelResponse::ACCEPT; }
 void FlightController::handle_land_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh)
-{ land_target_x_=uav_.position_x; land_target_y_=uav_.position_y;
-  land_start_z_=uav_.position_z; gh_land_=gh; active_=LANDING; land_start_time_=now(); }
+{
+  // 切 AUTO.LAND，PX4 接管一切
+  call_set_mode(7);
+  gh_land_ = gh; active_ = LANDING; land_start_time_ = now();
+}
 
 rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const GoToWaypoint::Goal>)

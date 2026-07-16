@@ -9,7 +9,6 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(easyfly_msgs REQUIRED)
-find_package(mavros_msgs REQUIRED)
 
 add_executable(flight_control_node
   src/flight_control_node.cpp
@@ -25,7 +24,6 @@ ament_target_dependencies(flight_control_node
   rclcpp
   rclcpp_action
   easyfly_msgs
-  mavros_msgs
 )
 
 install(TARGETS flight_control_node
