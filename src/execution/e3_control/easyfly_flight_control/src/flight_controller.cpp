@@ -202,13 +202,13 @@ void FlightController::control_loop()
   } else if (active_ == LANDING) {
     // 自主降落：在 OFFBOARD 下用 POSITION setpoint 缓慢降到底，不回 home
     if (gh_land_) {
-      double step = 0.3 * dt;
-      land_target_z_ = uav_.position_z - step;
-      if (land_target_z_ < takeoff_start_z_ + 0.05) land_target_z_ = takeoff_start_z_ + 0.05;
+      double elapsed = (now() - land_start_time_).seconds();
+      double target_z = land_start_z_ - elapsed * 0.3;
+      if (target_z < takeoff_start_z_ + 0.05) target_z = takeoff_start_z_ + 0.05;
 
       cmd.position_x = land_target_x_;
       cmd.position_y = land_target_y_;
-      cmd.position_z = land_target_z_;
+      cmd.position_z = target_z;
       cmd.yaw         = uav_.yaw;
       pub_uav_cmd_->publish(cmd);
 
@@ -218,7 +218,7 @@ void FlightController::control_loop()
 
       bool landed = (uav_.relative_altitude < 0.15 && std::abs(uav_.velocity_z) < 0.2
                      && std::abs(uav_.velocity_x) < 0.2 && std::abs(uav_.velocity_y) < 0.2);
-      auto elapsed = (now() - land_start_time_).seconds();
+      elapsed = (now() - land_start_time_).seconds();
 
       if (landed || elapsed > 30.0) {
         call_arm(false);
@@ -320,6 +320,7 @@ void FlightController::handle_land_accepted(
   land_target_x_ = uav_.position_x;
   land_target_y_ = uav_.position_y;
   land_target_z_ = uav_.position_z - 0.3;
+  land_start_z_ = uav_.position_z;
   gh_land_ = gh;
   active_ = LANDING;
   land_start_time_ = now();
