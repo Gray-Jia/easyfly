@@ -130,11 +130,13 @@ void FlightController::control_loop()
     // ---- takeoff: 固定爬升轨迹（非追赶式） ----
     double elapsed = (now() - takeoff_start_time_).seconds();
     double target_z = takeoff_start_z_ + elapsed * takeoff_speed_;
+  takeoff_start_x_ = uav_.position_x;
+  takeoff_start_y_ = uav_.position_y;
     target_z = std::min(target_z, takeoff_target_z_);
     double dist = std::abs(takeoff_target_z_ - uav_.position_z);
 
-    cmd.position_x = uav_.position_x;
-    cmd.position_y = uav_.position_y;
+    cmd.position_x = takeoff_start_x_;   // 锁定起飞点，不漂移
+    cmd.position_y = takeoff_start_y_;
     cmd.position_z = target_z;
     cmd.yaw         = uav_.yaw;
 
@@ -292,6 +294,8 @@ void FlightController::handle_takeoff_accepted(
   // 2. 直接发初始 setpoint（不等 timer），确保桥接层有有效 setpoint 再切 OFFBOARD
   takeoff_target_z_ = goal->target_altitude;
   takeoff_speed_    = (goal->climb_speed > 0.0) ? goal->climb_speed : 1.0;
+  takeoff_start_x_ = uav_.position_x;
+  takeoff_start_y_ = uav_.position_y;
   takeoff_start_z_  = uav_.position_z;
   pid_x_.reset(); pid_y_.reset(); pid_z_.reset(); pid_yaw_.reset();
   takeoff_start_time_ = now();

@@ -107,7 +107,7 @@ private:
   // takeoff state
   double takeoff_target_z_{0.0};
   double takeoff_speed_{1.0};
-  double takeoff_start_z_{0.0};
+  double takeoff_start_x_{0.0}, takeoff_start_y_{0.0}, takeoff_start_z_{0.0};
   rclcpp::Time takeoff_start_time_;
   rclcpp::Time land_start_time_;
 
