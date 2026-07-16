@@ -143,6 +143,16 @@ std::vector<MissionStep> MissionFSM::parse_mission(const std::string & path)
     // skip comments and empty lines
     if (line.empty() || line[0] == '#') continue;
 
+    // step separator
+    std::string trimmed = line;
+    trimmed.erase(0, trimmed.find_first_not_of(" \t"));
+    trimmed.erase(trimmed.find_last_not_of(" \t") + 1);
+    if (trimmed == "---") {
+      if (!s.type.empty()) steps.push_back(s);
+      s = MissionStep{};
+      continue;
+    }
+
     // parse key=value or key:value
     auto eq = line.find('=');
     if (eq == std::string::npos) eq = line.find(':');
@@ -157,10 +167,7 @@ std::vector<MissionStep> MissionFSM::parse_mission(const std::string & path)
     val.erase(0, val.find_first_not_of(" \t"));
     val.erase(val.find_last_not_of(" \t") + 1);
 
-    if (key == "---") {
-      if (!s.type.empty()) steps.push_back(s);
-      s = MissionStep{};
-    } else if (key == "type") {
+    if (key == "type") {
       s.type = val;
     } else if (key == "altitude") {
       s.altitude = std::stod(val);
