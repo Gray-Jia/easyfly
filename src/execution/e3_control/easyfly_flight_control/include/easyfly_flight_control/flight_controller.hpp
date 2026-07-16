@@ -3,6 +3,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
+#include <mavros_msgs/msg/extended_state.hpp>
 
 #include <easyfly_msgs/msg/uav_state.hpp>
 #include <easyfly_msgs/msg/uav_command.hpp>
@@ -78,6 +79,7 @@ private:
 
   // ---- subscriptions ----
   rclcpp::Subscription<easyfly_msgs::msg::UAVState>::SharedPtr sub_uav_state_;
+  rclcpp::Subscription<mavros_msgs::msg::ExtendedState>::SharedPtr sub_landed_;
 
   // ---- publisher ----
   rclcpp::Publisher<easyfly_msgs::msg::UAVCommand>::SharedPtr pub_uav_cmd_;
@@ -112,6 +114,7 @@ private:
   rclcpp::Time land_start_time_;
   double land_target_x_{0.0}, land_target_y_{0.0}, land_target_z_{0.0};
   double land_start_z_{0.0};
+  uint8_t landed_state_{0};
   bool   land_phase2_{false};   // 已切 AUTO.LAND 等待 disarm
 
   // waypoint state
