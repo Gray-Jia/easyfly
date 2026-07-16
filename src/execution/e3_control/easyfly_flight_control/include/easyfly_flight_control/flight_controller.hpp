@@ -67,6 +67,9 @@ private:
   rclcpp::Client<easyfly_msgs::srv::ArmMotors>::SharedPtr     cli_arm_;
   rclcpp::Client<easyfly_msgs::srv::SetFlightMode>::SharedPtr cli_mode_;
 
+  // ---- 独立 callback group (client 与 action 回调分离，避免死锁) ----
+  rclcpp::CallbackGroup::SharedPtr cli_cb_group_;
+
   // ---- helpers ----
   bool call_arm(bool arm);
   bool call_set_mode(uint8_t mode);

@@ -67,9 +67,13 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   // ---- command pub ----
   pub_uav_cmd_ = create_publisher<easyfly_msgs::msg::UAVCommand>("/uav_command", qos);
 
-  // ---- service clients ----
-  cli_arm_  = create_client<easyfly_msgs::srv::ArmMotors>("/arm_motors");
-  cli_mode_ = create_client<easyfly_msgs::srv::SetFlightMode>("/set_flight_mode");
+  // ---- service clients (独立 callback group 避免与 action 回调死锁) ----
+  cli_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  cli_arm_  = create_client<easyfly_msgs::srv::ArmMotors>(
+    "/arm_motors", rmw_qos_profile_services_default, cli_cb_group_);
+  cli_mode_ = create_client<easyfly_msgs::srv::SetFlightMode>(
+    "/set_flight_mode", rmw_qos_profile_services_default, cli_cb_group_);
 
   // ---- action servers ----
   as_takeoff_ = rclcpp_action::create_server<Takeoff>(
