@@ -401,7 +401,7 @@ void MavlinkBridge::cb_set_flight_mode(
     case 4:  mav_req->custom_mode = "STABILIZED"; break;
     case 5:  mav_req->custom_mode = "ACRO";       break;
     case 6:  mav_req->custom_mode = "RTL";        break;
-    case 7:  mav_req->custom_mode = "LAND";       break;
+    case 7:  mav_req->custom_mode = "AUTO.LAND";       break;
     default:
       res->success = false;
       res->message = "unknown flight_mode=" + std::to_string(req->flight_mode);
