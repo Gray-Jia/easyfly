@@ -106,7 +106,6 @@ void FlightController::control_loop()
       pub_uav_cmd_->publish(cmd);
     }
   } else if (active_ == LANDING) {
-    // Prometheus 风格：AUTO.LAND 接管一切，只等 PX4 自己 disarm
     if (gh_land_) {
       auto fb = std::make_shared<Land::Feedback>();
       fb->current_altitude = uav_.position_z; gh_land_->publish_feedback(fb);
