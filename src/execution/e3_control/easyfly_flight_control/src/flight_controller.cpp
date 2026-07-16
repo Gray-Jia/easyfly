@@ -341,17 +341,14 @@ rclcpp_action::CancelResponse FlightController::handle_land_cancel(
 void FlightController::handle_land_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh)
 {
-  // 发一轮当前位置 setpoint，锚定 PX4 降落点
+  // 锚定当前位置作为悬停点
   hover_x_ = uav_.position_x;
   hover_y_ = uav_.position_y;
   hover_z_ = uav_.position_z;
   hover_yaw_ = uav_.yaw;
-  active_ = HOVER;
-  // 让 HOVER 状态跑几帧（50ms）确保 setpoint 到达 PX4
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  active_ = HOVER;   // control loop 持续发悬停 setpoint
 
-  // 切 LAND 模式
-  active_ = LANDING;
+  // 切 LAND 模式（期间 HOVER setpoint 持续发出，不漂移）
   if (!call_set_mode(7)) {
     auto res = std::make_shared<Land::Result>();
     res->success = false;
@@ -361,6 +358,7 @@ void FlightController::handle_land_accepted(
     return;
   }
 
+  // 模式切换成功，停止 setpoint，进入降落监控
   gh_land_ = gh;
   active_ = LANDING;
   land_start_time_ = now();

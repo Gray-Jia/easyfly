@@ -6,18 +6,18 @@ flight_controller:
     land_timeout: 30.0
 
     pid_x:
-      kp: 0.8
-      ki: 0.02
-      kd: 0.1
+      kp: 1.5
+      ki: 0.05
+      kd: 0.2
     pid_y:
-      kp: 0.8
-      ki: 0.02
-      kd: 0.1
+      kp: 1.5
+      ki: 0.05
+      kd: 0.2
     pid_z:
-      kp: 1.2
-      ki: 0.03
-      kd: 0.15
+      kp: 2.0
+      ki: 0.05
+      kd: 0.3
     pid_yaw:
-      kp: 1.0
+      kp: 2.0
       ki: 0.0
       kd: 0.0
