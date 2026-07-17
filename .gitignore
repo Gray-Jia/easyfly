@@ -1,6 +1,8 @@
 build/
 install/
 log/
-.vscode/
+directory_tree.txt/
 .reasonix/
 .vscode/
+src/third_party/livox_sdk2/build/
+src/third_party/librealsense/build/
