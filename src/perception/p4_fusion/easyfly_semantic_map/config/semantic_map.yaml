@@ -1,0 +1,30 @@
+# EasyFly P4 障碍表征配置 (M4.0)
+# 输入为 easyfly_pointcloud_filter 的 base_link 系点云, 本节点变换到 world 系处理
+semantic_map:
+  # ---- 话题/服务 ----
+  input_topic: /pointcloud_filtered
+  output_topic: /obstacles            # ObstacleInfoArray
+  grid_topic: /occupancy_grid         # OccupancyGrid (供全局规划)
+  marker_topic: /obstacle_markers     # RViz 立方体
+  service_name: /get_obstacles        # GetObstacles srv
+
+  # ---- 坐标系 ----
+  world_frame: odom                   # 障碍输出系 (低空任务短航程, odom 即可; 全局建图需求出现再切 map)
+
+  # ---- 地面剔除 (RANSAC 水平主平面, 免疫高度抖动/机体沉降) ----
+  plane_distance_threshold: 0.12      # 地面平面厚度 [m] (内点距离阈值)
+  obstacle_z_max: 4.0                 # 关心高度上限 [m, 离拟合地面]
+
+  # ---- 欧式聚类 ----
+  cluster_tolerance: 0.6              # 簇内点间距阈值 [m] (兼顾大物体成簇与近距目标不合并)
+  cluster_min_points: 5               # 最小簇点数 (配 5 帧累积, 20m 行人约 30 点)
+  cluster_max_points: 100000
+  accumulate_frames: 5                # 滑动窗口累积帧数 (远目标增密; 飞行中目标会有 K 帧拖尾)
+  max_obstacle_size: 8.0              # 单簇包围盒上界 [m], 超过视为地面残留/噪声链
+
+  # ---- 占据栅格 ----
+  inflate_radius: 0.3                 # 障碍足迹膨胀 [m] (机体半径安全余量)
+  verbose: false                      # 逐帧聚类统计日志 (调参用)
+  grid_resolution: 0.2                # [m/cell]
+  grid_width: 100.0                   # 以 odom 原点为中心 [m]
+  grid_height: 100.0

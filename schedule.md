@@ -320,6 +320,23 @@ odom
 6. PX4 残留进程（`PX4 server already running`）会让新实例静默退出（exit 255）→ mavros 电池为 0 → 起飞失败。反复测试间必须彻底清理（pkill 精确路径）；
 7. 飞行中跟踪 ID 偏多（168 个/次飞行）：画面抖动+目标进出视野下 min_hits/lost 参数的平衡问题，属参数优化项（非功能故障），阶段四接 TrackTarget 时按需调优。
 
+### 阶段四 M4.0：规划基础设施 ✅（2026-09-14）
+
+| 项 | 状态 | 说明 |
+|----|------|------|
+| easyfly_pointcloud_filter | ✅ | `/livox/lidar`(CustomMsg) → 距离滤波(0.3~25m)+体素(0.1m) → `/pointcloud_filtered`(PointCloud2, base_link 系)；滤波核心 header-only 无 ROS 依赖，单测 5/5；为 M4.3 EGO grid_map 备好输入 |
+| easyfly_semantic_map | ✅ | 滤波点云 → 逐帧 RANSAC 地面剔除 → 5 帧滑动累积 → 欧式聚类 → `/obstacles`(ObstacleInfoArray) + `/get_obstacles`(srv, 按距机体水平距离过滤) + `/occupancy_grid`(2D 栅格+膨胀 0.3m) + `/obstacle_markers`；TF 跳变守卫 |
+| 集成 | ✅ | perception_sitl.launch.py t=20s 启动两节点；rviz 增 FilteredPointCloud/OccupancyGrid/ObstacleMarkers 三显示项 |
+| 验收数据 | ✅ | perception_demo 场景 10 目标检出 8-9 个；近场(≤12m)精度 **0.01~0.15m**（person1 0.08、box1 0.01、person_w 0.03）；远场(20-25m) 0.7~1.9m（大物体部分可见包围盒中心）；truck1 大车辆聚类分段属已知特性；GetObstacles 服务正常 |
+
+**M4.0 踩坑记录（重要）**：
+1. **EKF 原点每次启动都不同**：地面在 odom 系的高度不固定（-0.98 ~ -0.06 都出现过），机体静止时 base_link 离地仅 ~0.06m（spawn 0.83 是投放高度）。**任何写死的"离地高度/地面高度"都会失效**——地面必须从数据估计（RANSAC 平面）；
+2. **地面剔除必须逐帧做**：mavros EKF 姿态噪声（~0.5°）经 25m 杠杆把地面涂抹成 ±0.3m 厚带，累积后整体 RANSAC 拟不干净（残留点把聚类链成 12m 巨簇）；单帧内姿态一致，倾斜地面仍是完美平面，每帧独立拟合即可干净移除；
+3. **mavros 启动位置毛刺**（详见 question.md Q34）：首帧 local_position 可达 (1.08,-2.57)，会把整个场景平移复制进累积窗口 → 幻影簇。semantic_map 加了 TF 跳变守卫（>1m 丢帧 + 持续漂移 10 帧重置基线——注意 EKF 启动是"持续错误后收敛"而非孤立尖峰，固定基线会永久卡死）；
+4. **px4_sitl.launch.py 的 world 参数用 str+LaunchConfiguration 相加**会在 launch 生成期抛错（阶段一起潜伏，方式 B 从未真正可用，回归测试首跑即暴露）——已改 PathJoinSubstitution；
+5. onnxruntime GPU SDK 单文件 352MB 超 GitHub 100MB 限制，third_party/onnxruntime 不入库（获取方式见其 EASYFLY_SETUP.md）；fast_lio 上游 doc/（128MB 演示 gif）同样排除；
+6. 大物体（fire_truck 5m）会被 0.4~0.6m 容差的欧式聚类分段成多簇——对规划无害（每段都是障碍），跨帧稳定 ID 待消费方需求出现再做（M4.0 边界，obstacle_id 为帧内索引）。
+
 ---
 
 ## 五、待完成工作
@@ -343,7 +360,8 @@ odom
 
 | 包 | 说明 |
 |----|------|
-| easyfly_global_planner | A*/RRT*，依赖 P4 语义地图 |
+| ~~easyfly_pointcloud_filter~~ | ✅ M4.0 已完成（CustomMsg→滤波→PointCloud2） |
+| easyfly_global_planner | A*/RRT*，输入 /occupancy_grid（M4.0 已产出） |
 | easyfly_local_planner | EGO-Planner（ROS1→ROS2 迁移，风险最高） |
 | easyfly_trajectory_optimizer | Minimum Snap |
 | easyfly_obstacle_avoidance | 避障机动 |

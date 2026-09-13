@@ -185,6 +185,14 @@ def generate_launch_description():
             get_package_share_directory("easyfly_mission_fsm") + "/launch/mission_fsm.launch.py"),
         launch_arguments={"use_sim_time": "true"}.items())
 
+    # ---- M4.0 规划基础设施: 点云滤波 (P1) + 障碍表征 (P4) ----
+    pcf = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_pointcloud_filter") + "/launch/pcf.launch.py"))
+    semantic_map = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_semantic_map") + "/launch/semantic_map.launch.py"))
+
     spawn_delayed = TimerAction(period=3.0, actions=[spawn_model])
     gui_px4_rviz = TimerAction(period=6.0, actions=[gzclient, px4_sitl, rviz2, robot_state_pub])
     bridge_delayed = TimerAction(period=8.0, actions=[mavlink_bridge])
@@ -193,6 +201,8 @@ def generate_launch_description():
     p4_nodes = TimerAction(period=16.0, actions=[tracking])
     p5_nodes = TimerAction(period=18.0, actions=[pixel_to_3d])
     exec_nodes = TimerAction(period=10.0, actions=[flight_control, mission_fsm])
+    # M4.0: 依赖 P1 静态 TF (12s) 与雷达数据, 20s 启动足够稳
+    m40_nodes = TimerAction(period=20.0, actions=[pcf, semantic_map])
 
     return LaunchDescription([
         set_model_path,
@@ -207,4 +217,5 @@ def generate_launch_description():
         p2_nodes,
         p4_nodes,
         p5_nodes,
+        m40_nodes,
     ])

@@ -168,12 +168,18 @@
 - **位置**：`third_party/onnxruntime/`（1.23.2 gpu，CUDA 版本对应本机 RTX 5060 Ti 环境）
 - **现象**：换机器/换 CUDA 需重新放置 SDK；无 CPU 回退（代码支持 onnxruntime CPU EP，但打包的库是 GPU 版）。
 
-### Q32. 控制逻辑零测试
+### Q32. 控制逻辑零测试（✅ 已建回归套件：test/ 目录，T1-T8 覆盖起飞/航点/取消/连续起降/坏任务/低电量 RTL，2026-09-14 实跑全绿；单元级测试仍缺）
 - **现象**：SORT 有 `test_sort.cpp`，flight_control / mission_fsm / mavlink_bridge 无任何单元测试。状态机转换、超时路径、取消路径全部只能靠仿真手测。
 
 ### Q33. TrackInfo.velocity 字段语义借用
 - **位置**：`tracking_node.cpp` L151，像素速度塞进 velocity_x/y 字段（注释说明"像素/frame"）
 - **现象**：消息字段语义与名字不符，下游若按 m/s 理解会出错。应加专门字段或文档化。
+
+### Q34. mavros EKF 启动位置毛刺（M4.0 新发现，semantic_map 已防护，其余消费方待查）
+- **位置**：`/uav_state` ← mavros local_position/pose（源头在 PX4 EKF）
+- **现象**：仿真启动后最初数秒 local_position 报错误位置，实测两次分别为 (0.98,-2.52) 与 (1.08,-2.57)，之后收敛到 (0,0)。与 M6 记录的 z=-10 尖峰同族。
+- **影响**：一切消费 `odom←base_link` TF 的节点会把整个场景按错误平移量复制/扭曲。semantic_map 已加"TF 跳变守卫"（帧间平移 >1m 丢帧 + 持续漂移 10 帧重置基线，见 `semantic_map_node.cpp`）；**pixel_to_3d 与 M4.3 的 EGO grid_map 集成时需同样注意**（SLAM odom 系不受影响——FAST-LIO 自己的原点）。flight_control 的渐近式 setpoint 天然免疫。
+- **验收影响**：M4.0 验收中"物体位置整体偏移 ~2.4m"的假象即源于此，非聚类/地面剔除问题。
 
 ---
 

@@ -3,11 +3,29 @@
 <package format="3">
   <name>easyfly_semantic_map</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_semantic_map</description>
+  <description>
+    EasyFly P4: 滤波点云 → 障碍表征 (M4.0)。
+    欧式聚类 → /obstacles (ObstacleInfoArray) + /get_obstacles srv
+    + 2D 占据栅格 /occupancy_grid (供 M4.2 全局规划) + RViz markers。
+  </description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>easyfly_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_eigen</depend>
+  <depend>geometry_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>libpcl-all-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
