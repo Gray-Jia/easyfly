@@ -1,0 +1,21 @@
+# EasyFly M5 像素转 3D 配置
+pixel_to_3d:
+  # ---- 话题 ----
+  input_topic: /tracks                 # M4 跟踪输出 (带 ID)
+  output_topic: /target_positions      # Target3DArray
+  marker_topic: /target_markers        # RViz MarkerArray
+  depth_topic: /camera/aligned_depth_to_color/depth/image_raw   # 32FC1 深度图
+  camera_info_topic: /camera/color/camera_info                  # 内参来源
+
+  # ---- 坐标系 ----
+  camera_optical_frame: camera_color_optical_frame
+  target_frame: odom                   # 输出坐标系 (odom=mavros里程计系; 全链路时可改 map=SLAM系)
+
+  # ---- 深度有效性 ----
+  min_depth: 0.3        # 有效深度下限 [m]
+  max_depth: 19.5       # 有效深度上限 [m] (Q23: 相机 far 已 10→20, 同步放宽)
+  min_valid_ratio: 0.1  # bbox 内有效像素比例下限 (低于则 position_valid=false)
+
+  # ---- 可视化 ----
+  publish_markers: true
+  verbose: false        # true 时逐目标打印定位日志

@@ -3,11 +3,19 @@
 <package format="3">
   <name>easyfly_multi_object_tracking</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_multi_object_tracking</description>
+  <description>EasyFly M4: 多目标跟踪 (SORT: 卡尔曼滤波 + 匈牙利关联, 纯自实现)</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>easyfly_msgs</depend>
+  <depend>libopencv-dev</depend>
+  <depend>yaml-cpp</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

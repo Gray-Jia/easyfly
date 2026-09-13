@@ -1,0 +1,58 @@
+# EasyFly 传感器内外参统一配置 (仿真标定结果)
+# 所有位姿均与 easyfly_iris.sdf 的传感器安装位姿严格一致
+# 修改 SDF 传感器安装位姿后必须同步修改此文件
+# ============================================================
+# 坐标系约定:
+#   base_link: 机体坐标系, x前 y左 z上 (FLU)
+#   camera_link: 相机物理安装坐标系 (FLU, 与机体平行)
+#   *_optical_frame: 光学惯例, x右 y下 z前 (RDF) — camera_info/图像/点云所在系
+#   livox_frame: 雷达坐标系 (x前 y左 z上, livox 驱动惯例)
+# rotation_rpy: 绕固定轴 ZYX 顺序的欧拉角 [rad] (tf2 惯例)
+
+sensors:
+  # ---------- 前视深度相机 (D435i 风格) ----------
+  camera:
+    # 相机安装位姿: base_link → camera_link
+    # 机头前伸 (机身盒 x∈[-0.235,0.235], 相机在盒外避免自遮挡)
+    mount:
+      parent: base_link
+      child: camera_link
+      translation: [0.25, 0.0, 0.22]     # 与 SDF camera_link pose 一致 (机头上方越过机身 mesh)
+      rotation_rpy: [0.0, 0.0, 0.0]      # 前视, 无倾角
+
+    # 光学坐标系: camera_link → optical (FLU→RDF 的固定旋转)
+    # 注: TF parent→child 旋转含义为 R_link←optical (光学系向量→机体系)
+    #   optical z(前) → link x(前); optical x(右) → link -y(右); optical y(下) → link -z(下)
+    #   对应 rpy = (-π/2, 0, -π/2) (ROS 相机光学系标准旋转)
+    optical:
+      color_frame: camera_color_optical_frame
+      depth_frame: camera_depth_optical_frame
+      translation: [0.0325, 0.0, 0.0]    # 与 SDF camera_color_frame/depth_frame pose 一致
+      rotation_rpy: [-1.5707963267948966, 0.0, -1.5707963267948966]
+
+    # 仿真理想内参 (已用 Gazebo 实际 camera_info 校准)
+    # fx = (W/2) / tan(HFOV/2); cx,cy = Gazebo 惯例 (W/2+0.5, H/2+0.5)
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 337.36
+      fy: 337.36
+      cx: 320.5
+      cy: 240.5
+      distortion_model: plumb_bob
+      d: [0.0, 0.0, 0.0, 0.0, 0.0]      # 仿真无畸变
+
+  # ---------- Livox MID-360 (倒装, 朝下) ----------
+  lidar:
+    # 雷达安装位姿: base_link → livox_frame
+    mount:
+      parent: base_link
+      child: livox_frame
+      translation: [0.0, 0.0, 0.13]      # SDF: mid360 安装 0.08 + sensor pose 0.05
+      rotation_rpy: [0.0, 0.0, 0.0]      # 水平安装
+
+    # 雷达内置 IMU 相对雷达坐标系的外参 (FAST-LIO extrinsic_lidar_to_imu 需要)
+    # 与 mid360.sdf 中 imu_sensor pose 一致
+    imu_extrinsic:
+      translation: [-0.011, -0.02329, 0.04412]
+      rotation_rpy: [0.0, 0.0, 0.0]

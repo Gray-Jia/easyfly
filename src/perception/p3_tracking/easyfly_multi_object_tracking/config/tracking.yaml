@@ -1,0 +1,25 @@
+# EasyFly M4 多目标跟踪 (SORT) 配置
+tracking:
+  # ---- 话题 ----
+  input_topic: /detections               # M2 检测输出
+  output_topic: /tracks                  # 跟踪输出
+  debug_image_topic: /detections_debug_image  # 调试图来源 (叠加 track_id)
+  publish_debug_image: true              # /tracks_debug_image (有订阅才发)
+
+  # ---- 图像尺寸 (归一化坐标 → 像素换算; 与仿真相机一致) ----
+  image_width: 640
+  image_height: 480
+
+  # ---- SORT 参数 ----
+  # Q19 调优 (2026-09-13): 原 iou=0.3/max_lost=30 在飞行中 ID 跳变严重 (M6 实测 168 ID/次)。
+  # 根因: 异步推理帧间隔不规则 + 目标像素快速移动 → 预测框与检测框 IoU 跌破门限。
+  # 现采用: ① IoU/中心距离双门限关联 ② KF 速度过程噪声加大 ③ 记忆延长。
+  iou_threshold: 0.15     # 关联最小 IoU (0.3→0.15: 放宽, 配合距离门限)
+  max_lost_frames: 45     # 连续丢失上限, 超过删除 (~1.5s @30fps, 遮挡容忍)
+  min_hits: 3             # 累计命中达此值才确认 track (抑制误检)
+  max_tracks: 100         # 同时存活轨迹上限
+  dist_gate_scale: 1.5    # Q19: 中心距离门限系数 (中心距 < max(两框对角线)×此值 也允许关联)
+
+  # ---- 类别过滤 (Q25: 只跟踪关注类别; 空列表 = 全部跟踪) ----
+  # 剔除 bench/potted plant 等场景杂物误检, 减少无效 track
+  target_classes: [person, car, truck, bus, bicycle, motorcycle, fire hydrant]

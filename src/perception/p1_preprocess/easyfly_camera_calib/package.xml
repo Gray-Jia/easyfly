@@ -3,11 +3,19 @@
 <package format="3">
   <name>easyfly_camera_calib</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_camera_calib</description>
+  <description>EasyFly P1: 传感器内外参管理 (YAML) + 静态 TF 发布 + 内参校验</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>yaml-cpp</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

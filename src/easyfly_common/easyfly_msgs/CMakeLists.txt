@@ -12,6 +12,8 @@ set(msg_files
   "msg/DetectionInfoArray.msg"
   "msg/TrackInfo.msg"
   "msg/TrackInfoArray.msg"
+  "msg/Target3D.msg"
+  "msg/Target3DArray.msg"
   "msg/ObstacleInfo.msg"
   "msg/ObstacleInfoArray.msg"
   "msg/GimbalState.msg"

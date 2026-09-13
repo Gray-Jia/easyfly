@@ -3,11 +3,23 @@
 <package format="3">
   <name>easyfly_pixel_to_3d</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_pixel_to_3d</description>
+  <description>EasyFly M5: 像素转 3D 定位 (bbox+深度图反投影+TF 变换, 输出带 ID 的世界系目标位置)</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>easyfly_msgs</depend>
+  <depend>yaml-cpp</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

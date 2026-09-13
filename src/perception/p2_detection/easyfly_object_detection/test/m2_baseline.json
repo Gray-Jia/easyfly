@@ -1,0 +1,69 @@
+{
+  "model": "/home/jia/easyfly_ws/models/yolo11n.onnx",
+  "imgsz": 640,
+  "conf_thr": 0.35,
+  "nms_thr": 0.45,
+  "infer_ms": 3.448,
+  "ep": "CUDAExecutionProvider",
+  "frame": {
+    "width": 640,
+    "height": 480
+  },
+  "detections": [
+    {
+      "class_id": 0,
+      "class_name": "person",
+      "confidence": 0.831819,
+      "bbox_xyxy_px": [
+        124.39,
+        79.82,
+        160.98,
+        243.23
+      ]
+    },
+    {
+      "class_id": 0,
+      "class_name": "person",
+      "confidence": 0.712186,
+      "bbox_xyxy_px": [
+        393.47,
+        161.48,
+        410.88,
+        242.53
+      ]
+    },
+    {
+      "class_id": 0,
+      "class_name": "person",
+      "confidence": 0.695558,
+      "bbox_xyxy_px": [
+        342.49,
+        201.05,
+        360.65,
+        241.88
+      ]
+    },
+    {
+      "class_id": 5,
+      "class_name": "bus",
+      "confidence": 0.835041,
+      "bbox_xyxy_px": [
+        417.39,
+        93.7,
+        639.52,
+        243.23
+      ]
+    },
+    {
+      "class_id": 5,
+      "class_name": "bus",
+      "confidence": 0.633977,
+      "bbox_xyxy_px": [
+        160.12,
+        175.39,
+        337.69,
+        241.74
+      ]
+    }
+  ]
+}
