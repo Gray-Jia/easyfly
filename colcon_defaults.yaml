@@ -1,0 +1,5 @@
+# colcon 工作区默认配置
+# 只扫描 src/ 目录
+# (Platform/ 为外部参考项目, 其中的 ROS1 包曾与本工作区包名冲突:
+#  AstraDroneOpen 与 Prometheus 内各有 FAST_LIO 的 ROS1 版)
+base-paths: ["src"]

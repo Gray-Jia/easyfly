@@ -6,3 +6,17 @@ directory_tree.txt/
 .vscode/
 src/third_party/livox_sdk2/build/
 src/third_party/librealsense/build/
+
+# 本地参考工程 (2.6GB, ROS1 参考, 不参与编译: colcon_defaults.yaml base-paths=src)
+Platform/
+
+# onnxruntime GPU SDK (libonnxruntime_providers_cuda.so 单文件 352MB, 超过 GitHub 100MB 限制)
+# 获取方式见 src/third_party/onnxruntime/README.md
+src/third_party/onnxruntime/
+
+# fast_lio 上游 doc 仅有演示 gif/pdf (~128MB), 源码正常入库
+src/perception/p3_tracking/fast_lio/doc/
+
+# 临时文件
+*.txt
+*.log
