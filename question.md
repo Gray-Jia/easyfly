@@ -107,10 +107,10 @@
 
 > **状态：Q19/Q20/Q23/Q25 已修复（2026-09-13，实测 ID 168→26）；Q21/Q22/Q24 维持文档记录（仿真保真度/实机部署事项，见"九、感知类修复记录"）。**
 
-### Q19. 飞行中跟踪 ID 跳变严重（✅ 已修复：双门限关联 + KF 调参，168→26 ID/次飞行）
-- **位置**：`easyfly_multi_object_tracking`，SORT 参数（iou=0.3, min_hits=3, max_lost=30）
-- **现象**：飞行中画面抖动 + 检测框抖动 → 单次飞行产生 ~168 个 track ID（静态测试稳定）。参数未按运动平台调优；对 ID 稳定性要求高的下游（TrackTarget、ReID）不可用。
-- **方向**：调 iou/min_hits、检测框平滑、或接入深度信息做 3D 关联。
+### Q19. 飞行中跟踪 ID 跳变严重（✅ 调参缓解 168→26；⚠️ M4.1 验收显示 id 轮换仍是主要波动源，建议 M4.2 前专项处理）
+- **位置**：`easyfly_multi_object_tracking`（SORT 关联参数）
+- **现象**：调参后单次飞行 ~26 个 ID 仍有更替（视野边缘进出/遮挡闪断的自然更替）。M4.1 实测发现→跟随的间隙（数秒视角变化）足以让 SORT 重排全部 id，跟随节点已加"重捕获"缓解，但按固定 id 采样的验收/上层逻辑仍会被打穿。
+- **建议**：M4.2 开工前评估 ① SORT 参数再调优 ② 外观特征重识别（ReID）——跟随/跟拍类上层功能对此敏感。
 
 ### Q20. pixel_to_3d 深度与 tracks 无时间同步（✅ 已修复：深度环形缓冲 + 最近时间戳匹配）
 - **位置**：`pixel_to_3d_node.cpp` `last_depth_`（最新帧）+ tracks 时间戳
@@ -180,6 +180,10 @@
 - **现象**：仿真启动后最初数秒 local_position 报错误位置，实测两次分别为 (0.98,-2.52) 与 (1.08,-2.57)，之后收敛到 (0,0)。与 M6 记录的 z=-10 尖峰同族。
 - **影响**：一切消费 `odom←base_link` TF 的节点会把整个场景按错误平移量复制/扭曲。semantic_map 已加"TF 跳变守卫"（帧间平移 >1m 丢帧 + 持续漂移 10 帧重置基线，见 `semantic_map_node.cpp`）；**pixel_to_3d 与 M4.3 的 EGO grid_map 集成时需同样注意**（SLAM odom 系不受影响——FAST-LIO 自己的原点）。flight_control 的渐近式 setpoint 天然免疫。
 - **验收影响**：M4.0 验收中"物体位置整体偏移 ~2.4m"的假象即源于此，非聚类/地面剔除问题。
+
+### Q35. ~/.gazebo/models 本地缓存抢优先（M4.1 新发现，环境怪癖）
+- **现象**：修改 `src/simulation/easyfly_gazebo_models/<name>/model.sdf` 后仿真行为不变——`~/.gazebo/models/<name>` 存在同名旧缓存时被优先解析（Gazebo 系统模型目录在 GAZEBO_MODEL_PATH 之前）。person_walking 静态化曾因此"静默失效"。
+- **处理**：删除 `~/.gazebo/models/<name>` 缓存条目即可；自研模型建议不放入 ~/.gazebo/models。
 
 ---
 

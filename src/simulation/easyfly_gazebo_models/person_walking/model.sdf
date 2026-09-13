@@ -1,6 +1,10 @@
 <?xml version="1.0" ?>
 <sdf version="1.5">
   <model name="person_walking">
+    <!-- M4.1: 静态化 — 由 patrol_mover 插件运动学驱动 (动态模型会被物理引擎
+         缓慢推移 + 受重力/接触干扰; static 的 collision/visual 不变, 相机与
+         雷达均可感知, fire_truck 同款做法) -->
+    <static>true</static>
     <link name="link">
       <inertial>
         <pose>0 0 0.95 0 0 0</pose>

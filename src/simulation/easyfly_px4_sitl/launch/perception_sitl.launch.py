@@ -203,6 +203,11 @@ def generate_launch_description():
     exec_nodes = TimerAction(period=10.0, actions=[flight_control, mission_fsm])
     # M4.0: 依赖 P1 静态 TF (12s) 与雷达数据, 20s 启动足够稳
     m40_nodes = TimerAction(period=20.0, actions=[pcf, semantic_map])
+    # M4.1: 跟随节点 (常驻 idle 无副作用, 经 /track_target action 发起)
+    follow = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_target_tracking") + "/launch/follow.launch.py"))
+    m41_nodes = TimerAction(period=22.0, actions=[follow])
 
     return LaunchDescription([
         set_model_path,
@@ -218,4 +223,5 @@ def generate_launch_description():
         p4_nodes,
         p5_nodes,
         m40_nodes,
+        m41_nodes,
     ])

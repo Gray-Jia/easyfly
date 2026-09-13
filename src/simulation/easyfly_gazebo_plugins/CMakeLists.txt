@@ -6,6 +6,9 @@ find_package(ament_cmake REQUIRED)
 # 阶段三 M0: 启用 Livox MID-360 仿真插件 (ROS2 移植版)
 add_subdirectory(livox_laser_plugin)
 
+# M4.1: 巡航移动目标驱动 (纯 Gazebo 插件, 无 ROS 依赖)
+add_subdirectory(patrol_mover)
+
 # realsense_plugin / velodyne_plugin: 暂不启用
 #   - 深度相机仿真使用系统自带 libgazebo_ros_camera.so (无第三方依赖)
 #   - velodyne 暂无需求

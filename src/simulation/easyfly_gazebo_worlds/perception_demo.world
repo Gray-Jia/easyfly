@@ -90,6 +90,12 @@
       <uri>model://person_walking</uri>
       <name>person_4_walking</name>
       <pose>20 -1.5 0 0 0 0</pose>
+      <!-- M4.1: 巡航移动目标, 供 TrackTarget 跟随验收 -->
+      <plugin name="patrol_mover" filename="libpatrol_mover.so">
+        <waypoint_a>14 -2 0</waypoint_a>
+        <waypoint_b>22 -2 0</waypoint_b>
+        <speed>1.0</speed>
+      </plugin>
     </include>
 
     <!-- ============ 检测目标: 车辆 (COCO class 7/8: truck/car) ============ -->

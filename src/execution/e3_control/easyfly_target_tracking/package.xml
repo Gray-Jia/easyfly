@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>easyfly_target_tracking</name>
+  <version>0.1.0</version>
+  <description>
+    EasyFly E3: TrackTarget 跟随飞行节点 (M4.1)。
+    /target_positions → 目标选择 + 跳变拒绝 + 丢失处理 → GoToWaypoint 重发式跟随。
+    控制通道复用 flight_control 全部安全链 (渐近 setpoint/超时保护/接管检测)。
+  </description>
+  <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>rclcpp_action</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>easyfly_msgs</depend>
+  <depend>yaml-cpp</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

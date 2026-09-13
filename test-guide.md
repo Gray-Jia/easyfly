@@ -175,6 +175,31 @@ ros2 action send_goal /land easyfly_msgs/action/Land "{}" --feedback
 - **低电量保护**：电量 <15% 时任务自动中止并触发 PX4 RTL 返航（`/mission_status` 报 EMERGENCY）；
 - **外部接管**：HOVER 状态下若检测到 PX4 被切到 RTL/AUTO.LAND（低电量保护或地面站手动），控制节点自动停止 setpoint 并复位，可重新接受新任务。
 
+### 目标跟随（M4.1 TrackTarget）
+
+前置：方式 A 已启动（跟随节点 t=22s 常驻）+ 无人机已起飞悬停。
+
+```bash
+# 跟随指定 id（id 从 /target_positions 查看；-1=最近目标）
+ros2 action send_goal /track_target easyfly_msgs/action/TrackTarget \
+  "{target_id: 3, follow_distance: 4.0, follow_height: 1.5}" --feedback
+
+# 停止跟随（悬停在原地）
+ros2 action send_goal /track_target easyfly_msgs/action/TrackTarget "{target_id: -2}"
+```
+
+行为说明：
+- 跟随点 = 目标位置沿"无人机→目标"反方向退 follow_distance，目标移动超 1m 才重发航点；
+- 目标位置突变 >2m 视为感知毛刺丢弃（连续 3 次放行）；同一 id 丢失时在最后已知位置 2.5m 内自动认领新 id（SORT 轮换应对）；
+- 感知断流或目标丢失 5s → 取消航点原地悬停并 abort（不盲飞）；
+- 跟随中低电量 RTL / 地面站切模式 → TrackTarget 自动 abort 让位（message 含 "takeover"）；
+- 仅悬停状态可发起；与 /execute_mission 互斥（flight_control 单动作槽）；
+- 跟随高度硬限制 0.8~2.5m（SLAM 盲区约束）。
+
+移动目标：perception_demo.world 中 person_4_walking 由 patrol_mover 插件驱动沿 (14,-2)↔(22,-2) 1m/s 巡航。
+
+自动化验收：`bash test/run_follow_acceptance.sh`（F1 就绪/F2 静态/F3 移动/F4 丢失/F5 接管，约 8-12 分钟）。
+
 ### 任务文件方式（YAML 状态机）
 
 示例文件：`src/execution/e1_state_machine/easyfly_mission_fsm/missions/`（含 `perception_demo_mission.yaml`）

@@ -1,0 +1,20 @@
+# EasyFly M4.1 TrackTarget 跟随配置
+target_tracking:
+  # ---- 话题 ----
+  input_topic: /target_positions      # M5 输出 (odom 系)
+  uav_state_topic: /uav_state         # 无人机位置 (最近目标模式/跟随点计算)
+
+  # ---- 跟随行为 ----
+  reissue_threshold: 1.0              # 跟随点偏差超过此值才重发航点 [m] (静止零重发)
+  default_follow_distance: 4.0        # goal 未指定时 [m]
+  default_follow_height: 1.5          # goal 未指定时 [m, 相对目标]
+  max_altitude: 2.5                   # 硬上限 [m] (SLAM 2.5m 盲区约束, Q22)
+
+  # ---- 目标位置跳变拒绝 (Q34 EKF 毛刺兜底) ----
+  jump_reject_dist: 2.0               # 同一 id 相邻有效位置突变超过此值视为毛刺 [m]
+  jump_accept_streak: 3               # 连续突变达此次数视为真实快速移动, 采信
+
+  # ---- 丢失处理 ----
+  first_seen_timeout: 15.0            # 发起后多久找不到目标则 abort [s]
+  lost_timeout: 5.0                   # 丢失超过此值: cancel 航点 + 悬停 + abort [s]
+  reacquire_radius: 2.5               # id 轮换重捕获半径 [m] (SORT 会重新分配 id, Q19)

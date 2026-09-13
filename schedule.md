@@ -337,6 +337,25 @@ odom
 5. onnxruntime GPU SDK 单文件 352MB 超 GitHub 100MB 限制，third_party/onnxruntime 不入库（获取方式见其 EASYFLY_SETUP.md）；fast_lio 上游 doc/（128MB 演示 gif）同样排除；
 6. 大物体（fire_truck 5m）会被 0.4~0.6m 容差的欧式聚类分段成多簇——对规划无害（每段都是障碍），跨帧稳定 ID 待消费方需求出现再做（M4.0 边界，obstacle_id 为帧内索引）。
 
+### 阶段四 M4.1：TrackTarget 跟随飞行 ✅（2026-09-14）
+
+| 项 | 状态 | 说明 |
+|----|------|------|
+| patrol_mover 插件 | ✅ | 纯 Gazebo 插件（无 ROS 依赖）：person_4_walking 沿 (14,-2)↔(22,-2) 1m/s 运动学巡航，朝向随行进翻转；person_walking 已静态化（动态模型会被物理引擎推移，M4.0 教训同源） |
+| easyfly_target_tracking | ✅ | TrackTarget action server（航点重发式）：/target_positions → 目标选择(id/-1最近) + 跳变拒绝(Q34兜底, >2m连续3帧放行) → 跟随点(反方向退 follow_distance) → GoToWaypoint 重发（跟随点移动>1.0m 才重发） |
+| 安全设计 | ✅ | 目标高度双端 clamp(0.8~2.5m, 防深度毛刺砸地)；**数据断流丢失判定**（感知节点死亡后快照缓存最后帧, 按到达时刻判定——实测缓存帧会让 seen 永真）；id 轮换重捕获（最后已知位置 2.5m 内认领新 id，Q19 应对）；接管传播（直接监控 flight_mode 6/7 持续 2s——比等航点 abort 消息更快）；首个航点礼貌重试（等 HOVER 时序窗口） |
+| 集成 | ✅ | follow.yaml 全配置化 + follow.launch.py；perception_sitl t=22s 常驻接入（idle 无副作用） |
+| 验收数据 | ✅ | 静态跟随稳态 **3.36~4.10m**（4 轮, 目标 4±1.0m）；移动跟随均值 **3.82~4.62m**（3 轮, 目标 4±1.5m）最小间距 3.3~4.0m 无碰撞；丢失 abort+悬停 4 轮通过（z=2.4~2.5 armed）；接管传播 6 轮通过（RTL/AUTO.LAND 均触发 "external takeover" abort） |
+
+**M4.1 踩坑记录**：
+1. **~/.gazebo/models 缓存抢优先**：修改 model.sdf 后仿真行为不变，先查 `~/.gazebo/models/<name>` 是否有旧缓存（Gazebo 系统模型路径在 GAZEBO_MODEL_PATH 之前解析）——person_walking 静态化曾因缓存"静默失效"（static=0，模型以 ~0.007m/s 下沉）；
+2. **快照缓存的最后一帧是丢失检测盲区**：订阅回调只更新快照时，感知节点死亡后 followLoop 永远读到旧帧 → 目标"永在"。丢失判定必须同时检查**消息到达时刻**（数据断流）与 id 有效观测（目标消失）两路；
+3. **GoToWaypoint 0.0Xm 微航点风暴**：重发条件若含 `!wp_has_`（航点完成即重发），近距离跟随点会形成 300ms 一次的微航点循环（航点完成→发新点→瞬间完成→再发）。正确语义：仅当跟随点相对上次下发点移动超阈值才重发；
+4. **验收脚本自身的时序坑**：起飞前后 SORT id 会重排（发现目标必须起飞后做）；AUTO.LAND 下降途中 armed=True 且 z>1.2，高度阈值无法区分"悬停/下降"（RTF 0.7 下 3s 仅降 0.4m），恢复判据必须用 PX4 模式（mode 6/7 等落地解除武装）；SITL 电量默认消耗会在 15min+ 套件中触发 failsafe 强制降落（SIM_BAT_DRAIN=1e9 关闭）；
+5. **gz model -d 删除不可靠**（多轮实测时灵时不灵，带不带 -w 都一样）——需要"确定性目标消失"时用杀感知节点兜底（感知失效本身就是真实丢失场景）；
+6. **验证代码改动必须看全量编译输出**：grep 过滤把编译错误吞掉后跑的是旧二进制，现象与代码逻辑对不上会浪费大量排查（M4.1 实际发生：断流修复未编译进去连跑 2 轮旧代码）。
+7. **Q19 升级为优先事项**：跟随发起与目标发现之间的 id 轮换（视角变化触发 SORT 重排）是 M4.1 验收波动主因——节点侧已用"发现后立即发起 + 重捕获"缓解，但验收脚本的固定 id 采样仍会被打穿。M4.2 开工前评估 SORT 参数调优或改用特征重识别。
+
 ---
 
 ## 五、待完成工作
@@ -362,6 +381,8 @@ odom
 |----|------|
 | ~~easyfly_pointcloud_filter~~ | ✅ M4.0 已完成（CustomMsg→滤波→PointCloud2） |
 | easyfly_global_planner | A*/RRT*，输入 /occupancy_grid（M4.0 已产出） |
+| ~~easyfly_obstacle_avoidance~~ | reactive 机动层（与 EGO 互补），M4.4 做 |
+| ~~TrackTarget~~ | ✅ M4.1 已完成（easyfly_target_tracking） |
 | easyfly_local_planner | EGO-Planner（ROS1→ROS2 迁移，风险最高） |
 | easyfly_trajectory_optimizer | Minimum Snap |
 | easyfly_obstacle_avoidance | 避障机动 |
