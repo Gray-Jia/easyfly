@@ -20,3 +20,6 @@ src/perception/p3_tracking/fast_lio/doc/
 # 临时文件
 *.txt
 *.log
+
+# python 字节码
+__pycache__/
