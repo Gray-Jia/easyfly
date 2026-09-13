@@ -28,7 +28,7 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 
 
 def _resolve_px4_dir():
@@ -61,7 +61,9 @@ def generate_launch_description():
     px4_bin   = str(px4_dir / "build" / "px4_sitl_default" / "bin" / "px4")
 
     model_dir   = pkg_px4_sitl + "/models"
-    world_file  = pkg_gazebo_worlds + "/" + world_name
+    # PathJoinSubstitution 延迟求值 — 直接用 str + LaunchConfiguration 相加会在
+    # launch 生成期抛 "can only concatenate str (not LaunchConfiguration)" (回归测试发现)
+    world_file  = PathJoinSubstitution([pkg_gazebo_worlds, world_name])
     model_name  = "easyfly_iris"
     model_sdf   = model_dir + "/" + model_name + "/" + model_name + ".sdf"
 
