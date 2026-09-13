@@ -102,6 +102,10 @@ private:
   // ---- 聚合缓存 ----
   easyfly_msgs::msg::UAVState uav_;
 
+  // ---- Q17: RC 掉线检测 ----
+  rclcpp::Time last_rc_time_;          // 最近一次收到 RCIn 的时刻 (0=从未收到)
+  static constexpr double RC_TIMEOUT_S = 1.0;  // 超过此时长无 RC 数据视为断连
+
   // ---- encoder 缓存 ----
   easyfly_msgs::msg::UAVCommand last_cmd_;
   rclcpp::Time last_cmd_time_;

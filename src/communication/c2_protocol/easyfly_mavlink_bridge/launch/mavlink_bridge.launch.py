@@ -46,11 +46,14 @@ def generate_launch_description():
     )
 
     # ---- easyfly_mavlink_bridge ----
+    # use_sim_time: /uav_state.header.stamp 是下游 TF (odom→base_link) 的时间戳来源,
+    # 仿真中必须用 sim 时钟, 否则 TF 时间戳超前于 /clock → RViz/查询 extrapolation 失败
     bridge_node = Node(
         package="easyfly_mavlink_bridge",
         executable="mavlink_bridge_node",
         output="screen",
         name="mavlink_bridge",
+        parameters=[{"use_sim_time": True}],
     )
 
     # ---- easyfly_rc_receiver ----

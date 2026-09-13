@@ -4,6 +4,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
+#include <atomic>
+#include <mutex>
+
 #include <easyfly_msgs/msg/uav_state.hpp>
 #include <easyfly_msgs/msg/uav_command.hpp>
 #include <easyfly_msgs/action/takeoff.hpp>
@@ -15,15 +18,9 @@
 namespace easyfly_flight_control
 {
 
-struct PID
-{
-  double kp, ki, kd;
-  double integral{0.0}, prev_error{0.0};
-  double limit_i{5.0};       // 积分限幅
-
-  double update(double error, double dt);
-  void   reset();
-};
+// 注: 原 PID 结构已移除 (Q1) — 本节点的实际控制策略为
+// "setpoint 生成 + PX4 OFFBOARD 内环闭环", PID 从未被调用, 属死代码。
+// 若阶段四需要速度/姿态外环, 请重新设计并参数化。
 
 class FlightController : public rclcpp::Node
 {
@@ -70,11 +67,20 @@ private:
   // ---- 独立 callback group (client 与 action 回调分离，避免死锁) ----
   rclcpp::CallbackGroup::SharedPtr cli_cb_group_;
   rclcpp::CallbackGroup::SharedPtr ctl_cb_group_;   // control loop 专用
+  rclcpp::CallbackGroup::SharedPtr state_cb_group_; // /uav_state 订阅专用 (Q9)
 
   // ---- helpers ----
   bool call_arm(bool arm);
   bool call_set_mode(uint8_t mode);
   double clamp(double v, double lo, double hi);
+  // Q9: 等待 PX4 实际进入指定模式 (轮询 /uav_state.flight_mode)
+  bool wait_mode_engaged(uint8_t mode, double timeout_s);
+  // Q9: uav_ 快照 (线程安全读取)
+  easyfly_msgs::msg::UAVState get_uav() const;
+  // Q4: 用渐近状态刷新悬停目标并立即发布 setpoint (恢复 OFFBOARD 数据流)
+  void enter_hover_at(double x, double y, double z, double yaw);
+  // Q4: 反馈值毛刺守卫 (偏差>3m 回退 ramp 值)
+  static double safe_axis(double fb, double ramp);
 
   // ---- subscriptions ----
   rclcpp::Subscription<easyfly_msgs::msg::UAVState>::SharedPtr sub_uav_state_;
@@ -90,16 +96,21 @@ private:
   rclcpp_action::Server<Land>::SharedPtr         as_land_;
   rclcpp_action::Server<GoToWaypoint>::SharedPtr as_waypoint_;
 
-  // ---- latest state ----
+  // ---- latest state (Q9: 多线程读写保护) ----
   easyfly_msgs::msg::UAVState uav_;
-  bool state_received_{false};
+  mutable std::mutex state_mtx_;
+  std::atomic<bool> state_received_{false};
 
-  // ---- PID ----
-  PID pid_x_, pid_y_, pid_z_, pid_yaw_;
+  // ---- waypoint 目标渐近状态 (抗反馈毛刺, 自维护无毛刺插值) ----
+  double x_ramp_{0.0}, y_ramp_{0.0}, z_ramp_{0.0};
+  double wp_start_x_{0.0}, wp_start_y_{0.0};         // waypoint 起点
+  int    wp_in_radius_frames_{0};                    // Q16: 连续在验收半径内的帧数 (去抖)
+  rclcpp::Time last_ctl_time_;                       // Q12: 上一控制周期时刻 (实测 dt)
 
   // ---- active action ----
   enum Action { NONE, TAKEOFF, LANDING, WAYPOINT, HOVER };
   Action active_{NONE};
+  rclcpp::Time takeover_since_;        // Q2 配套: 外部接管检测去抖起始时刻
 
   // hover 目标位置（takeoff/waypoint 完成后保持的位置）
   double hover_x_{0.0}, hover_y_{0.0}, hover_z_{0.0}, hover_yaw_{0.0};
@@ -108,7 +119,10 @@ private:
   double takeoff_target_z_{0.0};
   double takeoff_speed_{1.0};
   double takeoff_start_x_{0.0}, takeoff_start_y_{0.0}, takeoff_start_z_{0.0};
+  double takeoff_start_yaw_{0.0};    // Q7: 起飞时锁存 yaw, 全程不取反馈 (防姿态毛刺)
+  double takeoff_ramp_z_{0.0};       // Q4/Q5: 起飞渐近高度 (取消/超时时悬停用)
   rclcpp::Time takeoff_start_time_;
+  rclcpp::Time takeoff_deadline_;    // Q5: 起飞超时保护
   rclcpp::Time land_start_time_;
 
   // waypoint state
@@ -116,6 +130,7 @@ private:
   double wp_max_speed_{2.0};
   double wp_accept_radius_{0.5};
   double wp_start_dist_{0.0};
+  rclcpp::Time wp_deadline_;         // Q5: 航点超时保护
 
   // action goal handles
   std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>>      gh_takeoff_;

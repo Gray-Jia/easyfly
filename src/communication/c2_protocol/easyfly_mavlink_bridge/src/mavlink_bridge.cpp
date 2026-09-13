@@ -137,7 +137,10 @@ void MavlinkBridge::cb_state(const mavros_msgs::msg::State::SharedPtr msg)
   uav_.armed            = msg->armed;
   uav_.flight_mode_name = msg->mode;
 
-  // 字符串模式名 → 枚举值（PX4 常用模式）
+  // 字符串模式名 → 枚举值。
+  // Q18 注意: 这是 easyfly 的语义抽象而非 PX4 模式直译 — AUTO.LOITER 映射为 2(POSCTL 等位)
+  // 是历史设计 (自动悬停 ≈ 位置控制语义)。下游仅依赖 3(OFFBOARD)/6(RTL)/7(LAND) 三个值;
+  // 需要精确区分 PX4 模式时请使用 flight_mode_name 字符串字段, 勿依赖此整数。
   if      (msg->mode == "MANUAL")     uav_.flight_mode = 0;
   else if (msg->mode == "ALTCTL")     uav_.flight_mode = 1;
   else if (msg->mode == "POSCTL")     uav_.flight_mode = 2;
@@ -225,8 +228,9 @@ void MavlinkBridge::cb_battery(const sensor_msgs::msg::BatteryState::SharedPtr m
 
 void MavlinkBridge::cb_rc_in(const mavros_msgs::msg::RCIn::SharedPtr msg)
 {
-  // 只要收到 RC 数据就认为遥控器连接
+  // 只要收到 RC 数据就认为遥控器连接 (Q17: 记录时刻, 掉线由 publish_state 超时判定)
   uav_.rc_connected = !msg->channels.empty();
+  if (uav_.rc_connected) last_rc_time_ = now();
   rcvd_rc_ = true;
 }
 
@@ -237,6 +241,16 @@ void MavlinkBridge::cb_rc_in(const mavros_msgs::msg::RCIn::SharedPtr msg)
 void MavlinkBridge::publish_state()
 {
   uav_.header.stamp = now();
+
+  // Q17: RC 掉线检测 — 超过 1s 未收到 RCIn 则视为遥控器断连
+  // (仿真无遥控器: 从未收到 → last_rc_time_=0 → 恒为 false, 语义正确)
+  if (uav_.rc_connected &&
+      (last_rc_time_.nanoseconds() == 0 ||
+       (now() - last_rc_time_).seconds() > RC_TIMEOUT_S))
+  {
+    uav_.rc_connected = false;
+  }
+
   pub_uav_state_->publish(uav_);
 
   // /mission_status: 阶段一只发布 mission_phase=IDLE
@@ -308,6 +322,8 @@ void MavlinkBridge::publish_setpoint()
       break;
     }
     case easyfly_msgs::msg::UAVCommand::ATTITUDE:
+    // Q15: ATTITUDE_THRUST 是 ATTITUDE 的历史别名 — 语义同为
+    // "姿态四元数 + 归一化推力 [0-1]" (thrust 字段注释见 UAVCommand.msg), 两者处理一致
     case easyfly_msgs::msg::UAVCommand::ATTITUDE_THRUST: {
       mavros_msgs::msg::AttitudeTarget att;
       att.header.stamp = now();
@@ -327,7 +343,10 @@ void MavlinkBridge::publish_setpoint()
       att.orientation.z = cr * cp * sy - sr * sp * cy;
 
       att.thrust      = static_cast<float>(last_cmd_.thrust);
-      att.type_mask   = 0b111;  // 忽略角速率，使用姿态+推力
+      // MAVLink type_mask 位定义: bit0=忽略roll速率 bit1=忽略pitch速率
+      // bit2=忽略yaw速率 bit3=忽略推力 bit7=忽略姿态四元数
+      // 本模式使用姿态+推力 → 忽略三个角速率位 (0b111)
+      att.type_mask   = 0b111;
       att.body_rate.x = 0.0f;
       att.body_rate.y = 0.0f;
       att.body_rate.z = 0.0f;
@@ -343,7 +362,9 @@ void MavlinkBridge::publish_setpoint()
       att.body_rate.y = static_cast<float>(last_cmd_.pitch_rate);
       att.body_rate.z = static_cast<float>(last_cmd_.yaw_rate_cmd);
       att.thrust      = static_cast<float>(last_cmd_.thrust);
-      att.type_mask   = 0b10000111;  // 忽略姿态+推力 (bit0 使用角速率)
+      // Q14 修复: 本模式使用角速率+推力 → 仅忽略姿态四元数 (bit7)。
+      // 原值 0b10000111 把 bit0-2 (三个角速率) 也置了忽略, 角速率指令被静默丢弃!
+      att.type_mask   = 0b10000000;
 
       pub_setpoint_att_->publish(att);
       break;
@@ -400,7 +421,7 @@ void MavlinkBridge::cb_set_flight_mode(
     case 3:  mav_req->custom_mode = "OFFBOARD";   break;
     case 4:  mav_req->custom_mode = "STABILIZED"; break;
     case 5:  mav_req->custom_mode = "ACRO";       break;
-    case 6:  mav_req->custom_mode = "RTL";        break;
+    case 6:  mav_req->custom_mode = "AUTO.RTL";   break;  // PX4 模式名是 AUTO.RTL ("RTL" 是 ArduPilot 名, PX4 会拒绝)
     case 7:  mav_req->custom_mode = "AUTO.LAND";       break;
     default:
       res->success = false;

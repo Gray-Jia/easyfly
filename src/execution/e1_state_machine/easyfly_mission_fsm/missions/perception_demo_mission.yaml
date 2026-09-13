@@ -1,0 +1,28 @@
+# perception_demo_mission.yaml — 阶段三 M6 验收演示任务
+# 起飞5m → 悬停 → 前飞途经目标区(8~16m) → 折返 → 降落
+# 航线说明: 目标布置在 x=6~24m (行人 8/12/16/20, 消防车 15/24)
+#           飞至 x=15 高度 4m 时相机视野覆盖大部分目标
+
+type=takeoff
+altitude=2.5
+climb_speed=1.0
+---
+type=hover
+wait=2.0
+---
+type=waypoint
+x=15.0
+y=0.0
+z=2.5
+max_speed=2.0
+---
+type=hover
+wait=5.0
+---
+type=waypoint
+x=0.5
+y=0.0
+z=2.5
+max_speed=2.0
+---
+type=land

@@ -10,7 +10,10 @@
 #include <easyfly_msgs/action/land.hpp>
 #include <easyfly_msgs/action/go_to_waypoint.hpp>
 #include <easyfly_msgs/action/execute_mission.hpp>
+#include <easyfly_msgs/srv/set_flight_mode.hpp>
 
+#include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -54,6 +57,9 @@ private:
   rclcpp_action::Client<Land>::SharedPtr         cli_land_;
   rclcpp_action::Client<GoToWaypoint>::SharedPtr cli_waypoint_;
 
+  // ---- 低电量 RTL 服务客户端 (Q2) ----
+  rclcpp::Client<easyfly_msgs::srv::SetFlightMode>::SharedPtr cli_set_mode_;
+
   // ---- state ----
   void cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg);
 
@@ -65,10 +71,16 @@ private:
 
   // ---- safety ----
   void safety_check();
+  // Q2: 低电量 → 请求 mavlink_bridge 切 PX4 RTL (异步, 不阻塞 timer)
+  void trigger_rtl();
+  // Q10: 取消当前正在执行的子 action (takeoff/land/waypoint)
+  void cancel_current_step();
 
   // ---- helpers ----
   std::vector<MissionStep> parse_mission(const std::string & path);
   void publish_status(uint8_t phase, const std::string & name, int wp, int total, float prog);
+  // Q8: 数值解析防崩溃 (非法值返回 NaN 并记日志)
+  double safe_stod(const std::string & val, const std::string & line);
 
   // ---- subs ----
   rclcpp::Subscription<easyfly_msgs::msg::UAVState>::SharedPtr sub_uav_state_;
@@ -83,9 +95,18 @@ private:
   easyfly_msgs::msg::UAVState uav_;
   bool state_received_{false};
 
-  // ---- mission state ----
-  bool mission_active_{false};
-  bool emergency_{false};
+  // ---- mission state (跨线程: 任务线程 / executor 线程) ----
+  std::atomic<int>  steps_completed_{0};   // 已完成步骤数 (终态判定)
+  std::atomic<bool> mission_active_{false};
+  std::atomic<bool> emergency_{false};      // 低电量等异常中止
+  std::atomic<bool> cancel_requested_{false}; // 用户主动取消
+  bool rtl_triggered_{false};               // 一次性保护 (仅 timer 线程写)
+
+  // ---- 当前子 goal handle (供取消; 任务线程写, timer 线程取消) ----
+  std::mutex step_mtx_;
+  std::shared_ptr<rclcpp_action::ClientGoalHandle<Takeoff>>      cur_takeoff_gh_;
+  std::shared_ptr<rclcpp_action::ClientGoalHandle<Land>>         cur_land_gh_;
+  std::shared_ptr<rclcpp_action::ClientGoalHandle<GoToWaypoint>> cur_wp_gh_;
 };
 
 }  // namespace easyfly_mission_fsm

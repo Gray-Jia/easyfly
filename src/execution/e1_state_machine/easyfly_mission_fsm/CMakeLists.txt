@@ -30,7 +30,7 @@ install(TARGETS mission_fsm_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY missions
+install(DIRECTORY missions launch
   DESTINATION share/${PROJECT_NAME}
 )
 
