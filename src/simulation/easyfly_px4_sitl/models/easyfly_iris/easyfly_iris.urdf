@@ -1,0 +1,85 @@
+<?xml version="1.0"?>
+<!--
+  easyfly_iris.urdf — RViz 可视化专用 URDF (2026-09-13)
+
+  背景: easyfly_iris 是 Gazebo SDF 模型 (PX4 1.16 仿真), RViz 的 RobotModel
+  只认 URDF + robot_description, 因此提供此 visual-only URDF 在 RViz 中
+  显示机体网格 (复用 PX4 的 iris.stl, 与 Gazebo 外观一致)。
+
+  ⚠️ 唯一真源是 easyfly_camera_calib/config/sensors.yaml (TF 外参) 和
+     easyfly_iris.sdf (模型)。修改传感器安装位姿时必须三处同步:
+       sensors.yaml (calib_tf_publisher 的 TF 来源)
+       easyfly_iris.sdf (Gazebo 传感器位置)
+       本文件 (RViz 显示, 与 TF 数值一致)
+     数值不一致时 RViz 中会出现 TF 抖动 (两个静态 TF 来源交替)。
+
+  TF 说明: robot_state_publisher 会发布本 URDF 的 joint TF, 与
+  calib_tf_publisher 的静态 TF 数值一致 (重复但无害)。
+-->
+<robot name="easyfly_iris">
+
+  <!-- ============ 机体 (复用 PX4 iris mesh, 含 4 机臂+旋翼) ============ -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://easyfly_gazebo_models/meshes/iris.stl"/>
+      </geometry>
+      <material name="iris_body">
+        <color rgba="0.75 0.75 0.75 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- ============ D435i 前视深度相机 (sensors.yaml: camera.mount) ============ -->
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.025 0.09 0.025"/>   <!-- 与 SDF camera_visual 一致 -->
+      </geometry>
+      <material name="camera_dark">
+        <color rgba="0.15 0.15 0.15 1.0"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <!-- sensors.yaml camera.mount.translation = (0.25, 0, 0.22) -->
+    <origin xyz="0.25 0.0 0.22" rpy="0 0 0"/>
+  </joint>
+
+  <!-- 光学系 (无 visual, 仅保持 TF 树完整) -->
+  <link name="camera_color_optical_frame"/>
+  <joint name="camera_color_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_color_optical_frame"/>
+    <!-- sensors.yaml camera.optical: translation (0.0325,0,0), rpy (-π/2,0,-π/2) -->
+    <origin xyz="0.0325 0.0 0.0" rpy="-1.5707963267948966 0.0 -1.5707963267948966"/>
+  </joint>
+
+  <link name="camera_depth_optical_frame"/>
+  <joint name="camera_depth_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_depth_optical_frame"/>
+    <origin xyz="0.0325 0.0 0.0" rpy="-1.5707963267948966 0.0 -1.5707963267948966"/>
+  </joint>
+
+  <!-- ============ Livox MID-360 (sensors.yaml: lidar.mount) ============ -->
+  <link name="livox_frame">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://easyfly_gazebo_models/mid360/meshes/livox_mid-360-90x.dae"/>
+      </geometry>
+    </visual>
+  </link>
+  <joint name="livox_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="livox_frame"/>
+    <!-- sensors.yaml lidar.mount.translation = (0, 0, 0.13) -->
+    <origin xyz="0.0 0.0 0.13" rpy="0 0 0"/>
+  </joint>
+
+</robot>

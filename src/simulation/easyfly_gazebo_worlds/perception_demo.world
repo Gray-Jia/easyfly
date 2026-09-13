@@ -1,0 +1,130 @@
+<?xml version="1.0" ?>
+<!-- EasyFly 阶段三 感知验收场景:
+     无人机自 (0,0) 起飞, 沿 +X 方向飞行, 沿途布置行人/车辆/纸箱,
+     用于目标检测(3.2)、多目标跟踪(3.4)、3D定位(3.5)与 FAST-LIO 建图(3.3)验证。
+-->
+<sdf version="1.6">
+  <world name="perception_demo">
+
+    <!-- 物理引擎 -->
+    <physics name="default_physics" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <!-- ROS2 /clock 由 libgazebo_ros_init.so 提供 (SystemPlugin, 通过 gzserver -s 参数加载, 不能写在 world 内) -->
+
+    <!-- 太阳光 -->
+    <light name="sun" type="directional">
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>0 0 -1</direction>
+    </light>
+
+    <!-- 地面 -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1000 1000</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1000 1000</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.3 0.3 0.3 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 起飞点视觉标记（10m 直径直升机坪） -->
+    <model name="helipad">
+      <static>true</static>
+      <pose>0 0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>5.0</radius>
+              <length>0.001</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.1 1</ambient>
+            <diffuse>0.3 0.3 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ============ 检测目标: 行人 (COCO class 0: person) ============ -->
+    <include>
+      <uri>model://person_standing</uri>
+      <name>person_1</name>
+      <pose>8 2 0 0 0 3.14</pose>
+    </include>
+    <include>
+      <uri>model://person_standing</uri>
+      <name>person_2</name>
+      <pose>12 -2 0 0 0 2.4</pose>
+    </include>
+    <include>
+      <uri>model://person_standing</uri>
+      <name>person_3</name>
+      <pose>16 1.5 0 0 0 1.8</pose>
+    </include>
+    <include>
+      <uri>model://person_walking</uri>
+      <name>person_4_walking</name>
+      <pose>20 -1.5 0 0 0 0</pose>
+    </include>
+
+    <!-- ============ 检测目标: 车辆 (COCO class 7/8: truck/car) ============ -->
+    <include>
+      <uri>model://fire_truck</uri>
+      <name>fire_truck_1</name>
+      <pose>15 -6 0 0 0 1.57</pose>
+    </include>
+    <include>
+      <uri>model://fire_truck</uri>
+      <name>fire_truck_2</name>
+      <pose>24 5 0 0 0 -0.5</pose>
+    </include>
+
+    <!-- ============ LiDAR 障碍物: 纸箱 (FAST-LIO 建图特征) ============ -->
+    <include>
+      <uri>model://cardboard_box</uri>
+      <name>box_1</name>
+      <pose>6 -4 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://cardboard_box</uri>
+      <name>box_2</name>
+      <pose>10 4 0 0 0 0.5</pose>
+    </include>
+    <include>
+      <uri>model://cardboard_box</uri>
+      <name>box_3</name>
+      <pose>18 -4 0 0 0 1.0</pose>
+    </include>
+    <include>
+      <uri>model://cardboard_box</uri>
+      <name>box_4</name>
+      <pose>22 3 0 0 0 0.3</pose>
+    </include>
+
+  </world>
+</sdf>

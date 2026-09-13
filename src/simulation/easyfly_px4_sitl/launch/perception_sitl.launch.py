@@ -1,0 +1,210 @@
+"""
+perception_sitl.launch.py — 阶段三感知调试启动（Gazebo + PX4 + RViz2）
+
+用法:
+  ros2 launch easyfly_px4_sitl perception_sitl.launch.py
+
+内容:
+  - Gazebo Classic (perception_demo.world: 行人/车辆/纸箱验收场景)
+  - PX4 SITL + easyfly_iris (D435i 深度相机 + MID-360)
+  - RViz2 (相机图像 / 深度点云可视化)
+
+验证话题:
+  /camera/color/image_raw             前视彩色图像 (30 Hz)
+  /camera/color/camera_info           彩色相机内参
+  /camera/aligned_depth_to_color/image_raw   深度图 (30 Hz)
+  /camera/aligned_depth_to_color/points      深度点云 (M0 验收用, M1 后可关)
+  /livox/lidar                        MID-360 点云 (livox CustomMsg, 10 Hz)
+  /livox/imu                          MID-360 内置 IMU (200 Hz)
+"""
+
+import os
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
+
+
+def _resolve_px4_dir():
+    """优先级: 环境变量 PX4_DIR > ~/PX4-Autopilot-1.16.1 > ~/PX4-Autopilot"""
+    env = os.environ.get("PX4_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    default = Path.home() / "PX4-Autopilot-1.16.1"
+    if default.exists():
+        return default
+    return Path.home() / "PX4-Autopilot"
+
+
+def generate_launch_description():
+    pkg_px4_sitl       = get_package_share_directory("easyfly_px4_sitl")
+    pkg_gazebo_models  = get_package_share_directory("easyfly_gazebo_models")
+    pkg_gazebo_worlds  = get_package_share_directory("easyfly_gazebo_worlds")
+    pkg_gazebo_plugins = get_package_share_directory("easyfly_gazebo_plugins")
+
+    px4_dir = _resolve_px4_dir()
+    px4_build = str(px4_dir / "build" / "px4_sitl_default")
+    px4_bin   = str(px4_dir / "build" / "px4_sitl_default" / "bin" / "px4")
+
+    model_dir  = pkg_px4_sitl + "/models"
+    world_file = pkg_gazebo_worlds + "/perception_demo.world"
+    model_name = "easyfly_iris"
+    model_sdf  = model_dir + "/" + model_name + "/" + model_name + ".sdf"
+
+    px4_models_dir = str(
+        px4_dir / "Tools" / "simulation" / "gazebo-classic" /
+        "sitl_gazebo-classic" / "models")
+    gazebo_model_path = ":".join([
+        model_dir,
+        pkg_gazebo_models,
+        px4_models_dir,
+    ])
+    gazebo_plugin_dir = str(px4_dir / "build" / "px4_sitl_default" / "build_gazebo-classic")
+
+    set_model_path = SetEnvironmentVariable("GAZEBO_MODEL_PATH", gazebo_model_path)
+    # /opt/ros/humble/lib 必须包含: libgazebo_ros_init.so / libgazebo_ros_camera.so 等系统插件
+    set_plugin_path = SetEnvironmentVariable(
+        "GAZEBO_PLUGIN_PATH",
+        gazebo_plugin_dir + ":" + pkg_gazebo_plugins + "/lib:/opt/ros/humble/lib:" + os.environ.get("GAZEBO_PLUGIN_PATH", ""))
+    # PX4 gazebo 插件依赖 libmav_msgs.so / libsensor_msgs.so 等, 位于 PX4 build_gazebo-classic
+    set_ld_library_path = SetEnvironmentVariable(
+        "LD_LIBRARY_PATH",
+        gazebo_plugin_dir + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
+
+    # ---- Gazebo + 模型 + PX4 (复用 px4_sitl.launch.py 的启动逻辑, 固定 perception_demo.world) ----
+    # -s libgazebo_ros_init.so: 加载 ROS2 时钟插件(SystemPlugin, 发布 /clock), 必须用 -s 方式加载
+    gzserver = ExecuteProcess(
+        cmd=["gzserver", "--verbose", "-s", "libgazebo_ros_init.so", world_file],
+        output="screen",
+        name="gzserver",
+    )
+
+    spawn_model = ExecuteProcess(
+        cmd=[
+            "gz", "model",
+            "--spawn-file=" + model_sdf,
+            "--model-name=" + model_name,
+            "-x", "0.0", "-y", "0.0", "-z", "0.83",
+        ],
+        output="screen",
+        name="spawn_model",
+    )
+
+    gzclient = ExecuteProcess(
+        cmd=["gzclient"],
+        output="screen",
+        name="gzclient",
+    )
+
+    sitl_env = {
+        "PX4_SIM_MODEL": "gazebo-classic_iris",
+        # 注意: 不要设置 PX4_HOME_LAT/LON — 自定义经纬度(如武汉)与 PX4 SITL 默认
+        # home(苏黎世)的磁偏角差异会让 EKF local frame 相对 Gazebo 世界旋转 ~90°,
+        # 导致 mavros 位置与 Gazebo/SLAM 坐标系不一致 (M6 踩坑: 航点(x,0)被飞成(0,x))
+    }
+    sitl_env.update(os.environ)
+
+    px4_sitl = ExecuteProcess(
+        cmd=[px4_bin, "-d"],
+        cwd=px4_build,
+        env=sitl_env,
+        output="screen",
+        name="px4_sitl",
+    )
+
+    # ---- RViz2 感知调试视图 ----
+    rviz_config = pkg_px4_sitl + "/rviz/perception.rviz"
+    rviz2 = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        arguments=["-d", rviz_config],
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
+    # ---- URDF 机体可视化: robot_state_publisher (RViz RobotModel 显示飞机) ----
+    # iris 是 Gazebo SDF 模型, RViz 不认; 提供 visual-only URDF (easyfly_iris.urdf)
+    urdf_file = model_dir + "/" + model_name + "/" + model_name + ".urdf"
+    with open(urdf_file, "r") as f:
+        robot_desc = f.read()
+    robot_state_pub = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="robot_state_publisher",
+        output="screen",
+        parameters=[{
+            "robot_description": robot_desc,
+            "use_sim_time": True,
+        }],
+    )
+
+    # ---- P1 感知预处理 (M1): 静态外参 TF + 内参校验 + odom 动态 TF ----
+    calib_tf = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_camera_calib") + "/launch/calib_tf.launch.py"))
+    coord_tf = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_coord_transform") + "/launch/coord_tf.launch.py"))
+
+    # ---- P2 目标检测 (M2): YOLO11 OnnxRuntime GPU ----
+    detection = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_object_detection") + "/launch/detection.launch.py"))
+
+    # ---- P4 多目标跟踪 (M4): SORT ----
+    tracking = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_multi_object_tracking") + "/launch/tracking.launch.py"))
+
+    # ---- P5 像素转 3D (M5): 目标世界系定位 ----
+    pixel_to_3d = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_pixel_to_3d") + "/launch/pixel_to_3d.launch.py"))
+
+    # ---- P3 SLAM (M3): fast_lio + map→odom TF ----
+    fastlio = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_fast_lio_integration") + "/launch/fastlio.launch.py"))
+
+    # ---- C2 通信桥接 (mavros + mavlink_bridge): 提供 /uav_state (P1/P3 依赖) ----
+    mavlink_bridge = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_mavlink_bridge") + "/launch/mavlink_bridge.launch.py"))
+
+    # ---- E 执行层 (Q26): 飞控 + 任务状态机, 一键可飞 ----
+    flight_control = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_flight_control") + "/launch/flight_control.launch.py"),
+        launch_arguments={"use_sim_time": "true"}.items())
+    mission_fsm = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_mission_fsm") + "/launch/mission_fsm.launch.py"),
+        launch_arguments={"use_sim_time": "true"}.items())
+
+    spawn_delayed = TimerAction(period=3.0, actions=[spawn_model])
+    gui_px4_rviz = TimerAction(period=6.0, actions=[gzclient, px4_sitl, rviz2, robot_state_pub])
+    bridge_delayed = TimerAction(period=8.0, actions=[mavlink_bridge])
+    p1_nodes = TimerAction(period=12.0, actions=[calib_tf, coord_tf])
+    p2_nodes = TimerAction(period=14.0, actions=[detection, fastlio])
+    p4_nodes = TimerAction(period=16.0, actions=[tracking])
+    p5_nodes = TimerAction(period=18.0, actions=[pixel_to_3d])
+    exec_nodes = TimerAction(period=10.0, actions=[flight_control, mission_fsm])
+
+    return LaunchDescription([
+        set_model_path,
+        set_plugin_path,
+        set_ld_library_path,
+        gzserver,
+        spawn_delayed,
+        gui_px4_rviz,
+        bridge_delayed,
+        exec_nodes,
+        p1_nodes,
+        p2_nodes,
+        p4_nodes,
+        p5_nodes,
+    ])

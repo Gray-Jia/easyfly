@@ -3,10 +3,11 @@ project(easyfly_gazebo_plugins)
 
 find_package(ament_cmake REQUIRED)
 
-# 阶段一：不编译任何插件（传感器仿真在阶段三启用）
-# 阶段三启用时，取消下方注释并添加 gazebo_dev / gazebo_ros 依赖：
-#   add_subdirectory(livox_laser_plugin)
-#   add_subdirectory(realsense_plugin)
-#   add_subdirectory(velodyne_plugin)
+# 阶段三 M0: 启用 Livox MID-360 仿真插件 (ROS2 移植版)
+add_subdirectory(livox_laser_plugin)
+
+# realsense_plugin / velodyne_plugin: 暂不启用
+#   - 深度相机仿真使用系统自带 libgazebo_ros_camera.so (无第三方依赖)
+#   - velodyne 暂无需求
 
 ament_package()

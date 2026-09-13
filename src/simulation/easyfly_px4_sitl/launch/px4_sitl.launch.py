@@ -3,44 +3,65 @@ px4_sitl.launch.py — 启动 Gazebo Classic + PX4 SITL
 
 用法:
   ros2 launch easyfly_px4_sitl px4_sitl.launch.py
+  ros2 launch easyfly_px4_sitl px4_sitl.launch.py world:=perception_demo.world   # 感知场景
+  PX4_DIR=/path/to/PX4-Autopilot ros2 launch easyfly_px4_sitl px4_sitl.launch.py  # 自定义 PX4 目录
 
 架构:
-  gzserver (empty.world)  →  gz model spawn (easyfly_iris)
+  gzserver (world)  →  gz model spawn (easyfly_iris: D435i 深度相机 + MID-360)
   gzclient (GUI)
   px4 (simulator_mavlink ↔ Gazebo mavlink_interface plugin via TCP 4560)
 
 环境要求:
-  - PX4-Autopilot 已编译
+  - PX4-Autopilot 已编译 (默认 ~/PX4-Autopilot-1.16.1, 可用 PX4_DIR 或 px4_dir 参数覆盖)
   - Gazebo Classic 11 已安装 (gzserver / gzclient)
+  - easyfly_gazebo_plugins 已编译 (MID-360 仿真插件 liblivox_laser_simulation.so)
 """
 
 import os
-import signal
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
+    DeclareLaunchArgument,
     ExecuteProcess,
-    RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
 )
-from launch.event_handlers import OnProcessExit
+from launch.substitutions import LaunchConfiguration
+
+
+def _resolve_px4_dir():
+    """优先级: 环境变量 PX4_DIR > ~/PX4-Autopilot-1.16.1 > ~/PX4-Autopilot"""
+    env = os.environ.get("PX4_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    default = Path.home() / "PX4-Autopilot-1.16.1"
+    if default.exists():
+        return default
+    return Path.home() / "PX4-Autopilot"
 
 
 def generate_launch_description():
+    # ---- 参数 ----
+    world_arg = DeclareLaunchArgument(
+        "world", default_value="empty.world",
+        description="世界文件名 (位于 easyfly_gazebo_worlds)")
+
+    world_name = LaunchConfiguration("world")
+
     # ---- 路径 ----
     pkg_px4_sitl      = get_package_share_directory("easyfly_px4_sitl")
     pkg_gazebo_models = get_package_share_directory("easyfly_gazebo_models")
     pkg_gazebo_worlds = get_package_share_directory("easyfly_gazebo_worlds")
+    pkg_gazebo_plugins = get_package_share_directory("easyfly_gazebo_plugins")
 
-    px4_dir     = Path.home() / "PX4-Autopilot"
-    px4_build   = str(px4_dir / "build" / "px4_sitl_default")
-    px4_bin     = str(px4_dir / "build" / "px4_sitl_default" / "bin" / "px4")
+    px4_dir = _resolve_px4_dir()
+    px4_build = str(px4_dir / "build" / "px4_sitl_default")
+    px4_bin   = str(px4_dir / "build" / "px4_sitl_default" / "bin" / "px4")
 
     model_dir   = pkg_px4_sitl + "/models"
-    world_file  = pkg_gazebo_worlds + "/empty.world"
+    world_file  = pkg_gazebo_worlds + "/" + world_name
     model_name  = "easyfly_iris"
     model_sdf   = model_dir + "/" + model_name + "/" + model_name + ".sdf"
 
@@ -54,22 +75,25 @@ def generate_launch_description():
         px4_models_dir,
     ])
 
-    # ---- 插件路径 ----
+    # ---- 插件路径: PX4 插件 + easyfly 传感器插件(livox) + 系统 gazebo_ros 插件 ----
     gazebo_plugin_dir = str(px4_dir / "build" / "px4_sitl_default" / "build_gazebo-classic")
 
     # ---- 1. Gazebo 环境变量 ----
     set_model_path = SetEnvironmentVariable(
         "GAZEBO_MODEL_PATH", gazebo_model_path)
+    # /opt/ros/humble/lib 必须包含: libgazebo_ros_init.so / libgazebo_ros_camera.so 等系统插件
     set_plugin_path = SetEnvironmentVariable(
         "GAZEBO_PLUGIN_PATH",
-        gazebo_plugin_dir + ":" + os.environ.get("GAZEBO_PLUGIN_PATH", ""))
-    set_ld_path = SetEnvironmentVariable(
+        gazebo_plugin_dir + ":" + pkg_gazebo_plugins + "/lib:/opt/ros/humble/lib:" + os.environ.get("GAZEBO_PLUGIN_PATH", ""))
+    # PX4 gazebo 插件依赖 libmav_msgs.so / libsensor_msgs.so 等, 位于 PX4 build_gazebo-classic
+    set_ld_library_path = SetEnvironmentVariable(
         "LD_LIBRARY_PATH",
         gazebo_plugin_dir + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
 
     # ---- 2. gzserver ----
+    # -s libgazebo_ros_init.so: 加载 ROS2 时钟插件(SystemPlugin, 发布 /clock), 必须用 -s 方式加载
     gzserver = ExecuteProcess(
-        cmd=["gzserver", "--verbose", world_file],
+        cmd=["gzserver", "--verbose", "-s", "libgazebo_ros_init.so", world_file],
         output="screen",
         name="gzserver",
     )
@@ -101,9 +125,9 @@ def generate_launch_description():
     # simulator_mavlink 通过 TCP 4560 与 Gazebo mavlink 插件通信
     sitl_env = {
         "PX4_SIM_MODEL": "gazebo-classic_iris",   # PX4 standard airframe (10015_gazebo-classic_iris)
-        "PX4_HOME_LAT":  "30.5123",
-        "PX4_HOME_LON":  "114.4218",
-        "PX4_HOME_ALT":  "50.0",
+        # 注意: 不要设置 PX4_HOME_LAT/LON — 自定义经纬度(如武汉)与 PX4 SITL 默认
+        # home(苏黎世)的磁偏角差异会让 EKF local frame 相对 Gazebo 世界旋转 ~90°,
+        # 导致 mavros 位置与 Gazebo/SLAM 坐标系不一致 (M6 踩坑: 航点(x,0)被飞成(0,x))
     }
     # 继承当前环境
     sitl_env.update(os.environ)
@@ -129,9 +153,10 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        world_arg,
         set_model_path,
         set_plugin_path,
-        set_ld_path,
+        set_ld_library_path,
         gzserver,
         spawn_delayed,
         gui_and_px4,

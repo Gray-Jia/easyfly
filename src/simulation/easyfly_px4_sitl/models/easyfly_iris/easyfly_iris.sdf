@@ -104,7 +104,7 @@
         <geometry>
           <cylinder>
             <length>0.005</length>
-            <radius>0.128</radius>
+            <radius>0.001</radius>
           </cylinder>
         </geometry>
         <surface>
@@ -169,7 +169,7 @@
         <geometry>
           <cylinder>
             <length>0.005</length>
-            <radius>0.128</radius>
+            <radius>0.001</radius>
           </cylinder>
         </geometry>
         <surface>
@@ -234,7 +234,7 @@
         <geometry>
           <cylinder>
             <length>0.005</length>
-            <radius>0.128</radius>
+            <radius>0.001</radius>
           </cylinder>
         </geometry>
         <surface>
@@ -299,7 +299,7 @@
         <geometry>
           <cylinder>
             <length>0.005</length>
-            <radius>0.128</radius>
+            <radius>0.001</radius>
           </cylinder>
         </geometry>
         <surface>
@@ -345,6 +345,161 @@
         <use_parent_model_frame>1</use_parent_model_frame>
       </axis>
     </joint>
+    <!-- ==================== Livox MID-360 (水平安装) ==================== -->
+    <!-- 输出: /livox/lidar (CustomMsg) + /livox/imu
+         revolute(限位0,0) 而非 fixed: 避免 gazebo fixed joint 的 link 合并(lumping)
+         与 livox 插件动态创建的 multiray collision 冲突 (M6 踩坑, 与 AstraDroneOpen 一致) -->
+    <include>
+      <uri>model://mid360</uri>
+      <pose>0 0 0.08 0 0 0</pose>
+    </include>
+    <joint name='mid360_joint' type='revolute'>
+      <child>mid360::lidar_link</child>
+      <parent>base_link</parent>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <upper>0</upper>
+          <lower>0</lower>
+        </limit>
+      </axis>
+    </joint>
+
+    <!-- ==================== D435i 风格前视深度相机 ==================== -->
+    <!-- 机头上方平视 (机身盒 x∈[-0.235,0.235], 相机越过 iris.stl 视觉包络) -->
+    <link name='camera_link'>
+      <pose>0.25 0 0.22 0 0 0</pose>
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>0.056</mass>
+        <inertia>
+          <ixx>4.1e-05</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>5.9e-06</iyy>
+          <iyz>0</iyz>
+          <izz>5.9e-06</izz>
+        </inertia>
+      </inertial>
+      <visual name='camera_visual'>
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.025 0.09 0.025</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <name>Gazebo/DarkGrey</name>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+          </script>
+        </material>
+      </visual>
+    </link>
+    <joint name='camera_joint' type='fixed'>
+      <child>camera_link</child>
+      <parent>base_link</parent>
+    </joint>
+
+    <link name='camera_color_frame'>
+      <pose>0.0325 0 0 0 0 0</pose>
+      <inertial>
+        <mass>0.0015</mass>
+        <inertia>
+          <ixx>1e-06</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>1e-06</iyy>
+          <iyz>0</iyz>
+          <izz>1e-06</izz>
+        </inertia>
+      </inertial>
+      <sensor name='color' type='camera'>
+        <always_on>true</always_on>
+        <update_rate>30</update_rate>
+        <visualize>false</visualize>
+        <camera name='color'>
+          <horizontal_fov>1.518</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>RGB_INT8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>100</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
+        <plugin name='color_camera_plugin' filename='libgazebo_ros_camera.so'>
+          <ros>
+            <namespace>/camera</namespace>
+          </ros>
+          <camera_name>color</camera_name>
+          <frame_name>camera_color_optical_frame</frame_name>
+        </plugin>
+      </sensor>
+    </link>
+    <joint name='camera_color_joint' type='fixed'>
+      <child>camera_color_frame</child>
+      <parent>camera_link</parent>
+    </joint>
+
+    <link name='camera_depth_frame'>
+      <pose>0.0325 0 0 0 0 0</pose>
+      <inertial>
+        <mass>0.0015</mass>
+        <inertia>
+          <ixx>1e-06</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>1e-06</iyy>
+          <iyz>0</iyz>
+          <izz>1e-06</izz>
+        </inertia>
+      </inertial>
+      <sensor name='depth' type='depth'>
+      <always_on>true</always_on>
+      <update_rate>30</update_rate>
+      <visualize>false</visualize>
+      <camera name='depth'>
+        <horizontal_fov>1.518</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>BGR_INT8</format>
+        </image>
+        <clip>
+          <near>0.2</near>
+          <!-- Q23: far 10→20m — 远距目标 3D 定位不再截断 (深度精度 32FC1 足够) -->
+          <far>20.0</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.007</stddev>
+        </noise>
+      </camera>
+      <plugin name='depth_camera_plugin' filename='libgazebo_ros_camera.so'>
+        <ros>
+          <namespace>/camera</namespace>
+        </ros>
+        <camera_name>aligned_depth_to_color</camera_name>
+        <frame_name>camera_depth_optical_frame</frame_name>
+        <min_depth>0.2</min_depth>
+        <max_depth>20.0</max_depth>
+      </plugin>
+      </sensor>
+    </link>
+    <joint name='camera_depth_joint' type='fixed'>
+      <child>camera_depth_frame</child>
+      <parent>camera_link</parent>
+    </joint>
+
     <plugin name='rosbag' filename='libgazebo_multirotor_base_plugin.so'>
       <robotNamespace/>
       <linkName>base_link</linkName>
