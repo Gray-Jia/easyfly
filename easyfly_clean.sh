@@ -14,7 +14,7 @@
 # 验证: pkill 后 `pgrep -cf fastlio_mapping` 应为 0 (无输出)。
 
 echo "清理前:"
-pgrep -af "fastlio_mapping|gzserver|gzclient|bin/px4|mavros_node|mavlink_bridge_node|rc_receiver_node|easyfly_flight_control|easyfly_mission_fsm|component_container|rviz2" 2>/dev/null | head -20
+pgrep -af "fastlio_mapping|gzserver|gzclient|bin/px4|mavros_node|mavlink_bridge_node|rc_receiver_node|easyfly_flight_control|easyfly_mission_fsm|ego_planner_node|traj_server|easyfly_pointcloud_filter|easyfly_semantic_map|easyfly_global_planner|easyfly_target_tracking|component_container|rviz2" 2>/dev/null | head -30
 
 pkill -9 -f fastlio_mapping        2>/dev/null   # ★ 最易残留
 pkill -9 -f gzserver               2>/dev/null
@@ -25,9 +25,18 @@ pkill -9 -f mavlink_bridge_node    2>/dev/null
 pkill -9 -f rc_receiver_node       2>/dev/null
 pkill -9 -f easyfly_flight_control 2>/dev/null
 pkill -9 -f easyfly_mission_fsm    2>/dev/null
+# M4.x 规划/感知节点 (2026-09-14 踩坑: 未列入导致反复启停累积多实例,
+# 每个 ego_planner_node ~100% CPU → RTF 崩 → EKF 退化 → 飞行中 failsafe 漂飞)
+pkill -9 -f ego_planner_node       2>/dev/null
+pkill -9 -f traj_server            2>/dev/null
+pkill -9 -f easyfly_pointcloud_filter 2>/dev/null
+pkill -9 -f easyfly_semantic_map   2>/dev/null
+pkill -9 -f easyfly_global_planner 2>/dev/null
+pkill -9 -f easyfly_target_tracking 2>/dev/null
 pkill -9 -f component_container    2>/dev/null
+pkill -9 -f "ros2 launch"          2>/dev/null
 pkill -f    rviz2                  2>/dev/null
 sleep 2
 
-left=$(pgrep -cf "fastlio_mapping|gzserver|bin/px4|mavros_node|component_container" 2>/dev/null || echo 0)
+left=$(pgrep -cf "fastlio_mapping|gzserver|bin/px4|mavros_node|component_container|ego_planner_node|traj_server" 2>/dev/null || echo 0)
 echo "清理完成, 残留进程: ${left:-0}"

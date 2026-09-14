@@ -3,8 +3,8 @@
 // 数据流:
 //   /livox/lidar (livox_ros_driver2/CustomMsg, livox_frame, 10Hz 20000点)
 //     → 距离滤波 (盲区 0.3m / 远界) + 体素降采样 (filter_core.hpp, 可单测)
-//     → [可选] TF 变换到 output_frame (默认 base_link, 与 EGO grid_map 的
-//       "cloud 在 body 系" 假设对齐; 变换用静态外参链, 无时间依赖)
+//     → [可选] TF 变换到 output_frame (默认 odom, 世界系; EGO grid_map 对点云
+//       零变换直接用原始坐标, 因此点云必须已在 odom 系; semantic_map 因同系退化为恒等)
 //     → /pointcloud_filtered (sensor_msgs/PointCloud2, x/y/z/intensity)
 //
 // 消费方: easyfly_semantic_map (M4.0 聚类/栅格)、EGO-Planner (M4.3 grid_map/cloud)。
@@ -65,7 +65,7 @@ private:
         float range_min{0.3f};
         float range_max{25.0f};
         float voxel_size{0.1f};
-        std::string output_frame{"base_link"};   // 空 = 保持源系 (livox_frame)
+        std::string output_frame{"odom"};   // 空 = 保持源系 (livox_frame)
     };
 
     void loadParams()

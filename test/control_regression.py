@@ -12,6 +12,8 @@ control_regression.py — EasyFly 控制链回归测试 (question.md Q32 轻量�
   T6  连续起降 ×2  降落 disarm 后可再次起飞 (复查缺陷 D 回归)
   T7  坏任务文件   mission abort 且节点存活 (P0/Q8: 非法数值不崩溃)
   T8  低电量 RTL   注入 10% 电量 → 任务 EMERGENCY abort + PX4 AUTO.RTL (Q2/外部接管检测)
+  T9  轨迹跟随     (M4.3) 合成 PositionCommand 直线 → TRAJECTORY encoder +
+                   /follow_trajectory 全流程: 到达 / 停流回悬停 / cancel 语义
 
 已知仿真怪癖 (test-guide.md 第六节, 非代码缺陷):
   - SITL 连续 3+ 轮起降后磁力计可能退化报 failsafe — 本套件共 4 次起飞,
@@ -36,8 +38,9 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile
 
 from action_msgs.msg import GoalStatus
-from easyfly_msgs.action import ExecuteMission, GoToWaypoint, Land, Takeoff
+from easyfly_msgs.action import ExecuteMission, FollowTrajectory, GoToWaypoint, Land, Takeoff
 from easyfly_msgs.msg import UAVState
+from quadrotor_msgs.msg import PositionCommand
 from sensor_msgs.msg import BatteryState
 
 RTL_MISSION = "/tmp/easyfly_rtl_mission.yaml"
@@ -67,6 +70,7 @@ class RegressionRunner(Node):
         self.ac_land = ActionClient(self, Land, "/land")
         self.ac_wp = ActionClient(self, GoToWaypoint, "/goto_waypoint")
         self.ac_mission = ActionClient(self, ExecuteMission, "/execute_mission")
+        self.ac_follow = ActionClient(self, FollowTrajectory, "/follow_trajectory")
 
         self._bat_pub = self.create_publisher(BatteryState, "/mavros/battery", 10)
         self._bat_stop = threading.Event()
@@ -361,6 +365,152 @@ class RegressionRunner(Node):
         g.climb_speed = 1.0
         return g
 
+    # ------------------------------------------------ T9 (M4.3 轨迹跟随)
+
+    def t9_follow_trajectory(self):
+        """合成 PositionCommand 直线 → TRAJECTORY encoder + /follow_trajectory 全流程。
+        不依赖 EGO (empty.world), 覆盖: 跟随到达 / 停流回悬停 / cancel 语义。"""
+        # -- 起飞到 1.5m (T8 RTL 后可能已落地) --
+        st = None
+        for attempt in (1, 2):
+            st, res = self.call_action(self.ac_takeoff, self._takeoff_goal(1.5), 120.0)
+            if st == GoalStatus.STATUS_SUCCEEDED:
+                break
+            if attempt == 1 and res and "arm failed" in res.message:
+                info("T9 arm 失败, 等 20s 重发...")
+                time.sleep(20.0)
+        check("T9 起飞 SUCCEEDED", st == GoalStatus.STATUS_SUCCEEDED,
+              "status=%s" % GSTATUS.get(st, st))
+        if st != GoalStatus.STATUS_SUCCEEDED:
+            return False
+        check("T9 /follow_trajectory action server", self.ac_follow.wait_for_server(15.0))
+        time.sleep(3.0)
+
+        pub = _SyntheticTrajectory(self)
+
+        # -- T9a: 直线跟随到达 (合成流, 无速度前馈) --
+        s = self.snap()
+        start = (s.position_x, s.position_y, s.position_z)
+        tgt = (start[0] + 4.0, start[1], start[2])
+        pub.start_line(start, tgt, speed=1.0)
+        time.sleep(0.5)  # 让首帧流起来 (避免起始宽限)
+        st, res = self.call_action(self.ac_follow, _follow_goal(tgt, timeout=60.0), 90.0)
+        check("T9a 跟随直线到达 SUCCEEDED", st == GoalStatus.STATUS_SUCCEEDED,
+              "status=%s msg=%s" % (GSTATUS.get(st, st), res.message if res else "-"))
+        pub.stop()
+        time.sleep(3.0)
+        s = self.snap()
+        err = math.hypot(s.position_x - tgt[0], s.position_y - tgt[1]) if s else float("nan")
+        check("T9a 落点误差 <1.0m", err < 1.0, "误差 %.2fm" % err)
+        check("T9a armed+OFFBOARD", s is not None and s.armed and s.flight_mode == 3,
+              "armed=%s mode=%d" % (s.armed if s else "-", s.flight_mode if s else -1))
+
+        # -- T9b: 飞行中停流 → 0.5s 内回悬停 + abort(stream_lost) --
+        s = self.snap()
+        start = (s.position_x, s.position_y, s.position_z)
+        tgt = (start[0] + 8.0, start[1], start[2])
+        pub.start_line(start, tgt, speed=1.0)
+        time.sleep(0.5)
+        gh = self.send_goal(self.ac_follow, _follow_goal(tgt, timeout=60.0))
+        check("T9b 轨迹跟随 goal 被接受", gh is not None, "-")
+        time.sleep(2.0)          # 飞一段 (流活跃)
+        z_before = self.snap().position_z
+        pub.stop()               # 断流
+        t_stop = time.monotonic()
+        st, res = self.wait_result(gh, 20.0)
+        dt = time.monotonic() - t_stop
+        check("T9b 断流后 abort(stream_lost)", st == GoalStatus.STATUS_ABORTED and
+              res is not None and res.message == "stream_lost",
+              "status=%s msg=%s (%.2fs)" % (GSTATUS.get(st, st),
+                                            res.message if res else "-", dt))
+        time.sleep(3.0)
+        s = self.snap()
+        check("T9b 断流后就地悬停 (z 保持, 不坠)", s is not None and
+              s.armed and s.flight_mode == 3 and abs(s.position_z - z_before) < 1.0,
+              "z=%.2f (断流前 %.2f)" % (s.position_z if s else float("nan"), z_before))
+
+        # -- T9c: cancel → CANCELED + 悬停空中 --
+        s = self.snap()
+        start = (s.position_x, s.position_y, s.position_z)
+        tgt = (start[0] + 8.0, start[1], start[2])
+        pub.start_line(start, tgt, speed=1.0)
+        time.sleep(0.5)
+        gh = self.send_goal(self.ac_follow, _follow_goal(tgt, timeout=60.0))
+        check("T9c goal 被接受", gh is not None, "-")
+        time.sleep(2.0)
+        self._wait_future(gh.cancel_goal_async(), 10.0)
+        st, _ = self.wait_result(gh, 30.0)
+        check("T9c 取消后终态 CANCELED", st == GoalStatus.STATUS_CANCELED,
+              "status=%s" % GSTATUS.get(st, st))
+        pub.stop()
+        time.sleep(3.0)
+        s = self.snap()
+        check("T9c 取消后悬停空中", s is not None and s.armed and s.position_z > 0.5,
+              "z=%.2f" % (s.position_z if s else float("nan")))
+        return True
+
+
+# ------------------------------------------------ T9 辅助
+
+def _follow_goal(tgt, timeout=60.0, radius=0.8):
+    g = FollowTrajectory.Goal()
+    g.target_x, g.target_y, g.target_z = tgt
+    g.acceptance_radius = radius
+    g.timeout = timeout
+    return g
+
+
+class _SyntheticTrajectory:
+    """空世界合成 PositionCommand 发布器 (T9)。
+
+    从 start 沿直线匀速到 target, 到达后持续重发终点 (模拟 traj_server 悬停行为)。
+    100Hz 发布, 无 EGO 依赖。stop() 停止发布以模拟"流断"。
+    """
+
+    def __init__(self, node, rate=100.0):
+        self._node = node
+        self._pub = node.create_publisher(PositionCommand, "/position_cmd", 10)
+        self._active = False
+        self._start = (0.0, 0.0, 0.0)
+        self._tgt = (0.0, 0.0, 0.0)
+        self._speed = 1.0
+        self._t0 = 0.0
+        self._timer = node.create_timer(1.0 / rate, self._tick)
+
+    def start_line(self, start, target, speed=1.0):
+        self._start = tuple(float(v) for v in start)
+        self._tgt = tuple(float(v) for v in target)
+        self._speed = speed
+        self._t0 = time.monotonic()
+        self._active = True
+
+    def stop(self):
+        self._active = False
+
+    def _tick(self):
+        if not self._active:
+            return
+        dx = self._tgt[0] - self._start[0]
+        dy = self._tgt[1] - self._start[1]
+        dz = self._tgt[2] - self._start[2]
+        L = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+        ux, uy, uz = dx / L, dy / L, dz / L
+        d = min(self._speed * (time.monotonic() - self._t0), L)
+        moving = d < L
+        msg = PositionCommand()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.header.frame_id = "odom"
+        msg.trajectory_flag = PositionCommand.TRAJECTORY_STATUS_READY
+        msg.trajectory_id = 1
+        msg.position.x = self._start[0] + ux * d
+        msg.position.y = self._start[1] + uy * d
+        msg.position.z = self._start[2] + uz * d
+        msg.velocity.x = ux * self._speed if moving else 0.0
+        msg.velocity.y = uy * self._speed if moving else 0.0
+        msg.velocity.z = uz * self._speed if moving else 0.0
+        msg.yaw = 0.0
+        self._pub.publish(msg)
+
 
 # ------------------------------------------------ 框架
 
@@ -424,6 +574,7 @@ def main():
         results["T6"] = run_test(node, "T6 连续起降", node.t6_land_then_cycles) if flight_ready else False
         results["T7"] = run_test(node, "T7 坏任务文件", node.t7_bad_mission)
         results["T8"] = run_test(node, "T8 低电量RTL", node.t8_low_battery_rtl) if flight_ready else False
+        results["T9"] = run_test(node, "T9 轨迹跟随", node.t9_follow_trajectory) if flight_ready else False
     else:
         results["T7"] = run_test(node, "T7 坏任务文件", node.t7_bad_mission)
 

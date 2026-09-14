@@ -213,6 +213,11 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             get_package_share_directory("easyfly_global_planner") + "/launch/navigate.launch.py"))
     m42_nodes = TimerAction(period=24.0, actions=[navigate])
+    # M4.3: EGO-Planner 局部规划 (ego_planner_node + traj_server, 输出 /position_cmd)
+    local_planner = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_local_planner") + "/launch/local_planner.launch.py"))
+    m43_nodes = TimerAction(period=26.0, actions=[local_planner])
 
     return LaunchDescription([
         set_model_path,
@@ -230,4 +235,5 @@ def generate_launch_description():
         m40_nodes,
         m41_nodes,
         m42_nodes,
+        m43_nodes,
     ])

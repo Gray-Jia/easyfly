@@ -6,4 +6,5 @@ pointcloud_filter:
   range_min: 0.3                       # 盲区 [m] (MID-360 near)
   range_max: 25.0                      # 远界 [m] (阶段四低空绕障场景覆盖 24m 布目标区)
   voxel_size: 0.1                      # 体素边长 [m] (与 EGO grid_map 分辨率一致)
-  output_frame: base_link              # 变换输出系 (EGO 假设 cloud 在 body 系); 空=保持 livox_frame
+  output_frame: odom                   # 变换输出系 (M4.3: EGO grid_map 对点云用原始坐标/零变换, 故点云须在 odom 世界系;
+                                       # semantic_map 的 TF 查询随之退化为恒等, 无副作用); 空=保持 livox_frame
