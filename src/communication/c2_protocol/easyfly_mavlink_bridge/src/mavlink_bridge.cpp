@@ -377,8 +377,10 @@ void MavlinkBridge::publish_setpoint()
       // 坐标系 (mavros 2.14.0 setpoint_raw.cpp local_cb 源码实证):
       //   除 FRAME_BODY_* 外一律按 ENU 处理并内部 transform_frame_enu_ned,
       //   故此处必须直传 ENU 数值 + FRAME_LOCAL_NED, type_mask 原样透传。
-      //   mask 1472 = IGNORE_AFX|IGNORE_AFY|IGNORE_AFZ|IGNORE_YAW_RATE
-      //   (用 position+velocity+yaw, 忽略加速度/角速率)。
+      //   mask = IGNORE_AFX|IGNORE_AFY|IGNORE_AFZ|IGNORE_YAW_RATE = 64+128+256+2048 = 2496
+      //   (mavros_msgs: IGNORE_YAW=1024, IGNORE_YAW_RATE=2048; 用 position+velocity+yaw,
+      //    忽略加速度/角速率)。注: 任务书里写的 1472 是把 YAW/YAW_RATE 位搞反了,
+      //    此处以命名常量求值为准。
       mavros_msgs::msg::PositionTarget pt;
       pt.header.stamp    = now();
       pt.header.frame_id = "map";
