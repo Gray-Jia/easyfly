@@ -118,6 +118,7 @@ private:
         double max_obstacle_size{8.0};   // 单簇包围盒上界 [m] (超过视为噪声链/地面残留)
         double inflate_radius{0.3};      // 栅格膨胀半径 [m]
         bool verbose{false};             // 逐帧统计日志 (调参用)
+        int grid_persist_frames{20};     // 占据保持帧数 (≈3s @7Hz; 漏检不立即可穿越)
         double grid_resolution{0.2};     // 栅格分辨率 [m/cell]
         double grid_width{100.0};        // 栅格宽 [m] (以 world 原点为中心)
         double grid_height{100.0};
