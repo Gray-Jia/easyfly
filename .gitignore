@@ -15,10 +15,11 @@ Platform/
 src/third_party/onnxruntime/
 
 # fast_lio 上游 doc 仅有演示 gif/pdf (~128MB), 源码正常入库
-src/perception/p3_tracking/fast_lio/doc/
+src/third_party/slam/fast_lio/doc/
 
 # 临时文件
 *.txt
+!CMakeLists.txt
 *.log
 
 # python 字节码

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ego_to_mavros</name>
+  <version>0.1.0</version>
+  <description>Bridge node between ego_planner PositionCommand and PX4 via MAVROS</description>
+  <maintainer email="user@todo.com">user</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>quadrotor_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
