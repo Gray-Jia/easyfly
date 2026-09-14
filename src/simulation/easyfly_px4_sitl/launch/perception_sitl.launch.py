@@ -208,6 +208,11 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             get_package_share_directory("easyfly_target_tracking") + "/launch/follow.launch.py"))
     m41_nodes = TimerAction(period=22.0, actions=[follow])
+    # M4.2: 全局规划节点 (常驻 idle 无副作用, 经 /navigate action 发起)
+    navigate = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            get_package_share_directory("easyfly_global_planner") + "/launch/navigate.launch.py"))
+    m42_nodes = TimerAction(period=24.0, actions=[navigate])
 
     return LaunchDescription([
         set_model_path,
@@ -224,4 +229,5 @@ def generate_launch_description():
         p5_nodes,
         m40_nodes,
         m41_nodes,
+        m42_nodes,
     ])

@@ -76,6 +76,28 @@
       <name>person_1</name>
       <pose>8 2 0 0 0 3.14</pose>
     </include>
+
+    <!-- M4.2: 雷达友好立柱 (1x1x3m static)。3m 高原因: 2.5m 航高 + 5m 距离
+         下雷达最低可视高度 = 2.5 - 5*tan(7°) ≈ 1.89m, 矮障碍完全在视野下 -->
+    <model name="pillar_1">
+      <static>true</static>
+      <pose>5 -2 1.5 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>100.0</mass>
+          <inertia><ixx>10</ixx><iyy>10</iyy><izz>10</izz></inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>1 1 3</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>1 1 3</size></box></geometry>
+          <material>
+            <script><name>Gazebo/Orange</name></script>
+          </material>
+        </visual>
+      </link>
+    </model>
     <include>
       <uri>model://person_standing</uri>
       <name>person_2</name>

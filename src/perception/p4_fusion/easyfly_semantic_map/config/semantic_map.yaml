@@ -23,8 +23,9 @@ semantic_map:
   max_obstacle_size: 8.0              # 单簇包围盒上界 [m], 超过视为地面残留/噪声链
 
   # ---- 占据栅格 ----
-  inflate_radius: 0.3                 # 障碍足迹膨胀 [m] (机体半径安全余量)
-  verbose: false                      # 逐帧聚类统计日志 (调参用)
+  inflate_radius: 0.5                 # 障碍足迹膨胀 [m] (机体半径+绕行安全余量, M4.2: 0.3 实测绕行过近)
+  verbose: true                      # 逐帧聚类统计日志 (调参用)
+  grid_persist_frames: 20             # 占据保持帧数 (≈3s @7Hz; 漏检不立即可穿越)
   grid_resolution: 0.2                # [m/cell]
   grid_width: 100.0                   # 以 odom 原点为中心 [m]
   grid_height: 100.0

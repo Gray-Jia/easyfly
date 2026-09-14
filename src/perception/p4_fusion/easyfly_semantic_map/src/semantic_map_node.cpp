@@ -9,7 +9,9 @@
 //     → PCL 欧式聚类 → 每簇轴对齐包围盒
 //     → /obstacles        (easyfly_msgs/ObstacleInfoArray, world 系)
 //     → /get_obstacles    (srv: 按距机体水平距离查询)
-//     → /occupancy_grid   (nav_msgs/OccupancyGrid, 2D 投影 + 膨胀, 供全局规划)
+//     → /occupancy_grid   (nav_msgs/OccupancyGrid, 2D 投影 + 膨胀 + 持久化
+//       衰减 — 聚类逐帧闪烁会使规划器拿到缺障碍的稀疏帧, 实测近乎撞人;
+//       占据格保留 ~6 帧才释放, 规划/EGO 消费稳定)
 //     → /obstacle_markers (RViz 立方体可视化)
 //
 // M4.0 边界: obstacle_id 为帧内索引 (跨帧稳定 ID 需要障碍跟踪, 待消费方
@@ -146,6 +148,8 @@ private:
         params_.accumulate_frames = p["accumulate_frames"].as<int>(params_.accumulate_frames);
         params_.max_obstacle_size = p["max_obstacle_size"].as<double>(params_.max_obstacle_size);
         params_.inflate_radius = p["inflate_radius"].as<double>(params_.inflate_radius);
+        params_.grid_persist_frames =
+            p["grid_persist_frames"].as<int>(params_.grid_persist_frames);
         params_.verbose = p["verbose"].as<bool>(params_.verbose);
         params_.grid_resolution = p["grid_resolution"].as<double>(params_.grid_resolution);
         params_.grid_width = p["grid_width"].as<double>(params_.grid_width);
@@ -347,7 +351,10 @@ private:
         publishMarkers(arr.header, boxes);
     }
 
-    // ---- 2D 占据栅格: 簇足迹 (膨胀后) 标记为占据 ----
+    // ---- 2D 占据栅格: 簇足迹 (膨胀后) 标记为占据 + 持久化衰减 ----
+    // 本帧有簇 → 该格 100; 本帧无簇 → 每帧衰减 20 (≈1s 后归零)。
+    // 聚类逐帧闪烁 (8↔25 簇波动), 直接发布单帧会让规划器偶尔拿到缺障碍
+    // 的栅格 (实测 A* 直线穿过 person, 最近 0.14m)。
     void publishGrid(const std_msgs::msg::Header & header,
                      const std::vector<std::array<double, 6>> & boxes)
     {
@@ -359,7 +366,8 @@ private:
         grid.info.origin.position.x = -params_.grid_width / 2.0;
         grid.info.origin.position.y = -params_.grid_height / 2.0;
         grid.info.origin.orientation.w = 1.0;
-        grid.data.assign(grid.info.width * grid.info.height, 0);
+        const size_t n = static_cast<size_t>(grid.info.width) * grid.info.height;
+        grid.data.assign(n, 0);
 
         const double inf = params_.inflate_radius;
         for (const auto & b : boxes) {
@@ -376,6 +384,27 @@ private:
             for (int r = r1; r <= r2; ++r)
                 for (int c = c1; c <= c2; ++c)
                     grid.data[r * grid.info.width + c] = 100;
+        }
+
+        // 持久化融合 (两段式): 最近 persist_frames 帧内见过 → 100, 超时 → 0。
+        // 不用数值衰减: 衰减值会在 A* 占据阈值 (>=50) 边缘抖动 — 测试目标格
+        // 采样时 55(占据)、规划执行时 48(空闲), 同一障碍时有时无。
+        // 历史尺寸不符则重置。
+        if (grid_persist_.size() != n || grid_miss_.size() != n) {
+            grid_persist_.assign(n, 0);
+            grid_miss_.assign(n, 0);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (grid.data[i] == 100) {
+                grid_persist_[i] = 100;
+                grid_miss_[i] = 0;
+            } else if (grid_persist_[i] > 0) {
+                if (++grid_miss_[i] > params_.grid_persist_frames) {
+                    grid_persist_[i] = 0;
+                    grid_miss_[i] = 0;
+                }
+                grid.data[i] = grid_persist_[i];
+            }
         }
         grid_pub_->publish(grid);
     }
@@ -454,6 +483,8 @@ private:
 
     std::mutex latest_mtx_;
     ObstacleInfoArray latest_;
+    std::vector<int8_t> grid_persist_;  // 栅格持久化状态 (两段式)
+    std::vector<uint32_t> grid_miss_;   // 连续未观测帧数
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
     rclcpp::Publisher<ObstacleInfoArray>::SharedPtr obstacles_pub_;

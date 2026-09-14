@@ -1,0 +1,8 @@
+# EasyFly E2 全局规划配置 (M4.2)
+global_planner:
+  grid_topic: /occupancy_grid    # semantic_map 产出 (已含 0.3m 膨胀)
+  grid_stale_timeout: 5.0        # 栅格数据过期判定 [s]
+  segment_acceptance: 0.5        # 段到位半径 [m]
+  max_speed_default: 2.0         # goal.max_speed=0 时 [m/s]
+  z_min: 0.5                     # 目标高度下限 [m] (防深度毛刺砸地)
+  z_max: 2.5                     # 目标高度上限 [m] (SLAM 盲区约束, Q22)

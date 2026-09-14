@@ -3,14 +3,26 @@
 <package format="3">
   <name>easyfly_global_planner</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_global_planner</description>
+  <description>
+    EasyFly E2: 全局规划器 (M4.2)。/occupancy_grid 上 2D A* + 视线剪枝,
+    逐段 GoToWaypoint 执行 (复用 flight_control 安全链)。
+  </description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>rclcpp_action</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>nav_msgs</depend>
+  <depend>easyfly_msgs</depend>
+  <depend>yaml-cpp</depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

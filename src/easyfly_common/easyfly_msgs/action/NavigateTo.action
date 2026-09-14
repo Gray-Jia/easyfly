@@ -1,0 +1,15 @@
+# 全局导航 (M4.2): A* 路径规划 + 逐段执行
+# 目标点 (odom 系); 规划在 /occupancy_grid 上进行, 避开膨胀障碍
+float64 target_x
+float64 target_y
+float64 target_z          # NaN = 保持当前高度 (执行中钳 0.5~2.5m)
+float64 max_speed         # 0 = 默认 2.0 m/s
+---
+# 结果
+bool success
+string message            # 失败原因: no_path / goal_in_obstacle / takeover / ...
+---
+# 反馈
+int32 current_segment     # 当前段索引 (从 1 起)
+int32 total_segments      # 路径总段数
+float64 distance_remaining  # 剩余距离 [m]
