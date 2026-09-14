@@ -370,17 +370,29 @@ class RegressionRunner(Node):
     def t9_follow_trajectory(self):
         """合成 PositionCommand 直线 → TRAJECTORY encoder + /follow_trajectory 全流程。
         不依赖 EGO (empty.world), 覆盖: 跟随到达 / 停流回悬停 / cancel 语义。"""
-        # -- 起飞到 1.5m (T8 RTL 后可能已落地) --
-        st = None
-        for attempt in (1, 2):
+        # -- T8 的 RTL 可能仍在返航/落地: 先等落地 disarm, 避免在 RTL 空中强行 arm --
+        deadline = time.monotonic() + 70.0
+        while time.monotonic() < deadline:
+            s = self.snap()
+            if s is not None and not s.armed:
+                break
+            time.sleep(1.0)
+        time.sleep(3.0)
+        info("等待 RTL 落地完成 (armed=%s)" % (self.snap().armed if self.snap() else "-"))
+
+        # -- 起飞到 1.5m (T8 RTL 后 SITL 可能退化, 多试一轮 + 延长等待) --
+        st, res = None, None
+        for attempt in (1, 2, 3):
             st, res = self.call_action(self.ac_takeoff, self._takeoff_goal(1.5), 120.0)
             if st == GoalStatus.STATUS_SUCCEEDED:
                 break
-            if attempt == 1 and res and "arm failed" in res.message:
-                info("T9 arm 失败, 等 20s 重发...")
-                time.sleep(20.0)
+            if "arm failed" in (res.message if res else ""):
+                info("T9 arm 失败 (第%d次), 等 25s 重发..." % attempt)
+                time.sleep(25.0)
+            else:
+                break
         check("T9 起飞 SUCCEEDED", st == GoalStatus.STATUS_SUCCEEDED,
-              "status=%s" % GSTATUS.get(st, st))
+              "status=%s msg=%s" % (GSTATUS.get(st, st), res.message if res else "-"))
         if st != GoalStatus.STATUS_SUCCEEDED:
             return False
         check("T9 /follow_trajectory action server", self.ac_follow.wait_for_server(15.0))
@@ -551,6 +563,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-flight", action="store_true",
                     help="只跑地面用例 T7 (调试用)")
+    ap.add_argument("--only", default=None, metavar="T9",
+                    help="只跑指定用例 (先做就绪检查 + EKF settle), 调试用")
     args = ap.parse_args()
 
     rclpy.init()
@@ -564,7 +578,15 @@ def main():
     log("=" * 60)
 
     results = {}
-    if not args.skip_flight:
+    if args.only:
+        single = {"T7": ("T7 坏任务文件", node.t7_bad_mission),
+                  "T9": ("T9 轨迹跟随", node.t9_follow_trajectory)}
+        if args.only not in single:
+            log("--only 仅支持 T7/T9"); return 2
+        node.t1_ready()
+        title, fn = single[args.only]
+        results[args.only] = run_test(node, title, fn)
+    elif not args.skip_flight:
         results["T1"] = run_test(node, "T1 就绪检查", node.t1_ready)
         results["T2"] = run_test(node, "T2 起飞", node.t2_takeoff)
         flight_ready = results["T1"] and results["T2"]
