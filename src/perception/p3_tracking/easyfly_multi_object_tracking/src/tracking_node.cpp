@@ -6,12 +6,20 @@
 //     → /tracks (easyfly_msgs/TrackInfoArray, 稳定 track_id)
 //     → /tracks_debug_image (叠加 track_id 的画框图像, 有订阅才发)
 //
+// Q19 id 整合 (id_consolidator.hpp): SORT 新建 id 时按世界坐标
+// (/target_positions) 关联最近消失的同类别 id → 对外输出稳定 id。
+// SORT id 单调递增永不复用, remap 无歧义。
+//
 // 注意: 检测帧的图像尺寸未知 (消息只带归一化坐标), 由首帧 camera_info
 // 或参数 image_width/image_height 获取 (默认 640x480, 与仿真一致)。
+#include <chrono>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
+
+#include <easyfly_msgs/msg/target3_d_array.hpp>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
@@ -24,6 +32,7 @@
 #include <easyfly_msgs/msg/track_info_array.hpp>
 
 #include "easyfly_multi_object_tracking/sort.hpp"
+#include "easyfly_multi_object_tracking/id_consolidator.hpp"
 
 namespace easyfly_multi_object_tracking
 {
@@ -40,6 +49,11 @@ public:
 
         tracks_pub_ = create_publisher<easyfly_msgs::msg::TrackInfoArray>(
             params_.output_topic, 10);
+        // Q19: 原始 SORT id 通道 — pixel_to_3d 消费它, 使 /target_positions
+        // 携带 SORT id 供整合器查世界坐标 (/tracks 的稳定 id 是 remap 后的,
+        // 新 SORT id 在整合前查不到世界位置 → 永远无法合并的死锁)
+        tracks_raw_pub_ = create_publisher<easyfly_msgs::msg::TrackInfoArray>(
+            params_.raw_topic, 10);
         debug_pub_ = create_publisher<sensor_msgs::msg::Image>(
             params_.output_topic + "_debug_image", 10);
         if (params_.publish_debug_image) {
@@ -52,6 +66,14 @@ public:
             params_.input_topic, 10,
             [this](easyfly_msgs::msg::DetectionInfoArray::ConstSharedPtr msg) {
                 onDetections(msg);
+            });
+
+        // Q19: 世界观测快照 (id 整合的重关联依据)
+        world_sub_ = create_subscription<easyfly_msgs::msg::Target3DArray>(
+            params_.world_topic, 10,
+            [this](easyfly_msgs::msg::Target3DArray::ConstSharedPtr msg) {
+                std::lock_guard<std::mutex> lk(world_mtx_);
+                latest_world_ = msg;
             });
 
         RCLCPP_INFO(get_logger(),
@@ -72,6 +94,11 @@ private:
         int image_width{640};
         int image_height{480};
         std::vector<std::string> target_classes;  // 空 = 全部
+        std::string world_topic{"/target_positions"};  // Q19 世界观测
+        std::string raw_topic{"/tracks_raw"};  // Q19: 原始 SORT id (供 pixel_to_3d)
+        bool cons_enabled{true};
+        double cons_radius{3.0};
+        double cons_ttl{10.0};
     };
 
     void loadParams()
@@ -100,6 +127,18 @@ private:
         sort_params_.min_hits = t["min_hits"].as<int>(3);
         sort_params_.max_tracks = t["max_tracks"].as<int>(100);
         sort_params_.dist_gate_scale = t["dist_gate_scale"].as<double>(1.5);  // Q19
+        params_.world_topic = t["world_topic"].as<std::string>(params_.world_topic);
+        params_.cons_enabled = t["id_consolidation"]["enabled"]
+            .as<bool>(params_.cons_enabled);
+        params_.cons_radius = t["id_consolidation"]["reacquire_radius"]
+            .as<double>(params_.cons_radius);
+        params_.cons_ttl = t["id_consolidation"]["ttl"].as<double>(params_.cons_ttl);
+
+        IdConsolidator::Params cp;
+        cp.enabled = params_.cons_enabled;
+        cp.reacquire_radius = params_.cons_radius;
+        cp.ttl = params_.cons_ttl;
+        consolidator_ = std::make_unique<IdConsolidator>(cp);
     }
 
     bool classWanted(const std::string & name) const
@@ -132,7 +171,48 @@ private:
 
         const auto tracks = sorter_->update(dets);
 
-        // 发布 TrackInfoArray
+        // Q19: 世界系 id 整合 — SORT id → 稳定 id
+        std::vector<int> sort_ids;
+        sort_ids.reserve(tracks.size());
+        for (const auto & t : tracks) sort_ids.push_back(t.track_id);
+        std::map<int, WorldObs> world_by_sort;
+        {
+            std::lock_guard<std::mutex> lk(world_mtx_);
+            if (latest_world_) {
+                for (const auto & t : latest_world_->targets) {
+                    if (!t.position_valid) continue;
+                    world_by_sort[t.track_id] = {t.position_x, t.position_y,
+                                                 t.position_z, t.class_name};
+                }
+            }
+        }
+        const double now_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        consolidator_->update(sort_ids, world_by_sort, now_s);
+
+        // 原始 SORT id 通道 (remap 前): pixel_to_3d → /target_positions
+        // (世界坐标按 SORT id 回流, 下一帧起整合器即可关联新 id)
+        easyfly_msgs::msg::TrackInfoArray raw;
+        raw.header = msg->header;
+        raw.tracks.reserve(tracks.size());
+        for (const auto & t : tracks) {
+            if (!t.confirmed && t.time_since_update > 0) continue;
+            easyfly_msgs::msg::TrackInfo ti;
+            ti.header = msg->header;
+            ti.track_id = t.track_id;
+            ti.class_name = t.class_name;
+            ti.confidence = t.confidence;
+            ti.bbox_center_x = (t.box.x1 + t.box.x2) / 2 / params_.image_width;
+            ti.bbox_center_y = (t.box.y1 + t.box.y2) / 2 / params_.image_height;
+            ti.bbox_width = (t.box.x2 - t.box.x1) / params_.image_width;
+            ti.bbox_height = (t.box.y2 - t.box.y1) / params_.image_height;
+            ti.velocity_x = t.vx;
+            ti.velocity_y = t.vy;
+            raw.tracks.push_back(ti);
+        }
+        tracks_raw_pub_->publish(raw);
+
+        // 发布 TrackInfoArray (稳定 id)
         easyfly_msgs::msg::TrackInfoArray out;
         out.header = msg->header;
         out.tracks.reserve(tracks.size());
@@ -140,7 +220,7 @@ private:
             if (!t.confirmed && t.time_since_update > 0) continue;  // 未确认且未命中不发布
             easyfly_msgs::msg::TrackInfo ti;
             ti.header = msg->header;
-            ti.track_id = t.track_id;
+            ti.track_id = consolidator_->stableId(t.track_id);
             ti.class_name = t.class_name;
             ti.confidence = t.confidence;
             // 滤波框 (归一化)
@@ -175,7 +255,9 @@ private:
             cv::rectangle(img,
                           cv::Point(cvRound(t.box.x1), cvRound(t.box.y1)),
                           cv::Point(cvRound(t.box.x2), cvRound(t.box.y2)), color, 2);
-            cv::putText(img, cv::format("#%d %s", t.track_id, t.class_name.c_str()),
+            cv::putText(img, cv::format("#%d %s",
+                          consolidator_->stableId(t.track_id),
+                          t.class_name.c_str()),
                         cv::Point(cvRound(t.box.x1), cvRound(t.box.y1) - 4),
                         cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
         }
@@ -205,7 +287,13 @@ private:
     NodeParams params_;
     SortParams sort_params_;
     std::unique_ptr<Sorter> sorter_;
+    std::unique_ptr<IdConsolidator> consolidator_;
     std::map<std::string, int> class_ids_;
+
+    std::mutex world_mtx_;
+    easyfly_msgs::msg::Target3DArray::ConstSharedPtr latest_world_;
+    rclcpp::Subscription<easyfly_msgs::msg::Target3DArray>::SharedPtr world_sub_;
+    rclcpp::Publisher<easyfly_msgs::msg::TrackInfoArray>::SharedPtr tracks_raw_pub_;
 
     rclcpp::Subscription<easyfly_msgs::msg::DetectionInfoArray>::SharedPtr det_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;

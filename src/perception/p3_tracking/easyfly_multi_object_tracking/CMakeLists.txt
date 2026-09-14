@@ -40,6 +40,13 @@ install(DIRECTORY config launch
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_sort test/test_sort.cpp)
+  target_include_directories(test_sort PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_add_gtest(test_id_consolidator test/test_id_consolidator.cpp)
+  target_include_directories(test_id_consolidator PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
 
 ament_export_include_directories(include)

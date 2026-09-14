@@ -1,7 +1,7 @@
 # EasyFly M5 像素转 3D 配置
 pixel_to_3d:
   # ---- 话题 ----
-  input_topic: /tracks                 # M4 跟踪输出 (带 ID)
+  input_topic: /tracks_raw             # M4 跟踪输出原始 SORT id (Q19 整合通道; /tracks 为稳定 id)
   output_topic: /target_positions      # Target3DArray
   marker_topic: /target_markers        # RViz MarkerArray
   depth_topic: /camera/aligned_depth_to_color/depth/image_raw   # 32FC1 深度图

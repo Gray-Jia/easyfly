@@ -23,3 +23,12 @@ tracking:
   # ---- 类别过滤 (Q25: 只跟踪关注类别; 空列表 = 全部跟踪) ----
   # 剔除 bench/potted plant 等场景杂物误检, 减少无效 track
   target_classes: [person, car, truck, bus, bicycle, motorcycle, fire hydrant]
+
+  # ---- Q19 id 整合 (世界系轻量 ReID) ----
+  # SORT 新建 id 时按 /target_positions 的世界坐标关联最近消失的同类别 id,
+  # 对外输出稳定 id (视野离开数秒再回来不再换 id)
+  world_topic: /target_positions
+  id_consolidation:
+    enabled: true
+    reacquire_radius: 3.0    # 世界距离门限 [m] (容忍移动目标位移)
+    ttl: 10.0                # 消失 id 保留 [s]
