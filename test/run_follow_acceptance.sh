@@ -27,6 +27,12 @@ bash "$WS/easyfly_clean.sh"
 echo "[1/3] 启动感知全链路 (含移动目标 + 跟随节点): 日志 $LOG"
 setsid ros2 launch easyfly_px4_sitl perception_sitl.launch.py > "$LOG" 2>&1 &
 LAUNCH_PGID=$!
+# headless 资源保护: 反复启停后 X/GLX 资源耗尽会使 gzclient/rviz2 (GLX 窗口)
+# 崩溃并连带拖垮 gzserver 世界初始化 (PX4 等 4560 超时自杀)。自动化验收
+# 不需要 GUI — 启动后清理 gzclient/rviz2, 保留 gzserver 传感器仿真。
+sleep 7
+pkill -f gzclient 2>/dev/null
+pkill -f "rviz2" 2>/dev/null
 sleep 3
 if ! kill -0 "$LAUNCH_PGID" 2>/dev/null; then
   echo "ERROR: launch 启动失败, 日志尾部:"

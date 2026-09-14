@@ -9,6 +9,7 @@
 //
 // 消费方: easyfly_semantic_map (M4.0 聚类/栅格)、EGO-Planner (M4.3 grid_map/cloud)。
 #include <chrono>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>

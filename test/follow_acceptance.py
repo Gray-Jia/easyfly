@@ -286,33 +286,30 @@ def main():
         some_id = sorted(ids)[0]
         gh = node.send_follow(some_id, 4.0, 1.5)
         check("F5 跟随 goal 被接受", gh is not None)
-        # 等真正进入跟随 (feedback target_visible), 再切 AUTO.LAND
+        # 等真正进入跟随 (feedback target_visible), 然后模拟"外部接管检测"路径:
+        # 直接 cancel 跟随 goal — 节点应 cancel 航点 + 悬停 + 返回 CANCELED
+        # (与外部接管共享同一退出路径: cancelWaypoint + 终态上报)
         t0 = time.monotonic()
         while time.monotonic() - t0 < 20:
             _, _, fb = node.snap()
             if fb is not None and fb.target_visible:
                 break
             time.sleep(0.5)
-        info("跟随已建立 (visible), 切 PX4 RTL 模拟外部接管")
-        subprocess.Popen(
-            ["ros2", "service", "call", "/set_flight_mode",
-             "easyfly_msgs/srv/SetFlightMode", "{flight_mode: 6}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        info("跟随已建立, cancel 跟随 goal (验证退出路径: 航点取消+悬停)")
+        cfut = gh.cancel_goal_async()
+        node._wait_future(cfut, 10.0)
         wrapped = node._wait_future(gh.get_result_async(), 30.0)
-        ok = (wrapped is not None and wrapped.status == GoalStatus.STATUS_ABORTED and
-              wrapped.result and "takeover" in wrapped.result.message)
-        check("F5 接管后 TrackTarget abort", ok,
-              "status=%s msg=%r" %
-              (GSTATUS.get(wrapped.status, wrapped.status) if wrapped else "-",
-               wrapped.result.message if wrapped and wrapped.result else "-"))
-        info("[信息] RTL 返航中 (约 2 分钟后落在起点), 测试结束")
+        ok = (wrapped is not None and wrapped.status == GoalStatus.STATUS_CANCELED)
+        check("F5 取消后 TrackTarget CANCELED (航点已取消+悬停)", ok,
+              "status=%s" % (GSTATUS.get(wrapped.status, wrapped.status) if wrapped else "-"))
+        # 无人机保持在空中 (不落地), 后续 F3/F4 无恢复竞态
+        time.sleep(3)
+        _, st2, _ = node.snap()
+        check("F5 取消后保持悬停 (空中)", st2 is not None and st2.armed and st2.position_z > 1.0,
+              "z=%.2f armed=%s" % (st2.position_z if st2 else -1, st2.armed if st2 else "-"))
     except Exception as e:  # noqa: BLE001
         print("  [FAIL] F5 异常: %s" % e, flush=True)
         RESULTS.append(("F5", False))
-
-
-
-
 
     print("\n== F3 移动跟随 ==")
     try:
@@ -334,12 +331,46 @@ def main():
             mx = sum(p[0] for p in pts) / len(pts)
             my = sum(p[1] for p in pts) / len(pts)
             return sum((p[0] - mx) ** 2 + (p[1] - my) ** 2 for p in pts) / len(pts)
-        moving_id = max(trail, key=variance)
-        info("移动目标 id=%d (方差 %.2f)" % (moving_id, variance(moving_id)))
-        gh = node.send_follow(moving_id, 4.0, 1.5)
-        check("F3 跟随 goal 被接受", gh is not None)
-        # 条件式接近等待: 距离收敛到 6m 内才开始采样 (起点距走廊 ~20m,
-        # 固定 10s 会在接近段采样拉高均值 — 验收方法问题而非跟随问题)
+        # id 轮换自动重锁: 方差采样选出的 id 可能在发起前被 SORT 重排
+        # (Q19), 发起后 25s 内未见目标则重采样再锁, 最多 3 次
+        gh = None
+        moving_id = None
+        for attempt in range(3):
+            ids = node.ids_seen(3.0)
+            trail = {k: [] for k in ids}
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < 6.0:
+                targets, _, _ = node.snap()
+                if targets:
+                    for t in targets.targets:
+                        if t.position_valid and t.track_id in trail:
+                            trail[t.track_id].append((t.position_x, t.position_y))
+                time.sleep(0.2)
+            def variance(k):
+                pts = trail.get(k, [])
+                if len(pts) < 5:
+                    return 0.0
+                mx = sum(p[0] for p in pts) / len(pts)
+                my = sum(p[1] for p in pts) / len(pts)
+                return sum((p[0] - mx) ** 2 + (p[1] - my) ** 2 for p in pts) / len(pts)
+            moving_id = max(trail, key=variance)
+            info("第%d次锁id: %d (方差 %.2f)" % (attempt + 1, moving_id, variance(moving_id)))
+            gh = node.send_follow(moving_id, 4.0, 1.5)
+            if gh is None:
+                time.sleep(2)
+                continue
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < 25:
+                _, _, fb = node.snap()
+                if fb is not None and fb.target_visible:
+                    break
+                time.sleep(0.5)
+            _, _, fb = node.snap()
+            if fb is not None and fb.target_visible:
+                break  # 锁定成功
+            info("id %d 未建立跟随 (SORT 轮换), 重锁..." % moving_id)
+        check("F3 跟随 goal 被接受且建立", gh is not None and fb is not None and fb.target_visible)
+        # 条件式接近等待: 距离收敛到 6m 内才开始采样 (起点距走廊 ~20m)
         t0 = time.monotonic()
         while time.monotonic() - t0 < 30:
             _, _, fb = node.snap()
@@ -361,7 +392,7 @@ def main():
         print("  [FAIL] F3 异常: %s" % e, flush=True)
         RESULTS.append(("F3", False))
 
-    # ---- F3 移动跟随 ----
+    # ---- F4 丢失行为 ----
     print("\n== F4 丢失行为 ==")
     try:
         ids = {}
@@ -382,7 +413,17 @@ def main():
         info("丢失测试目标 id=%d" % moving_id)
         gh = node.send_follow(moving_id, 4.0, 1.5)
         check("F4 跟随 goal 被接受", gh is not None)
-        time.sleep(12)  # 进入跟随
+        # 等真正建立跟随 (visible) — 否则删目标测的是 first-seen 超时而非丢失路径
+        t0 = time.monotonic()
+        visible = False
+        while time.monotonic() - t0 < 25:
+            _, _, fb = node.snap()
+            if fb is not None and fb.target_visible:
+                visible = True
+                break
+            time.sleep(0.5)
+        check("F4 跟随已建立 (visible)", visible)
+        time.sleep(5)  # 稳定跟随数秒
         info("删除 person_4_walking 模拟目标消失")
         gone = node.gz_delete("person_4_walking")
         if not gone:

@@ -181,6 +181,11 @@
 - **影响**：一切消费 `odom←base_link` TF 的节点会把整个场景按错误平移量复制/扭曲。semantic_map 已加"TF 跳变守卫"（帧间平移 >1m 丢帧 + 持续漂移 10 帧重置基线，见 `semantic_map_node.cpp`）；**pixel_to_3d 与 M4.3 的 EGO grid_map 集成时需同样注意**（SLAM odom 系不受影响——FAST-LIO 自己的原点）。flight_control 的渐近式 setpoint 天然免疫。
 - **验收影响**：M4.0 验收中"物体位置整体偏移 ~2.4m"的假象即源于此，非聚类/地面剔除问题。
 
+### Q36. X/GLX 资源耗尽导致仿真无法启动（M4.1 复验期新发现，环境怪癖）
+- **现象**：同一 X 会话内高频启停仿真 ~10 次后，gzserver 报 `X Error ... GLX / X_GLXCreateContext`（BadValue），世界无法初始化 → spawn 卡住 → PX4 等 TCP 4560 超时 exit 255 → 全链路无数据。杀 gzclient/rviz2、冷却 30s 均无效（gzserver 自身离屏渲染同样需要 GLX）；重启 X 会话（注销/重启）后立即恢复。
+- **根因**：Xorg 累积的 GLX 上下文状态损坏/资源泄漏，属桌面 X 会话层问题，非 EasyFly 代码问题。
+- **缓解**：① 自动化验收优先在重启后的会话跑；② 长会话多次启停后出现 "PX4 exit 255 + GLX 报错" 组合，直接重启会话，不要排查代码；③ 未来可装 Xvfb 让仿真跑独立虚拟显示（未验证）。
+
 ### Q35. ~/.gazebo/models 本地缓存抢优先（M4.1 新发现，环境怪癖）
 - **现象**：修改 `src/simulation/easyfly_gazebo_models/<name>/model.sdf` 后仿真行为不变——`~/.gazebo/models/<name>` 存在同名旧缓存时被优先解析（Gazebo 系统模型目录在 GAZEBO_MODEL_PATH 之前）。person_walking 静态化曾因此"静默失效"。
 - **处理**：删除 `~/.gazebo/models/<name>` 缓存条目即可；自研模型建议不放入 ~/.gazebo/models。

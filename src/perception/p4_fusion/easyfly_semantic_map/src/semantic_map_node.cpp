@@ -20,11 +20,16 @@
 // 仅 ~6 点, 无法成簇 — 滑动窗口合并最近 K 帧世界系点云 (各自经 TF 运动补偿)
 // 后聚类, 远目标点数 ×K。无人机移动时窗口内新旧帧位置差表现为目标拖尾,
 // 由消费方 (全局规划) 的膨胀半径吸收; 跟踪类精细需求应订阅帧内结果。
+#include <array>
+#include <cmath>
 #include <deque>
+#include <algorithm>
 #include <mutex>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <std_msgs/msg/header.hpp>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
@@ -287,7 +292,7 @@ private:
         ec.extract(clusters);
 
         if (params_.verbose) {
-            std::string stat = "obs=" + std::to_string(obs->size()) + " 簇:";
+            std::string stat = "merged=" + std::to_string(merged->size()) + " 簇:";
             for (const auto & c : clusters) {
                 float x1 = 1e9f, x2 = -1e9f, z1 = 1e9f, z2 = -1e9f;
                 for (const auto & idx : c.indices) {

@@ -189,6 +189,7 @@ private:
         active_ = true;
         cancel_req_ = false;
         stop_req_ = false;
+        takeover_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());  // 跨跟随残留清零
         // mission_fsm 同款: detached 线程 + 顶层 try/catch (未捕获异常会杀死进程)
         std::thread([this, gh]() {
             try {
@@ -312,7 +313,16 @@ private:
             return false;
         }
         goal_fut = cli_wp_->async_send_goal(g);
-        if (pollFuture(goal_fut, 10.0) != 0) return false;
+        const int pst = pollFuture(goal_fut, 10.0);
+        if (pst != 0) {
+            // 中断 (取消/停止) 或超时: goal 可能已被接受, 补取消防孤儿航点
+            if (goal_fut.wait_for(1s) == std::future_status::ready) {
+                if (auto early_gh = goal_fut.get()) {
+                    try { cli_wp_->async_cancel_goal(early_gh); } catch (...) {}
+                }
+            }
+            return false;
+        }
         gh = goal_fut.get();
         if (!gh) {
             RCLCPP_ERROR(get_logger(),
@@ -414,7 +424,9 @@ private:
                 res->success = false;
                 res->message = stop_req_ ? "stopped"
                              : (takeover_ ? "external takeover (RTL/AUTO.LAND)" : "cancelled");
+                // 终态语义: 用户主动取消=CANCELED, 接管/异常=ABORTED, 停止指令=SUCCEEDED
                 if (stop_req_) gh->succeed(res);
+                else if (cancel_req_) gh->canceled(res);
                 else gh->abort(res);
                 break;
             }
@@ -439,6 +451,8 @@ private:
                 {
                     RCLCPP_WARN(get_logger(), "id 轮换重捕获: %d → %d (@ %.2f,%.2f)",
                                 cur_tid_, cand.track_id, cand.position_x, cand.position_y);
+                    last_accepted_.erase(cur_tid_);   // 旧 id 状态清理 (防 map 无界增长)
+                    streak_.erase(cur_tid_);
                     cur_tid_ = cand.track_id;
                     t = cand;
                     last_seen = std::chrono::steady_clock::now();
