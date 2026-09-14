@@ -12,8 +12,10 @@
 #include <easyfly_msgs/action/takeoff.hpp>
 #include <easyfly_msgs/action/land.hpp>
 #include <easyfly_msgs/action/go_to_waypoint.hpp>
+#include <easyfly_msgs/action/follow_trajectory.hpp>
 #include <easyfly_msgs/srv/arm_motors.hpp>
 #include <easyfly_msgs/srv/set_flight_mode.hpp>
+#include <quadrotor_msgs/msg/position_command.hpp>
 
 namespace easyfly_flight_control
 {
@@ -28,12 +30,15 @@ public:
   using Takeoff      = easyfly_msgs::action::Takeoff;
   using Land         = easyfly_msgs::action::Land;
   using GoToWaypoint = easyfly_msgs::action::GoToWaypoint;
+  using FollowTrajectory = easyfly_msgs::action::FollowTrajectory;
 
   explicit FlightController(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
   // ---- state callback ----
   void cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg);
+  // M4.3: EGO-Planner 轨迹指令回调
+  void cb_position_cmd(const quadrotor_msgs::msg::PositionCommand::SharedPtr msg);
 
   // ---- control loop (20Hz) ----
   void control_loop();
@@ -60,6 +65,14 @@ private:
   void handle_waypoint_accepted(
     const std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>>);
 
+  // ---- M4.3: /follow_trajectory action ----
+  rclcpp_action::GoalResponse handle_traj_goal(
+    const rclcpp_action::GoalUUID &, std::shared_ptr<const FollowTrajectory::Goal>);
+  rclcpp_action::CancelResponse handle_traj_cancel(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>>);
+  void handle_traj_accepted(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>>);
+
   // ---- service clients ----
   rclcpp::Client<easyfly_msgs::srv::ArmMotors>::SharedPtr     cli_arm_;
   rclcpp::Client<easyfly_msgs::srv::SetFlightMode>::SharedPtr cli_mode_;
@@ -84,6 +97,8 @@ private:
 
   // ---- subscriptions ----
   rclcpp::Subscription<easyfly_msgs::msg::UAVState>::SharedPtr sub_uav_state_;
+  // M4.3: EGO-Planner 输出流 (quadrotor_msgs/PositionCommand, ~100Hz)
+  rclcpp::Subscription<quadrotor_msgs::msg::PositionCommand>::SharedPtr sub_position_cmd_;
 
   // ---- publisher ----
   rclcpp::Publisher<easyfly_msgs::msg::UAVCommand>::SharedPtr pub_uav_cmd_;
@@ -95,6 +110,7 @@ private:
   rclcpp_action::Server<Takeoff>::SharedPtr      as_takeoff_;
   rclcpp_action::Server<Land>::SharedPtr         as_land_;
   rclcpp_action::Server<GoToWaypoint>::SharedPtr as_waypoint_;
+  rclcpp_action::Server<FollowTrajectory>::SharedPtr as_traj_;
 
   // ---- latest state (Q9: 多线程读写保护) ----
   easyfly_msgs::msg::UAVState uav_;
@@ -108,7 +124,7 @@ private:
   rclcpp::Time last_ctl_time_;                       // Q12: 上一控制周期时刻 (实测 dt)
 
   // ---- active action ----
-  enum Action { NONE, TAKEOFF, LANDING, WAYPOINT, HOVER };
+  enum Action { NONE, TAKEOFF, LANDING, WAYPOINT, HOVER, TRAJECTORY };
   Action active_{NONE};
   rclcpp::Time takeover_since_;        // Q2 配套: 外部接管检测去抖起始时刻
 
@@ -136,6 +152,21 @@ private:
   std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>>      gh_takeoff_;
   std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>>         gh_land_;
   std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> gh_waypoint_;
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>> gh_traj_;
+
+  // ---- M4.3: /follow_trajectory 状态 ----
+  // 最近一条 EGO /position_cmd 快照 (跨线程读: 回调组独立)
+  quadrotor_msgs::msg::PositionCommand latest_cmd_;
+  rclcpp::Time traj_cmd_time_;                       // 最近收到轨迹指令时刻 (0=未收到)
+  mutable std::mutex traj_mtx_;                      // latest_cmd_/traj_cmd_time_ 保护
+  std::atomic<bool> traj_cmd_received_{false};
+  double traj_target_x_{0.0}, traj_target_y_{0.0}, traj_target_z_{0.0};
+  double traj_accept_radius_{0.8};
+  double traj_stream_timeout_{0.5};                  // 流断判定 [s]
+  double traj_startup_grace_{2.0};                   // 起始等首帧宽限 [s] (无则视为流断)
+  int    traj_in_radius_frames_{0};                  // 到达判定去抖
+  rclcpp::Time traj_accept_time_;
+  rclcpp::Time traj_deadline_;
 
   // params
   double ctl_rate_{20.0};

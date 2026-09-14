@@ -15,6 +15,7 @@
 #include <mavros_msgs/msg/altitude.hpp>
 #include <mavros_msgs/msg/rc_in.hpp>
 #include <mavros_msgs/msg/attitude_target.hpp>
+#include <mavros_msgs/msg/position_target.hpp>
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/set_mode.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
@@ -83,6 +84,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr  pub_setpoint_pos_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr        pub_setpoint_vel_;
   rclcpp::Publisher<mavros_msgs::msg::AttitudeTarget>::SharedPtr pub_setpoint_att_;
+  rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr pub_setpoint_raw_;
 
   // ---- 服务端 ----
   rclcpp::Service<easyfly_msgs::srv::ArmMotors>::SharedPtr      srv_arm_;

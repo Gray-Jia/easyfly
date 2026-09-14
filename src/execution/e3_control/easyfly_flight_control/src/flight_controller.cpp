@@ -30,6 +30,12 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
     sub_opts);
   pub_uav_cmd_ = create_publisher<easyfly_msgs::msg::UAVCommand>("/uav_command", qos);
 
+  // M4.3: EGO-Planner 轨迹流 (traj_server 100Hz); 独立回调组, 避免被 action 阻塞饿死
+  sub_position_cmd_ = create_subscription<quadrotor_msgs::msg::PositionCommand>(
+    "/position_cmd", rclcpp::SensorDataQoS(),
+    std::bind(&FlightController::cb_position_cmd, this, _1),
+    sub_opts);
+
   cli_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   cli_arm_ = create_client<easyfly_msgs::srv::ArmMotors>("/arm_motors", rmw_qos_profile_services_default, cli_cb_group_);
   cli_mode_= create_client<easyfly_msgs::srv::SetFlightMode>("/set_flight_mode", rmw_qos_profile_services_default, cli_cb_group_);
@@ -46,6 +52,10 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
     std::bind(&FlightController::handle_waypoint_goal,   this, _1, _2),
     std::bind(&FlightController::handle_waypoint_cancel, this, _1),
     std::bind(&FlightController::handle_waypoint_accepted, this, _1));
+  as_traj_ = rclcpp_action::create_server<FollowTrajectory>(this, "/follow_trajectory",
+    std::bind(&FlightController::handle_traj_goal,   this, _1, _2),
+    std::bind(&FlightController::handle_traj_cancel, this, _1),
+    std::bind(&FlightController::handle_traj_accepted, this, _1));
 
   ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_ctl_ = create_wall_timer(period, std::bind(&FlightController::control_loop, this), ctl_cb_group_);
@@ -59,6 +69,21 @@ void FlightController::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr
     uav_ = *msg;
   }
   state_received_ = true;
+}
+
+// M4.3: EGO /position_cmd 快照 (TRAJECTORY 模式下由 control_loop 转发)
+void FlightController::cb_position_cmd(
+  const quadrotor_msgs::msg::PositionCommand::SharedPtr msg)
+{
+  // 仅接受 READY 轨迹 (ego traj_server 在无轨迹时不发布; 该判定是双保险)
+  if (msg->trajectory_flag !=
+      quadrotor_msgs::msg::PositionCommand::TRAJECTORY_STATUS_READY) {
+    return;
+  }
+  std::lock_guard<std::mutex> lk(traj_mtx_);
+  latest_cmd_ = *msg;
+  traj_cmd_time_ = now();
+  traj_cmd_received_.store(true);
 }
 
 easyfly_msgs::msg::UAVState FlightController::get_uav() const
@@ -90,7 +115,8 @@ void FlightController::control_loop()
   // 直到 deadline 超时 (误导性日志 + 期间无法接受新 goal)。现在任何主动状态都检测。
   // 1.5s 去抖: 模式反馈链 (PX4→mavros→bridge→uav_state) 有 ~1s 延迟,
   // 取消降落等主动切回 OFFBOARD 的场景, 窗口期内 mode 仍读旧值, 不能误判接管
-  if (active_ == TAKEOFF || active_ == WAYPOINT || active_ == HOVER) {
+  if (active_ == TAKEOFF || active_ == WAYPOINT || active_ == HOVER ||
+      active_ == TRAJECTORY) {
     if (uav.flight_mode == 6 || uav.flight_mode == 7) {
       if (takeover_since_.nanoseconds() == 0) {
         takeover_since_ = now();
@@ -108,6 +134,10 @@ void FlightController::control_loop()
             auto r = std::make_shared<GoToWaypoint::Result>();
             r->success = false; r->message = "external takeover (RTL/AUTO.LAND)";
             gh_waypoint_->abort(r); gh_waypoint_.reset();
+          } else if (active_ == TRAJECTORY && gh_traj_) {
+            auto r = std::make_shared<FollowTrajectory::Result>();
+            r->success = false; r->message = "takeover";
+            gh_traj_->abort(r); gh_traj_.reset();
           }
         } catch (const std::exception &) {}
         active_ = NONE;
@@ -229,6 +259,89 @@ void FlightController::control_loop()
       cmd.position_x = hover_x_; cmd.position_y = hover_y_;
       cmd.position_z = hover_z_; cmd.yaw = hover_yaw_;
       pub_uav_cmd_->publish(cmd);
+    }
+  } else if (active_ == TRAJECTORY) {
+    // ---- M4.3: 转发 EGO /position_cmd (位置+速度前馈+yaw) ----
+    bool have_cmd;
+    quadrotor_msgs::msg::PositionCommand c;
+    rclcpp::Time t_cmd;
+    {
+      std::lock_guard<std::mutex> lk(traj_mtx_);
+      have_cmd = traj_cmd_received_.load();
+      c = latest_cmd_;
+      t_cmd = traj_cmd_time_;
+    }
+    // 流断判定: 已流过 → >traj_stream_timeout_ 无新帧; 从未流过 → 超过起始宽限
+    const double gap = have_cmd ? (now() - t_cmd).seconds()
+                                : (now() - traj_accept_time_).seconds();
+    const bool stream_lost = have_cmd ? (gap > traj_stream_timeout_)
+                                      : (gap > traj_startup_grace_);
+    if (stream_lost) {
+      RCLCPP_ERROR(get_logger(),
+        "FollowTrajectory 流断 (%.2fs 无 /position_cmd) → 就地悬停 + abort", gap);
+      if (gh_traj_) {
+        auto r = std::make_shared<FollowTrajectory::Result>();
+        r->success = false; r->message = "stream_lost";
+        gh_traj_->abort(r); gh_traj_.reset();
+      }
+      if (have_cmd) {
+        // 悬停于最后指令点 (反馈毛刺守卫)
+        enter_hover_at(
+          safe_axis(uav.position_x, c.position.x),
+          safe_axis(uav.position_y, c.position.y),
+          safe_axis(uav.position_z, c.position.z),
+          c.yaw);
+      } else {
+        enter_hover_at(uav.position_x, uav.position_y, uav.position_z, uav.yaw);
+      }
+      return;
+    }
+
+    if (gh_traj_) {
+      // 转发为 TRAJECTORY 指令 (ENU 直传; 换轴由 mavros 在 setpoint_raw 内完成)
+      cmd.control_mode = easyfly_msgs::msg::UAVCommand::TRAJECTORY;
+      cmd.position_x = c.position.x;
+      cmd.position_y = c.position.y;
+      cmd.position_z = c.position.z;
+      cmd.velocity_x = c.velocity.x;
+      cmd.velocity_y = c.velocity.y;
+      cmd.velocity_z = c.velocity.z;
+      cmd.yaw        = c.yaw;
+      pub_uav_cmd_->publish(cmd);
+
+      const double dx = traj_target_x_ - uav.position_x;
+      const double dy = traj_target_y_ - uav.position_y;
+      const double dz = traj_target_z_ - uav.position_z;
+      const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+      auto fb = std::make_shared<FollowTrajectory::Feedback>();
+      fb->distance_remaining = dist;
+      fb->stream_active = true;
+      gh_traj_->publish_feedback(fb);
+
+      if (dist < traj_accept_radius_) ++traj_in_radius_frames_;
+      else                            traj_in_radius_frames_ = 0;
+
+      if (traj_in_radius_frames_ >= 5) {
+        RCLCPP_INFO(get_logger(), "FollowTrajectory 到达终点 (dist=%.2f)", dist);
+        auto r = std::make_shared<FollowTrajectory::Result>();
+        r->success = true; r->message = "arrived";
+        gh_traj_->succeed(r); gh_traj_.reset();
+        hover_x_ = traj_target_x_; hover_y_ = traj_target_y_;
+        hover_z_ = traj_target_z_; hover_yaw_ = c.yaw;
+        x_ramp_ = traj_target_x_; y_ramp_ = traj_target_y_; z_ramp_ = traj_target_z_;
+        active_ = HOVER;
+      } else if (now() > traj_deadline_) {
+        RCLCPP_ERROR(get_logger(), "FollowTrajectory 超时 (dist=%.2f), abort + 就地悬停", dist);
+        auto r = std::make_shared<FollowTrajectory::Result>();
+        r->success = false; r->message = "timeout";
+        gh_traj_->abort(r); gh_traj_.reset();
+        enter_hover_at(
+          safe_axis(uav.position_x, c.position.x),
+          safe_axis(uav.position_y, c.position.y),
+          safe_axis(uav.position_z, c.position.z),
+          c.yaw);
+      }
     }
   }
 }
@@ -385,6 +498,68 @@ void FlightController::handle_waypoint_accepted(
   wp_deadline_ = now() + rclcpp::Duration::from_seconds(
     wp_start_dist_ / std::max(wp_max_speed_, 0.1) * 3.0 + 15.0);
   gh_waypoint_=gh; active_=WAYPOINT;
+}
+
+// ================================================================
+// M4.3: /follow_trajectory action (EGO-Planner 轨迹跟随)
+// ================================================================
+
+rclcpp_action::GoalResponse FlightController::handle_traj_goal(
+  const rclcpp_action::GoalUUID &, std::shared_ptr<const FollowTrajectory::Goal>)
+{
+  // 仅 HOVER 可进入 (与既有单动作槽互斥); 需已 arm
+  const auto uav = get_uav();
+  if (active_ != HOVER || !uav.armed) return rclcpp_action::GoalResponse::REJECT;
+  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse FlightController::handle_traj_cancel(
+  const std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>>)
+{
+  // 就地悬停: 优先当前位置反馈, 偏差>3m 视为毛刺回退最后指令点 (Q4 同款守卫)
+  bool have_cmd;
+  quadrotor_msgs::msg::PositionCommand c;
+  {
+    std::lock_guard<std::mutex> lk(traj_mtx_);
+    have_cmd = traj_cmd_received_.load();
+    c = latest_cmd_;
+  }
+  const auto uav = get_uav();
+  if (have_cmd) {
+    enter_hover_at(
+      safe_axis(uav.position_x, c.position.x),
+      safe_axis(uav.position_y, c.position.y),
+      safe_axis(uav.position_z, c.position.z),
+      c.yaw);
+  } else {
+    enter_hover_at(uav.position_x, uav.position_y, uav.position_z, uav.yaw);
+  }
+  gh_traj_.reset();
+  return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void FlightController::handle_traj_accepted(
+  const std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>> gh)
+{
+  auto g = gh->get_goal();
+  traj_target_x_ = g->target_x;
+  traj_target_y_ = g->target_y;
+  traj_target_z_ = g->target_z;
+  traj_accept_radius_ = (g->acceptance_radius > 0) ? g->acceptance_radius : 0.8;
+  const double timeout = (g->timeout > 0) ? g->timeout : 120.0;
+
+  {
+    std::lock_guard<std::mutex> lk(traj_mtx_);
+    traj_cmd_received_.store(false);           // 起始等首帧 (startup grace)
+    traj_cmd_time_ = rclcpp::Time(0, 0, now().get_clock_type());
+  }
+  traj_accept_time_ = now();
+  traj_deadline_ = now() + rclcpp::Duration::from_seconds(timeout);
+  traj_in_radius_frames_ = 0;
+  gh_traj_ = gh; active_ = TRAJECTORY;
+  RCLCPP_INFO(get_logger(),
+    "FollowTrajectory 开始: 终点 (%.2f, %.2f, %.2f) r=%.2f timeout=%.0fs",
+    traj_target_x_, traj_target_y_, traj_target_z_, traj_accept_radius_, timeout);
 }
 
 void FlightController::enter_hover_at(double x, double y, double z, double yaw)

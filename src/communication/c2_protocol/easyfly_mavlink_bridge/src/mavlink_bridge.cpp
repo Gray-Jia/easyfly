@@ -86,6 +86,9 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   pub_setpoint_att_ = create_publisher<mavros_msgs::msg::AttitudeTarget>(
     "/mavros/setpoint_raw/attitude", default_qos);
 
+  pub_setpoint_raw_ = create_publisher<mavros_msgs::msg::PositionTarget>(
+    "/mavros/setpoint_raw/local", default_qos);
+
   // ---- service 专用 callback group (避免与 client response 死锁) ----
   srv_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
@@ -367,6 +370,33 @@ void MavlinkBridge::publish_setpoint()
       att.type_mask   = 0b10000000;
 
       pub_setpoint_att_->publish(att);
+      break;
+    }
+    case easyfly_msgs::msg::UAVCommand::TRAJECTORY: {
+      // M4.3: EGO-Planner 轨迹 (位置 + 速度前馈 + yaw)。
+      // 坐标系 (mavros 2.14.0 setpoint_raw.cpp local_cb 源码实证):
+      //   除 FRAME_BODY_* 外一律按 ENU 处理并内部 transform_frame_enu_ned,
+      //   故此处必须直传 ENU 数值 + FRAME_LOCAL_NED, type_mask 原样透传。
+      //   mask 1472 = IGNORE_AFX|IGNORE_AFY|IGNORE_AFZ|IGNORE_YAW_RATE
+      //   (用 position+velocity+yaw, 忽略加速度/角速率)。
+      mavros_msgs::msg::PositionTarget pt;
+      pt.header.stamp    = now();
+      pt.header.frame_id = "map";
+      pt.coordinate_frame = mavros_msgs::msg::PositionTarget::FRAME_LOCAL_NED;
+      pt.position.x = last_cmd_.position_x;
+      pt.position.y = last_cmd_.position_y;
+      pt.position.z = last_cmd_.position_z;
+      pt.velocity.x = last_cmd_.velocity_x;
+      pt.velocity.y = last_cmd_.velocity_y;
+      pt.velocity.z = last_cmd_.velocity_z;
+      pt.yaw        = static_cast<float>(last_cmd_.yaw);
+      pt.yaw_rate   = 0.0f;
+      pt.type_mask  = mavros_msgs::msg::PositionTarget::IGNORE_AFX |
+                      mavros_msgs::msg::PositionTarget::IGNORE_AFY |
+                      mavros_msgs::msg::PositionTarget::IGNORE_AFZ |
+                      mavros_msgs::msg::PositionTarget::IGNORE_YAW_RATE;
+
+      pub_setpoint_raw_->publish(pt);
       break;
     }
     default:

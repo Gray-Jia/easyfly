@@ -35,6 +35,7 @@ set(action_files
   "action/Land.action"
   "action/GoToWaypoint.action"
   "action/TrackTarget.action"
+  "action/FollowTrajectory.action"
   "action/NavigateTo.action"
   "action/SearchArea.action"
   "action/ExecuteMission.action"

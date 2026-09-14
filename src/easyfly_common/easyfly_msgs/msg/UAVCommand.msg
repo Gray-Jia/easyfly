@@ -7,6 +7,7 @@ uint8 VELOCITY=1
 uint8 ATTITUDE=2
 uint8 ATTITUDE_THRUST=3
 uint8 ANGULAR_RATE=4
+uint8 TRAJECTORY=5                # M4.3: 位置+速度前馈轨迹 (复用 position/velocity/yaw 字段)
 uint8 control_mode
 
 # 位置设置点 (ENU, m)

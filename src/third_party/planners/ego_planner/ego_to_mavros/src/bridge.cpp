@@ -160,21 +160,21 @@ void EgoToMavrosBridge::odomCallback(const nav_msgs::msg::Odometry::SharedPtr ms
 void EgoToMavrosBridge::fillTrajectorySetpoint(
     mavros_msgs::msg::PositionTarget &sp)
 {
-  // ego_planner (ENU) → PX4 (NED)
-  //   ENU x=East → NED y=East
-  //   ENU y=North → NED x=North
-  //   ENU z=Up → NED z=-Down
-  sp.position.x = latest_cmd_->position.y;
-  sp.position.y = latest_cmd_->position.x;
-  sp.position.z = -latest_cmd_->position.z;
+  // 坐标系 (mavros 2.14.0 setpoint_raw.cpp local_cb 源码实证):
+  //   除 FRAME_BODY_* 外一律按 ENU 处理并内部 transform_frame_enu_ned。
+  //   因此这里必须直传 ego_planner 的 ENU 数值 (不可再手动换轴, 否则双重变换
+  //   会造成轴序错乱 + 高度反号)。
+  sp.position.x = latest_cmd_->position.x;
+  sp.position.y = latest_cmd_->position.y;
+  sp.position.z = latest_cmd_->position.z;
 
-  sp.velocity.x = latest_cmd_->velocity.y;
-  sp.velocity.y = latest_cmd_->velocity.x;
-  sp.velocity.z = -latest_cmd_->velocity.z;
+  sp.velocity.x = latest_cmd_->velocity.x;
+  sp.velocity.y = latest_cmd_->velocity.y;
+  sp.velocity.z = latest_cmd_->velocity.z;
 
-  sp.acceleration_or_force.x = latest_cmd_->acceleration.y;
-  sp.acceleration_or_force.y = latest_cmd_->acceleration.x;
-  sp.acceleration_or_force.z = -latest_cmd_->acceleration.z;
+  sp.acceleration_or_force.x = latest_cmd_->acceleration.x;
+  sp.acceleration_or_force.y = latest_cmd_->acceleration.y;
+  sp.acceleration_or_force.z = latest_cmd_->acceleration.z;
 
   if (enable_yaw_cmd_)
   {
@@ -194,9 +194,10 @@ void EgoToMavrosBridge::fillTrajectorySetpoint(
 void EgoToMavrosBridge::fillHoldSetpoint(
     mavros_msgs::msg::PositionTarget &sp)
 {
-  sp.position.x = last_hold_pose_.position.y;
-  sp.position.y = last_hold_pose_.position.x;
-  sp.position.z = -last_hold_pose_.position.z;
+  // 同 fillTrajectorySetpoint: 直传 ENU (mavros 内部 ENU→NED)
+  sp.position.x = last_hold_pose_.position.x;
+  sp.position.y = last_hold_pose_.position.y;
+  sp.position.z = last_hold_pose_.position.z;
 
   if (enable_yaw_cmd_)
     sp.yaw = static_cast<float>(last_hold_yaw_);
