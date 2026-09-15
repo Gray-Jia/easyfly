@@ -201,3 +201,15 @@ signedness: 'unsigned int' and 'int' [-Wsign-compare]
 - **规避（G4 全程使用）**：每个终端先 `export PX4_DIR=/home/jia/PX4-Autopilot-1.16.2`。
 - **根治建议**：恢复开发后将默认路径改为 `PX4-Autopilot-1.16.2`（或改为宽松匹配 `~/PX4-Autopilot*`）；属 launch 文件一行级修改，随下一批代码修改一起提交并更新基线。
 - **备注**：test-v2 §4.3 已记载"目录名不能作为版本依据"，本条是它在启动层的具体体现。
+
+---
+
+## V2-08 PX4 目录改名致 SITL 构建缓存失效
+
+- **发现时间**：2026-09-15，G4 第 1 步（make px4_sitl gazebo-classic）
+- **test-v2 §18 分类**：ENV（环境固化问题，非代码缺陷）
+- **现象**：make 报 CMakeCache 目录不一致、`Tools/check_submodules.sh: not found`、`can't cd to /home/jia/PX4-Autopilot/msg`。
+- **根因**：该 PX4 树最初在 `/home/jia/PX4-Autopilot` 名下编译（CMakeCache `PX4_SOURCE_DIR=/home/jia/PX4-Autopilot`），后两次改名（→1.16.1→1.16.2），build 树内缓存与 ninja 规则中的绝对路径全部失效。EasyFly 的 px4_sitl.launch.py 直接运行旧二进制不触发重编，故此前未暴露。
+- **处置**：删除 `build/px4_sitl_default` 后全量重编（进行中）；重编后二进制路径不变，EasyFly 链无影响。拒绝符号链接应急方案（固化旧路径，违背冻结基线方向）。
+- **附带发现**：build 树内无任何历史 ulog——既往 Attitude failure 会话从未保存 ulog，test-v2 §4.3/§11 的 ulog 要求正是补此窟窿；G4 每轮必须归档 ulog。
+- **备注**：重编不改变 PX4 git 状态（仍为 54f0455ffc / v1.16.2-dirty）；EasyFly 仓库无改动，不产生新基线。
