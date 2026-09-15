@@ -15,6 +15,9 @@
 | V2-04 | G2 单元测试 | **TEST（测试架子缺陷，已解决）** | test_sort 已改为原生 gtest，结果文件正常生成，6/6 通过 | 已解决（2026-09-15） |
 | V2-05 | G2 单元测试 | lint 债务（非阻塞） | 四包 lint 失败 79 项；V2-04 修复后降为 75 项 | 已记录，列入债务清单 |
 | V2-06 | G3 组件测试 | 测试范围缺口（非阻塞，待补） | §10.2 五组故障注入测试尚未编写，G3 现有范围仅 mock 14/14 | 已记录，G4 前或期间补齐 |
+| V2-07 | G4 准备 | ENV/CONTRACT（配置漂移，已规避） | px4_sitl.launch 默认 PX4 路径仍指向已改名目录，需 PX4_DIR 环境变量 | 已登记，根治待恢复开发期 |
+| V2-08 | G4 第 1 步 | ENV（已处置） | PX4 目录改名致 SITL 构建缓存绝对路径失效，干净重编 | 已处置（2026-09-15 重编） |
+| V2-09 | G4 第 3 级 | **CONTRACT（时钟域，阻塞下游）** | MAVROS 未用仿真时钟，与 PX4 时钟域漂移致 timesync 每 51s 跳变 | 已定位根因，修复待执行 |
 
 ---
 
@@ -213,3 +216,39 @@ signedness: 'unsigned int' and 'int' [-Wsign-compare]
 - **处置**：删除 `build/px4_sitl_default` 后全量重编（进行中）；重编后二进制路径不变，EasyFly 链无影响。拒绝符号链接应急方案（固化旧路径，违背冻结基线方向）。
 - **附带发现**：build 树内无任何历史 ulog——既往 Attitude failure 会话从未保存 ulog，test-v2 §4.3/§11 的 ulog 要求正是补此窟窿；G4 每轮必须归档 ulog。
 - **备注**：重编不改变 PX4 git 状态（仍为 54f0455ffc / v1.16.2-dirty）；EasyFly 仓库无改动，不产生新基线。
+
+---
+
+## V2-09 G4 第 3 级复现周期性 timesync Time jump（历史 time jump 阻塞项的根因定位）
+
+- **发现时间**：2026-09-15，G4 第 3 级（MAVROS + mavlink_bridge 接入后的静置观察）
+- **test-v2 §18 分类**：**CONTRACT（时钟域/时间戳契约错误，阻塞所有下游测试）**；同时是 test-v2 §1 第 8 条明列的阻塞项（time jump）
+- **二分定位结论**：第 1 级（纯 PX4 原生 iris）静置干净；第 2 级（EasyFly easyfly_iris + 传感器插件，无 MAVROS）静置干净、RTF=1.00；**time jump 首次出现在第 3 级（通信层）**——与机体模型、传感器插件无关
+
+### 现象
+
+- PX4 侧：`WARN [timesync] time jump detected. Resetting time synchroniser.`
+- MAVROS 侧：`[mavros.time]: TM: Time jump detected. Resetting time synchroniser.`
+- 刷屏周期**精确 51.1 秒/次**（日志时间戳 1789470352→403→454→505→556），匀速漂移撞阈值的特征，非随机抖动
+
+### 根因分析
+
+1. `mavlink_bridge.launch.py` 只给 bridge 节点设了 `use_sim_time: True`，**mavros_node 未设**（参数仅 fcu_url/gcs_url/tgt_system），rc_receiver 也未设；
+2. MAVROS 跑墙钟，PX4 SITL（lockstep）跑仿真时钟；接入 MAVROS 4Mbps 数据流 + 10Hz timesync 后 RTF 预计由 1.00 降至 ~0.98（待 gz stats 确认）；
+3. 仿真时钟以 (1−RTF) 速率持续落后墙钟：0.0196 × 51.1s ≈ **1.0s**，恰为 timesync 跳变阈值 → 每攒满 1 秒触发一次 reset，两侧 timesync 互相看到对方"跳变"。
+
+### 危害
+
+每次 reset 后 timesync 重新收敛，期间 fcu↔ros 消息时间戳换算跳变约 1 秒，直接污染 `/mavros/local_position/pose` header、bridge → `/uav_state` 时间戳、下游 TF 与 EGO traj_server 的时间基准。schedule-v2 §6.1 记载的历史 EGO 会话 time jump/时间跳变保护触发，与本发现高度可能同源。
+
+### 验证与修复
+
+- **诊断确认项**：当前 `gz stats` 的 RTF 是否 ~0.98（若仍为 1.00 则机理需重判，转查 /clock 停顿尖峰：`ros2 topic hz /clock`）
+- **修复方案（推荐）**：`mavlink_bridge.launch.py` 中 mavros_node 参数增加 `"use_sim_time": True`（rc_receiver 一并），令 MAVROS 与 PX4 同用 /clock（gazebo_ros_init 已发布 /clock），offset 恒定后两侧 timesync 安静
+- **否决方案**：`timesync_rate:=0` 关闭 timesync——仅隐藏报错，时间戳换算质量劣化
+- **修复后验证**：第 3 级重跑，静置 ≥10 分钟无任何 Time jump 才算通过
+- **基线影响（G0 规则）**：属"修复阻塞验收的问题"，暂停期允许；launch 参数变更产生新基线编号，从 G4 第 3 级重跑
+
+### 状态
+
+已登记，修复待执行。
