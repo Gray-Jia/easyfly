@@ -14,6 +14,7 @@
 | V2-03 | G1 第 4 批驱动构建 | lint 债务 + 构建工具行为说明（非阻塞） | fast_lio 警告 + colcon override 提示 + $ART 未设置过程事件 | 已记录，已补救归档 |
 | V2-04 | G2 单元测试 | **TEST（测试架子缺陷，已解决）** | test_sort 已改为原生 gtest，结果文件正常生成，6/6 通过 | 已解决（2026-09-15） |
 | V2-05 | G2 单元测试 | lint 债务（非阻塞） | 四包 lint 失败 79 项；V2-04 修复后降为 75 项 | 已记录，列入债务清单 |
+| V2-06 | G3 组件测试 | 测试范围缺口（非阻塞，待补） | §10.2 五组故障注入测试尚未编写，G3 现有范围仅 mock 14/14 | 已记录，G4 前或期间补齐 |
 
 ---
 
@@ -178,3 +179,14 @@ signedness: 'unsigned int' and 'int' [-Wsign-compare]
 - **复测更新（V2-04 修复后）**：easyfly_multi_object_tracking 重写 test_sort.cpp 后，本包 copyright 8→7、cpplint 25→23、uncrustify 6→5，全工作区 lint 债务 79→**75** 项（cpplint 43、copyright 15、uncrustify 11、pep257 6）。
 - **处理**：列入暂停期债务清单（schedule-v2 §8 里程碑 3"单独建立 lint 债务清单"即此项）。修复属机械性整改（加 copyright 头、格式化），建议恢复开发前用工具批量处理，不逐项手改；本轮只记录。
 - **备注**：easyfly_serial 未注册任何 lint 测试，与其他三包不一致；若要求全工作区 lint 口径统一，需补注册（同样属测试补齐，非阻塞）。
+
+---
+
+## V2-06 G3 测试范围缺口：§10.2 故障注入测试未编写
+
+- **发现时间**：2026-09-15，G3 执行时
+- **test-v2 §18 分类**：TEST（测试范围缺口），非缺陷、非阻塞
+- **现象**：test-v2 §10.2 要求的组件级故障注入测试尚不存在：Bridge 命令校验/watchdog、UAVState 各遥测独立过期、MissionFSM 双 Goal/电池失效/析构 join、traj_server 非法 knot/时间倒退、/mission_status 单一发布者所有权。G3 当前可执行范围仅为 §10.1 的 P0 mock。
+- **G3 现有范围结论**：P0 FlightController mock **14/14 PASS**（2026-09-15，基线 238ce3d，use_sim_time:=false，四 Action server 就绪，测后无残留进程）。
+- **处理**：按 schedule-v2 §9"补测试"允许范围择机编写（建议 G4 定位姿态故障前后，这些确定性测试正好可用于区分 Bridge/FlightController 责任）；编写后从 G3 补跑。
+- **证据**：`artifacts/acceptance-20260915-1759/g3-summary.md`、`g3-mock-output.log`、`g3-flight-control-node.log`。
