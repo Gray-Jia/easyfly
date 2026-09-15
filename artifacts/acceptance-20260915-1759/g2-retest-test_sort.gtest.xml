@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="6" failures="0" disabled="0" errors="0" time="0.016" timestamp="2026-09-15T18:25:27" name="AllTests">
+  <testsuite name="Sort" tests="6" failures="0" disabled="0" errors="0" time="0.016" timestamp="2026-09-15T18:25:27">
+    <testcase name="AssignsDistinctIdsToTwoTargets" status="run" result="completed" time="0.004" timestamp="2026-09-15T18:25:27" classname="easyfly_multi_object_tracking.Sort" />
+    <testcase name="MaintainsTwoConfirmedTracksDuringCrossing" status="run" result="completed" time="0.004" timestamp="2026-09-15T18:25:27" classname="easyfly_multi_object_tracking.Sort" />
+    <testcase name="PreservesIdAcrossTenFrameOcclusion" status="run" result="completed" time="0.004" timestamp="2026-09-15T18:25:27" classname="easyfly_multi_object_tracking.Sort" />
+    <testcase name="GivesDistractorAnIndependentId" status="run" result="completed" time="0.003" timestamp="2026-09-15T18:25:27" classname="easyfly_multi_object_tracking.Sort" />
+    <testcase name="KeepsDifferentClassesInSeparateTracks" status="run" result="completed" time="0.001" timestamp="2026-09-15T18:25:27" classname="easyfly_multi_object_tracking.Sort" />
+    <testcase name="EstimatesHorizontalVelocity" status="run" result="completed" time="0" timestamp="2026-09-15T18:25:27" classname="easyfly_multi_object_tracking.Sort" />
+  </testsuite>
+</testsuites>

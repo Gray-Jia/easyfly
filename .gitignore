@@ -1,6 +1,10 @@
 build/
 install/
 log/
+# v2 复验期隔离构建目录 (test-v2 §8.1)
+build-v2/
+install-v2/
+log-v2/
 .reasonix/
 
 # 开发中文档 (仅本地保留, 不入库)
