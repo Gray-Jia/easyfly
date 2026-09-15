@@ -190,3 +190,14 @@ signedness: 'unsigned int' and 'int' [-Wsign-compare]
 - **G3 现有范围结论**：P0 FlightController mock **14/14 PASS**（2026-09-15，基线 238ce3d，use_sim_time:=false，四 Action server 就绪，测后无残留进程）。
 - **处理**：按 schedule-v2 §9"补测试"允许范围择机编写（建议 G4 定位姿态故障前后，这些确定性测试正好可用于区分 Bridge/FlightController 责任）；编写后从 G3 补跑。
 - **证据**：`artifacts/acceptance-20260915-1759/g3-summary.md`、`g3-mock-output.log`、`g3-flight-control-node.log`。
+
+---
+
+## V2-07 px4_sitl.launch 默认 PX4 路径与实际目录漂移
+
+- **发现时间**：2026-09-15，G4 准备阶段
+- **test-v2 §18 分类**：ENV/CONTRACT 边界（配置漂移，非阻塞，有环境变量级规避）
+- **现象**：`src/simulation/easyfly_px4_sitl/launch/px4_sitl.launch.py` 的 `_resolve_px4_dir()` 解析优先级为 `PX4_DIR` 环境变量 > `~/PX4-Autopilot-1.16.1` > `~/PX4-Autopilot`。用户已将 PX4 目录改名为 `PX4-Autopilot-1.16.2`（G0 对齐 v1.16.2），两个默认候选路径均已不存在，不设 `PX4_DIR` 时启动将失败或解析到错误路径。
+- **规避（G4 全程使用）**：每个终端先 `export PX4_DIR=/home/jia/PX4-Autopilot-1.16.2`。
+- **根治建议**：恢复开发后将默认路径改为 `PX4-Autopilot-1.16.2`（或改为宽松匹配 `~/PX4-Autopilot*`）；属 launch 文件一行级修改，随下一批代码修改一起提交并更新基线。
+- **备注**：test-v2 §4.3 已记载"目录名不能作为版本依据"，本条是它在启动层的具体体现。
