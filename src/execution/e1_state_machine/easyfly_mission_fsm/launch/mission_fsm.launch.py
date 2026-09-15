@@ -22,7 +22,11 @@ def generate_launch_description():
         executable="mission_fsm_node",
         name="mission_fsm",
         output="screen",
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
+        parameters=[{
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
+            # 持续无效/过期的电池遥测在此宽限期后触发空中 RTL+任务中止。
+            "battery_invalid_grace_s": 5.0,
+        }],
     )
 
     return LaunchDescription([use_sim_time_arg, mission_fsm])

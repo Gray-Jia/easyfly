@@ -93,7 +93,7 @@ private:
         std::string depth_topic{"/camera/aligned_depth_to_color/depth/image_raw"};
         std::string camera_info_topic{"/camera/color/camera_info"};
         std::string camera_optical_frame{"camera_color_optical_frame"};
-        std::string target_frame{"map"};
+        std::string target_frame{"odom"};
         double min_depth{0.3};            // 有效深度下限 [m]
         double max_depth{9.5};            // 有效深度上限 [m] (相机 far=10)
         double min_valid_ratio{0.1};      // bbox 内有效像素比例下限
@@ -120,7 +120,7 @@ private:
             "/camera/color/camera_info");
         params_.camera_optical_frame = p["camera_optical_frame"].as<std::string>(
             "camera_color_optical_frame");
-        params_.target_frame = p["target_frame"].as<std::string>("map");
+        params_.target_frame = p["target_frame"].as<std::string>("odom");
         params_.min_depth = p["min_depth"].as<double>(0.3);
         params_.max_depth = p["max_depth"].as<double>(9.5);
         params_.min_valid_ratio = p["min_valid_ratio"].as<double>(0.1);

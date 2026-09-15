@@ -73,14 +73,17 @@ target_link_libraries(ego_planner_node
 
 add_executable(traj_server src/traj_server.cpp)
 
-ament_target_dependencies(traj_server ${dependencies})
+# traj_server 只做 B-spline 采样和 PositionCommand 发布。不要继承完整规划器的
+# PCL/cv_bridge/plan_env 依赖，否则 ROS interface 的传递库会被重复展开数千次。
+ament_target_dependencies(traj_server
+  rclcpp
+  traj_utils
+  quadrotor_msgs
+  bspline_opt
+)
 
 target_link_libraries(traj_server
-  ${traj_utils_LIBRARIES}
-  ${traj_utils_so_LIBRARIES}
   ${bspline_opt_LIBRARIES}
-  ${PCL_LIBRARIES}
-  ${plan_env_LIBRARIES}
 )
 
 install(TARGETS

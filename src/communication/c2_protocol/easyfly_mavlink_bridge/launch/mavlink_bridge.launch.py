@@ -53,7 +53,11 @@ def generate_launch_description():
         executable="mavlink_bridge_node",
         output="screen",
         name="mavlink_bridge",
-        parameters=[{"use_sim_time": True}],
+        parameters=[
+            os.path.join(get_package_share_directory("easyfly_mavlink_bridge"),
+                         "config", "mavlink_bridge.yaml"),
+            {"use_sim_time": True},
+        ],
     )
 
     # ---- easyfly_rc_receiver ----

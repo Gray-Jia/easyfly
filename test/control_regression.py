@@ -35,6 +35,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile
 
 from action_msgs.msg import GoalStatus
@@ -60,7 +61,10 @@ GSTATUS = {
 class RegressionRunner(Node):
 
     def __init__(self):
-        super().__init__("easyfly_control_regression")
+        super().__init__(
+            "easyfly_control_regression",
+            parameter_overrides=[Parameter("use_sim_time", value=True)],
+        )
         self._state = None
         self._state_mtx = threading.Lock()
         self.create_subscription(

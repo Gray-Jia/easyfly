@@ -94,6 +94,22 @@ private:
   void enter_hover_at(double x, double y, double z, double yaw);
   // Q4: 反馈值毛刺守卫 (偏差>3m 回退 ramp 值)
   static double safe_axis(double fb, double ramp);
+  void stamp_command(easyfly_msgs::msg::UAVCommand & cmd);
+  bool flight_state_ready(const easyfly_msgs::msg::UAVState & uav) const;
+  // Accepted goal 的所有失败/竞态退出统一经这些 helper 收尾，确保 reservation
+  // 与 goal handle 不会在 action 已接受后悬挂。
+  void finish_takeoff_goal(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> & gh,
+    const std::string & message);
+  void finish_land_goal(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> & gh,
+    const std::string & message, bool keep_hover);
+  void finish_waypoint_goal(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> & gh,
+    const std::string & message);
+  void finish_traj_goal(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>> & gh,
+    const std::string & message);
 
   // ---- subscriptions ----
   rclcpp::Subscription<easyfly_msgs::msg::UAVState>::SharedPtr sub_uav_state_;
@@ -124,8 +140,18 @@ private:
   rclcpp::Time last_ctl_time_;                       // Q12: 上一控制周期时刻 (实测 dt)
 
   // ---- active action ----
-  enum Action { NONE, TAKEOFF, LANDING, WAYPOINT, HOVER, TRAJECTORY };
+  enum Action {
+    NONE, TAKEOFF_PREPARING, TAKEOFF, LAND_PREPARING, LANDING, LAND_CANCELING,
+    WAYPOINT, HOVER,
+    TRAJECTORY_WAIT, TRAJECTORY
+  };
+  // MultiThreadedExecutor 下，全部飞行状态、GoalHandle 和目标参数由此锁保护。
+  mutable std::recursive_mutex flight_mtx_;
+  // Land 的 PX4 mode service/确认事务必须串行执行；持有此锁时不得持有
+  // flight_mtx_，避免阻塞模式调用阻塞 control_loop 或状态迁移。
+  mutable std::mutex land_transaction_mtx_;
   Action active_{NONE};
+  bool action_reserved_{false};       // goal callback 原子预留，关闭跨 Action 双接受窗口
   rclcpp::Time takeover_since_;        // Q2 配套: 外部接管检测去抖起始时刻
 
   // hover 目标位置（takeoff/waypoint 完成后保持的位置）
@@ -167,10 +193,21 @@ private:
   int    traj_in_radius_frames_{0};                  // 到达判定去抖
   rclcpp::Time traj_accept_time_;
   rclcpp::Time traj_deadline_;
+  // PositionCommand 的单调 ID 水位。它由 flight_mtx_ 保护，并且即使当前
+  // 没有 FollowTrajectory 也会从合格消息中更新，用于绑定下一次 goal。
+  uint32_t traj_seen_max_id_{0};
+  // 新 goal 在 goal callback 中与 action_reserved_ 一起原子锁存的 ID 水位。
+  uint32_t traj_baseline_id_{0};
+  // goal response 已返回但 accepted callback 尚未完成时，阻止消息把
+  // response/accepted 窗口内的 ID 提前提交到 seen 水位。
+  bool traj_goal_pending_{false};
+  uint32_t traj_active_id_{0};
 
   // params
   double ctl_rate_{20.0};
   double land_timeout_{30.0};
+  double max_altitude_{50.0};
+  double max_horizontal_speed_{20.0};
 };
 
 }  // namespace easyfly_flight_control

@@ -32,6 +32,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile
 
 from action_msgs.msg import GoalStatus
@@ -55,7 +56,10 @@ PILLAR_GAZEBO = (5.0, -2.0)
 class EgoAcceptance(Node):
 
     def __init__(self):
-        super().__init__("ego_acceptance")
+        super().__init__(
+            "ego_acceptance",
+            parameter_overrides=[Parameter("use_sim_time", value=True)],
+        )
         self._lock = threading.Lock()
         self.obs = None
         self.state = None

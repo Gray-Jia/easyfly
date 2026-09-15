@@ -138,7 +138,10 @@ def generate_launch_description():
         executable='traj_server',
         name='traj_server',
         output='screen',
-        parameters=[{'use_sim_time': use_sim_time}],
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'traj_server/output_frame': 'odom',
+        }],
         remappings=[
             ('planning/bspline', '/planning/bspline'),
             # position_cmd 默认即 /position_cmd (traj_server.cpp 用绝对名)

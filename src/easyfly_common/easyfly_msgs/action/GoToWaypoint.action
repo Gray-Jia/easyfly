@@ -1,7 +1,7 @@
 # 航点飞行
 float64 target_x          # 目标x [m] ENU
 float64 target_y          # 目标y [m] ENU
-float64 target_z          # 目标z [m] ENU (负值=高于home)
+float64 target_z          # 目标z [m] ENU (正值=高于局部原点)
 float64 target_yaw        # 目标偏航 [rad], NaN=保持当前朝向
 float64 max_speed         # 最大速度 [m/s], 0=默认
 float64 acceptance_radius # 到达判定半径 [m], 0=默认

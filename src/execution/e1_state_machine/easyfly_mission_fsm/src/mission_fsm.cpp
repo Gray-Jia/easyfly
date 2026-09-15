@@ -46,8 +46,25 @@ MissionFSM::MissionFSM(const rclcpp::NodeOptions & options)
 
   // ---- safety timer 1Hz ----
   timer_safety_ = create_wall_timer(1s, std::bind(&MissionFSM::safety_check, this));
+  battery_invalid_grace_s_ = declare_parameter("battery_invalid_grace_s", 5.0);
+  if (!std::isfinite(battery_invalid_grace_s_) || battery_invalid_grace_s_ < 0.0) {
+    RCLCPP_WARN(get_logger(), "battery_invalid_grace_s 非法，使用 5s");
+    battery_invalid_grace_s_ = 5.0;
+  }
+  battery_invalid_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+
+  publish_status(easyfly_msgs::msg::MissionStatus::IDLE, "idle", -1, 0, 0.0f);
 
   RCLCPP_INFO(get_logger(), "MissionFSM started — /execute_mission ready");
+}
+
+MissionFSM::~MissionFSM()
+{
+  cancel_requested_ = true;
+  emergency_ = true;
+  cancel_current_step();
+  std::lock_guard<std::mutex> lk(worker_mtx_);
+  if (worker_.joinable()) worker_.join();
 }
 
 // ================================================================
@@ -56,8 +73,17 @@ MissionFSM::MissionFSM(const rclcpp::NodeOptions & options)
 
 void MissionFSM::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
 {
-  uav_ = *msg;
+  {
+    std::lock_guard<std::mutex> lk(state_mtx_);
+    uav_ = *msg;
+  }
   state_received_ = true;
+}
+
+easyfly_msgs::msg::UAVState MissionFSM::get_uav_snapshot() const
+{
+  std::lock_guard<std::mutex> lk(state_mtx_);
+  return uav_;
 }
 
 // ================================================================
@@ -66,18 +92,58 @@ void MissionFSM::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
 
 void MissionFSM::safety_check()
 {
-  if (!state_received_ || !mission_active_) return;
+  if (!mission_active_) {
+    std::lock_guard<std::mutex> lk(mission_mtx_);
+    battery_invalid_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+    publish_status(easyfly_msgs::msg::MissionStatus::IDLE, "idle", -1, 0, 0.0f);
+    return;
+  }
+  if (!state_received_) return;
 
-  if (uav_.battery_remaining < 0.15 && !rtl_triggered_) {
-    rtl_triggered_ = true;             // 一次性触发, 防止每秒重复
+  const auto uav = get_uav_snapshot();
+  if (!uav.battery_valid) {
+    bool grace_expired = false;
+    const auto t_now = now();
+    {
+      std::lock_guard<std::mutex> lk(mission_mtx_);
+      if (battery_invalid_since_.nanoseconds() == 0) {
+        battery_invalid_since_ = t_now;
+      }
+      grace_expired = (t_now - battery_invalid_since_).seconds() >= battery_invalid_grace_s_;
+    }
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "任务运行中电池遥测无效或过期 (grace=%.1fs)", battery_invalid_grace_s_);
+    if (grace_expired && !rtl_triggered_.exchange(true)) {
+      // 电池数据持续缺失不能无限期停留在告警态：空中使用 PX4 RTL，
+      // 同时中止任务；地面只中止任务，不凭无效高度触发模式切换。
+      emergency_ = true;
+      const bool airborne = uav.armed && std::isfinite(uav.position_z) && uav.position_z > 0.3;
+      RCLCPP_ERROR(get_logger(),
+        "Battery telemetry invalid beyond %.1fs -> abort mission%s",
+        battery_invalid_grace_s_, airborne ? " + RTL" : "");
+      if (airborne) trigger_rtl();
+      cancel_current_step();
+      publish_status(easyfly_msgs::msg::MissionStatus::EMERGENCY,
+        airborne ? "emergency_battery_timeout_rtl" : "emergency_battery_timeout",
+        -1, 0, 0.0f);
+    }
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lk(mission_mtx_);
+    battery_invalid_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+  }
+
+  if (uav.battery_remaining < 0.15 && !rtl_triggered_.exchange(true)) {
     emergency_     = true;             // 任务线程在步骤边界/轮询点退出
     RCLCPP_ERROR(get_logger(),
       "Battery low (%.0f%%) → 中止任务%s",
-      uav_.battery_remaining * 100,
-      (uav_.armed && uav_.position_z > 0.3) ? " + 触发 PX4 RTL" : " (在地面, 不需 RTL)");
+      uav.battery_remaining * 100,
+      (uav.armed && uav.position_z > 0.3) ? " + 触发 PX4 RTL" : " (在地面, 不需 RTL)");
 
     // 空中: 交给 PX4 的 RTL (最高可靠路径, 不依赖自家软件链)
-    if (uav_.armed && uav_.position_z > 0.3) {
+    if (uav.armed && uav.position_z > 0.3) {
       trigger_rtl();
     }
     // 取消正在执行的子 action (起飞/航点/降落), 让任务线程尽快退出
@@ -149,11 +215,33 @@ void MissionFSM::publish_status(uint8_t phase, const std::string & name,
 rclcpp_action::GoalResponse MissionFSM::handle_mission_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const ExecuteMission::Goal> goal)
 {
-  if (mission_active_) {
-    return rclcpp_action::GoalResponse::REJECT;
-  }
   if (goal->mission_file.empty()) {
     return rclcpp_action::GoalResponse::REJECT;
+  }
+  if (!state_received_) {
+    RCLCPP_WARN(get_logger(), "拒绝任务: 尚未收到 UAVState");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  const auto uav = get_uav_snapshot();
+  if (!uav.connected || !uav.pose_valid || !uav.battery_valid) {
+    RCLCPP_WARN(get_logger(),
+      "拒绝任务: 遥测未就绪 (connected=%d pose=%d battery=%d)",
+      uav.connected, uav.pose_valid, uav.battery_valid);
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  bool expected = false;
+  {
+    std::lock_guard<std::mutex> lk(mission_mtx_);
+    if (!mission_active_.compare_exchange_strong(expected, true)) {
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    // Initialize before returning ACCEPT. Any cancel/emergency arriving after
+    // this point remains set; execute_mission must not reset these flags.
+    cancel_requested_ = false;
+    emergency_ = false;
+    rtl_triggered_ = false;
+    steps_completed_ = 0;
+    battery_invalid_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
   }
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
@@ -174,22 +262,28 @@ void MissionFSM::handle_mission_accepted(
   auto goal = gh->get_goal();
   RCLCPP_INFO(get_logger(), "Mission accepted: %s", goal->mission_file.c_str());
 
-  // run in a separate thread so we don't block the action callback
-  // Q8: 顶层 try/catch — detached thread 中未捕获异常会 std::terminate 杀死整个进程
-  std::thread([this, gh, goal]() {
-    try {
-      execute_mission(goal->mission_file, gh);
-    } catch (const std::exception & e) {
-      RCLCPP_ERROR(get_logger(), "任务执行异常: %s", e.what());
+  // 受生命周期管理的 worker；goal callback 已原子预留 mission slot。
+  std::lock_guard<std::mutex> worker_lk(worker_mtx_);
+  if (worker_.joinable()) worker_.join();
+  try {
+    worker_ = std::thread([this, gh, goal]() {
       try {
-        auto res = std::make_shared<ExecuteMission::Result>();
-        res->success = false;
-        res->message = std::string("internal error: ") + e.what();
-        gh->abort(res);
-      } catch (...) {}
-      mission_active_ = false;
-    }
-  }).detach();
+      execute_mission(goal->mission_file, gh);
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(get_logger(), "任务执行异常: %s", e.what());
+        try {
+          auto res = std::make_shared<ExecuteMission::Result>();
+          res->success = false;
+          res->message = std::string("internal error: ") + e.what();
+          gh->abort(res);
+        } catch (...) {}
+        mission_active_ = false;
+      }
+    });
+  } catch (...) {
+    mission_active_ = false;
+    throw;
+  }
 }
 
 // ================================================================
@@ -285,9 +379,10 @@ std::vector<MissionStep> MissionFSM::parse_mission(const std::string & path)
       s.wait = safe_stod(val, line);
     }
     // Q8: 数值字段有 NaN → 文件无效, 丢弃全部 (防半截任务上天)
-    if (std::isnan(s.altitude) || std::isnan(s.climb_speed) || std::isnan(s.x) ||
-        std::isnan(s.y) || std::isnan(s.z) || std::isnan(s.yaw) ||
-        std::isnan(s.max_speed) || std::isnan(s.wait))
+    if (!std::isfinite(s.altitude) || !std::isfinite(s.climb_speed) ||
+        !std::isfinite(s.x) || !std::isfinite(s.y) || !std::isfinite(s.z) ||
+        !std::isfinite(s.yaw) || !std::isfinite(s.max_speed) ||
+        !std::isfinite(s.wait))
     {
       parse_ok = false;
       break;
@@ -311,12 +406,6 @@ std::vector<MissionStep> MissionFSM::parse_mission(const std::string & path)
 void MissionFSM::execute_mission(const std::string & mission_file,
   std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>> gh)
 {
-  mission_active_    = true;
-  emergency_         = false;
-  cancel_requested_  = false;
-  rtl_triggered_     = false;
-  steps_completed_   = 0;
-
   auto steps = parse_mission(mission_file);
   int total = static_cast<int>(steps.size());
 
@@ -326,6 +415,7 @@ void MissionFSM::execute_mission(const std::string & mission_file,
     res->message = "empty or invalid mission file";
     gh->abort(res);
     mission_active_ = false;
+    publish_status(easyfly_msgs::msg::MissionStatus::IDLE, "idle", -1, 0, 0.0f);
     return;
   }
 
@@ -366,6 +456,7 @@ void MissionFSM::execute_mission(const std::string & mission_file,
     RCLCPP_WARN(get_logger(), "设置终态异常(客户端已断开?): %s", e.what());
   }
   mission_active_ = false;
+  publish_status(easyfly_msgs::msg::MissionStatus::IDLE, "idle", -1, 0, 0.0f);
 }
 
 // ================================================================

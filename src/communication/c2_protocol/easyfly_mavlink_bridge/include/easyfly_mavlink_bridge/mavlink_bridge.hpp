@@ -3,10 +3,11 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include <mutex>
+
 #include <easyfly_msgs/msg/uav_state.hpp>
 #include <easyfly_msgs/msg/uav_command.hpp>
 #include <easyfly_msgs/msg/gimbal_state.hpp>
-#include <easyfly_msgs/msg/mission_status.hpp>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
@@ -30,7 +31,7 @@ namespace easyfly_mavlink_bridge
 /**
  * @brief MAVLink ↔ easyfly_msgs 桥接节点
  *
- * decoder: 订阅 mavros2 topic → 聚合发布 /uav_state、/mission_status
+ * decoder: 订阅 mavros2 topic → 聚合发布 /uav_state
  * encoder: 订阅 /uav_command → 翻译为 mavros2 setpoint + 20Hz 持续发布
  * services: /arm_motors、/set_flight_mode → 封装 mavros2 服务调用
  */
@@ -80,7 +81,6 @@ private:
 
   // ---- 发布者 ----
   rclcpp::Publisher<easyfly_msgs::msg::UAVState>::SharedPtr      pub_uav_state_;
-  rclcpp::Publisher<easyfly_msgs::msg::MissionStatus>::SharedPtr pub_mission_status_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr  pub_setpoint_pos_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr        pub_setpoint_vel_;
   rclcpp::Publisher<mavros_msgs::msg::AttitudeTarget>::SharedPtr pub_setpoint_att_;
@@ -102,6 +102,7 @@ private:
   rclcpp::TimerBase::SharedPtr timer_setpoint_;
 
   // ---- 聚合缓存 ----
+  mutable std::mutex state_mtx_;
   easyfly_msgs::msg::UAVState uav_;
 
   // ---- Q17: RC 掉线检测 ----
@@ -109,6 +110,9 @@ private:
   static constexpr double RC_TIMEOUT_S = 1.0;  // 超过此时长无 RC 数据视为断连
 
   // ---- encoder 缓存 ----
+  // cb_uav_command、timer 和立即 publish 路径可并行执行；快照后再发布，
+  // 禁止持锁调用 ROS publish/service。
+  mutable std::mutex command_mtx_;
   easyfly_msgs::msg::UAVCommand last_cmd_;
   rclcpp::Time last_cmd_time_;
   bool     cmd_received_    {false};
@@ -123,6 +127,16 @@ private:
   bool rcvd_gps_          {false};
   bool rcvd_bat_          {false};
   bool rcvd_rc_           {false};
+
+  // 各遥测最后接收时间；用节点 ROS clock，避免把默认数值误认为有效数据。
+  rclcpp::Time last_state_time_;
+  rclcpp::Time last_pose_time_;
+  rclcpp::Time last_velocity_time_;
+  rclcpp::Time last_imu_time_;
+  rclcpp::Time last_battery_time_;
+  rclcpp::Time last_gps_time_;
+  double motion_freshness_s_{1.0};
+  double slow_sensor_freshness_s_{5.0};
 };
 
 }  // namespace easyfly_mavlink_bridge

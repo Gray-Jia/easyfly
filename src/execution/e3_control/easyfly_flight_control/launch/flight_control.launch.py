@@ -10,6 +10,9 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+
+import os
 
 
 def generate_launch_description():
@@ -22,11 +25,14 @@ def generate_launch_description():
         executable="flight_control_node",
         name="flight_controller",
         output="screen",
-        parameters=[{
-            "use_sim_time": LaunchConfiguration("use_sim_time"),
-            # 注: 控制循环节拍用 wall_timer (setpoint 物理频率须按墙钟稳定);
-            # deadline/进度等时间计算走节点时钟 (use_sim_time 生效)
-        }],
+        parameters=[
+            os.path.join(get_package_share_directory("easyfly_flight_control"),
+                         "config", "flight_control.yaml"),
+            {
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                # 控制循环节拍用 wall_timer；deadline/进度使用节点 ROS clock。
+            },
+        ],
     )
 
     return LaunchDescription([use_sim_time_arg, flight_control])

@@ -1,6 +1,6 @@
 # 轨迹跟随 (M4.3): 把 EGO-Planner /position_cmd 流转发为 UAVCommand TRAJECTORY
 # 进入条件: 仅 HOVER (与既有单动作槽互斥); 需已 arm + OFFBOARD
-float64 target_x            # 轨迹终点 x [m] ENU (到达判定用; 注意 EGO 航线高度硬编码 1.0)
+float64 target_x            # 轨迹终点 x [m]，固定 odom/ENU（到达判定用）
 float64 target_y
 float64 target_z
 float64 acceptance_radius   # 到达判定半径 [m], 0=默认 0.8

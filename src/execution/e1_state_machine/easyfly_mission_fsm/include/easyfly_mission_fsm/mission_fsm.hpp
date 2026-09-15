@@ -15,6 +15,7 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace easyfly_mission_fsm
@@ -40,6 +41,7 @@ public:
   using ExecuteMission = easyfly_msgs::action::ExecuteMission;
 
   explicit MissionFSM(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  ~MissionFSM() override;
 
 private:
   // ---- action server ----
@@ -62,6 +64,7 @@ private:
 
   // ---- state ----
   void cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg);
+  easyfly_msgs::msg::UAVState get_uav_snapshot() const;
 
   // ---- mission execution ----
   void execute_mission(const std::string & mission_file,
@@ -93,20 +96,28 @@ private:
 
   // ---- latest state ----
   easyfly_msgs::msg::UAVState uav_;
-  bool state_received_{false};
+  mutable std::mutex state_mtx_;
+  std::atomic<bool> state_received_{false};
 
   // ---- mission state (跨线程: 任务线程 / executor 线程) ----
   std::atomic<int>  steps_completed_{0};   // 已完成步骤数 (终态判定)
   std::atomic<bool> mission_active_{false};
   std::atomic<bool> emergency_{false};      // 低电量等异常中止
   std::atomic<bool> cancel_requested_{false}; // 用户主动取消
-  bool rtl_triggered_{false};               // 一次性保护 (仅 timer 线程写)
+  std::atomic<bool> rtl_triggered_{false};
+  std::mutex mission_mtx_;                  // mission reservation + safety grace state
+  double battery_invalid_grace_s_{5.0};
+  rclcpp::Time battery_invalid_since_;
 
   // ---- 当前子 goal handle (供取消; 任务线程写, timer 线程取消) ----
   std::mutex step_mtx_;
   std::shared_ptr<rclcpp_action::ClientGoalHandle<Takeoff>>      cur_takeoff_gh_;
   std::shared_ptr<rclcpp_action::ClientGoalHandle<Land>>         cur_land_gh_;
   std::shared_ptr<rclcpp_action::ClientGoalHandle<GoToWaypoint>> cur_wp_gh_;
+
+  // 任务线程受节点生命周期管理，禁止 detached thread 访问已析构的 Node。
+  std::mutex worker_mtx_;
+  std::thread worker_;
 };
 
 }  // namespace easyfly_mission_fsm

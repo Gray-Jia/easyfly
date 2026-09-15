@@ -10,13 +10,13 @@ uint8 ANGULAR_RATE=4
 uint8 TRAJECTORY=5                # M4.3: 位置+速度前馈轨迹 (复用 position/velocity/yaw 字段)
 uint8 control_mode
 
-# 位置设置点 (ENU, m)
+# 位置设置点 (header.frame_id；EasyFly 局部链路要求 odom/ENU, m)
 float64 position_x
 float64 position_y
 float64 position_z
 float64 yaw
 
-# 速度设置点 (ENU, m/s)
+# 速度设置点 (header.frame_id；EasyFly 局部链路要求 odom/ENU, m/s)
 float64 velocity_x
 float64 velocity_y
 float64 velocity_z

@@ -1,6 +1,7 @@
 #include "easyfly_mavlink_bridge/mavlink_bridge.hpp"
 
 #include <cmath>
+#include <initializer_list>
 
 namespace easyfly_mavlink_bridge
 {
@@ -73,9 +74,6 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   pub_uav_state_ = create_publisher<easyfly_msgs::msg::UAVState>(
     "/uav_state", default_qos);
 
-  pub_mission_status_ = create_publisher<easyfly_msgs::msg::MissionStatus>(
-    "/mission_status", default_qos);
-
   // ---- encoder 发布者 (到 mavros2 setpoint topics) ----
   pub_setpoint_pos_ = create_publisher<geometry_msgs::msg::PoseStamped>(
     "/mavros/setpoint_position/local", default_qos);
@@ -119,10 +117,13 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
     std::bind(&MavlinkBridge::publish_setpoint, this));
 
   // ---- 初始化缓存 ----
-  uav_.header.frame_id = "map";
+  uav_.header.frame_id = "odom";
   uav_.armed   = false;
   uav_.flight_mode = 0;
   uav_.flight_mode_name = "";
+
+  motion_freshness_s_ = declare_parameter("motion_freshness_s", 1.0);
+  slow_sensor_freshness_s_ = declare_parameter("slow_sensor_freshness_s", 5.0);
 
   last_cmd_time_ = now();
 
@@ -137,6 +138,8 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
 
 void MavlinkBridge::cb_state(const mavros_msgs::msg::State::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lk(state_mtx_);
+  uav_.connected         = msg->connected;
   uav_.armed            = msg->armed;
   uav_.flight_mode_name = msg->mode;
 
@@ -160,22 +163,27 @@ void MavlinkBridge::cb_state(const mavros_msgs::msg::State::SharedPtr msg)
   else                                uav_.flight_mode = 99;
 
   rcvd_armed_ = true;
+  last_state_time_ = now();
 }
 
 void MavlinkBridge::cb_local_pose(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lk(state_mtx_);
   uav_.position_x = msg->pose.position.x;
   uav_.position_y = msg->pose.position.y;
   uav_.position_z = msg->pose.position.z;
   rcvd_pose_ = true;
+  last_pose_time_ = now();
 }
 
 void MavlinkBridge::cb_local_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lk(state_mtx_);
   uav_.velocity_x = msg->twist.linear.x;
   uav_.velocity_y = msg->twist.linear.y;
   uav_.velocity_z = msg->twist.linear.z;
   rcvd_vel_ = true;
+  last_velocity_time_ = now();
 }
 
 void MavlinkBridge::cb_imu(const sensor_msgs::msg::Imu::SharedPtr msg)
@@ -184,6 +192,8 @@ void MavlinkBridge::cb_imu(const sensor_msgs::msg::Imu::SharedPtr msg)
   double qy = msg->orientation.y;
   double qz = msg->orientation.z;
   double qw = msg->orientation.w;
+
+  std::lock_guard<std::mutex> lk(state_mtx_);
 
   // 四元数 → 欧拉角 (roll, pitch, yaw 简化版)
   double sinr_cosp = 2.0 * (qw * qx + qy * qz);
@@ -204,10 +214,12 @@ void MavlinkBridge::cb_imu(const sensor_msgs::msg::Imu::SharedPtr msg)
   uav_.yawspeed   = msg->angular_velocity.z;
 
   rcvd_imu_ = true;
+  last_imu_time_ = now();
 }
 
 void MavlinkBridge::cb_altitude(const mavros_msgs::msg::Altitude::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lk(state_mtx_);
   uav_.altitude          = msg->amsl;
   uav_.relative_altitude = msg->relative;
   rcvd_alt_ = true;
@@ -215,22 +227,27 @@ void MavlinkBridge::cb_altitude(const mavros_msgs::msg::Altitude::SharedPtr msg)
 
 void MavlinkBridge::cb_global_position(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lk(state_mtx_);
   uav_.latitude  = msg->latitude;
   uav_.longitude = msg->longitude;
   uav_.eph       = static_cast<double>(msg->position_covariance[0]);
   uav_.epv       = static_cast<double>(msg->position_covariance[8]);
   rcvd_gps_ = true;
+  last_gps_time_ = now();
 }
 
 void MavlinkBridge::cb_battery(const sensor_msgs::msg::BatteryState::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lk(state_mtx_);
   uav_.battery_voltage   = msg->voltage;
   uav_.battery_remaining = msg->percentage;
   rcvd_bat_ = true;
+  last_battery_time_ = now();
 }
 
 void MavlinkBridge::cb_rc_in(const mavros_msgs::msg::RCIn::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lk(state_mtx_);
   // 只要收到 RC 数据就认为遥控器连接 (Q17: 记录时刻, 掉线由 publish_state 超时判定)
   uav_.rc_connected = !msg->channels.empty();
   if (uav_.rc_connected) last_rc_time_ = now();
@@ -243,31 +260,50 @@ void MavlinkBridge::cb_rc_in(const mavros_msgs::msg::RCIn::SharedPtr msg)
 
 void MavlinkBridge::publish_state()
 {
-  uav_.header.stamp = now();
-
-  // Q17: RC 掉线检测 — 超过 1s 未收到 RCIn 则视为遥控器断连
-  // (仿真无遥控器: 从未收到 → last_rc_time_=0 → 恒为 false, 语义正确)
-  if (uav_.rc_connected &&
-      (last_rc_time_.nanoseconds() == 0 ||
-       (now() - last_rc_time_).seconds() > RC_TIMEOUT_S))
+  const auto stamp = now();
+  easyfly_msgs::msg::UAVState state_snapshot;
   {
-    uav_.rc_connected = false;
+    std::lock_guard<std::mutex> lk(state_mtx_);
+    uav_.header.stamp = stamp;
+
+    const auto fresh = [&stamp](bool received, const rclcpp::Time & last, double limit) {
+      if (!received || last.nanoseconds() == 0) return false;
+      const double age = (stamp - last).seconds();
+      return age >= 0.0 && age <= limit;
+    };
+    uav_.connected = uav_.connected &&
+      fresh(rcvd_armed_, last_state_time_, slow_sensor_freshness_s_);
+    uav_.pose_valid = fresh(rcvd_pose_, last_pose_time_, motion_freshness_s_) &&
+      std::isfinite(uav_.position_x) && std::isfinite(uav_.position_y) &&
+      std::isfinite(uav_.position_z);
+    uav_.velocity_valid = fresh(rcvd_vel_, last_velocity_time_, motion_freshness_s_) &&
+      std::isfinite(uav_.velocity_x) && std::isfinite(uav_.velocity_y) &&
+      std::isfinite(uav_.velocity_z);
+    uav_.attitude_valid = fresh(rcvd_imu_, last_imu_time_, motion_freshness_s_) &&
+      std::isfinite(uav_.roll) && std::isfinite(uav_.pitch) && std::isfinite(uav_.yaw) &&
+      std::isfinite(uav_.rollspeed) && std::isfinite(uav_.pitchspeed) &&
+      std::isfinite(uav_.yawspeed);
+    uav_.battery_valid = fresh(rcvd_bat_, last_battery_time_, slow_sensor_freshness_s_) &&
+      std::isfinite(uav_.battery_voltage) && std::isfinite(uav_.battery_remaining) &&
+      uav_.battery_remaining >= 0.0 && uav_.battery_remaining <= 1.0;
+    uav_.gps_valid = fresh(rcvd_gps_, last_gps_time_, slow_sensor_freshness_s_) &&
+      std::isfinite(uav_.latitude) && std::isfinite(uav_.longitude) &&
+      uav_.latitude >= -90.0 && uav_.latitude <= 90.0 &&
+      uav_.longitude >= -180.0 && uav_.longitude <= 180.0;
+
+    // Q17: RC 掉线检测 — 超过 1s 未收到 RCIn 则视为遥控器断连
+    // (仿真无遥控器: 从未收到 → last_rc_time_=0 → 恒为 false, 语义正确)
+    if (uav_.rc_connected &&
+        (last_rc_time_.nanoseconds() == 0 ||
+         (stamp - last_rc_time_).seconds() > RC_TIMEOUT_S))
+    {
+      uav_.rc_connected = false;
+    }
+
+    state_snapshot = uav_;
   }
 
-  pub_uav_state_->publish(uav_);
-
-  // /mission_status: 阶段一只发布 mission_phase=IDLE
-  easyfly_msgs::msg::MissionStatus ms;
-  ms.header.stamp    = uav_.header.stamp;
-  ms.mission_phase    = easyfly_msgs::msg::MissionStatus::IDLE;
-  ms.phase_name       = "idle";
-  ms.current_waypoint = -1;
-  ms.total_waypoints  = 0;
-  ms.progress         = 0.0f;
-  ms.estimated_time_remaining = 0.0f;
-  ms.mission_success  = false;
-  ms.message          = "";
-  pub_mission_status_->publish(ms);
+  pub_uav_state_->publish(state_snapshot);
 }
 
 // ================================================================
@@ -276,9 +312,63 @@ void MavlinkBridge::publish_state()
 
 void MavlinkBridge::cb_uav_command(const easyfly_msgs::msg::UAVCommand::SharedPtr msg)
 {
-  last_cmd_      = *msg;
-  last_cmd_time_ = now();
-  cmd_received_  = true;
+  if (msg->header.frame_id != "odom") {
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "拒绝 /uav_command: frame_id='%s'，期望 'odom'", msg->header.frame_id.c_str());
+    return;
+  }
+
+  const rclcpp::Time stamp(msg->header.stamp, get_clock()->get_clock_type());
+  const double age = (now() - stamp).seconds();
+  if (stamp.nanoseconds() == 0 || age < -0.2 || age > setpoint_timeout_) {
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "拒绝 /uav_command: 时间戳无效或过期 (age=%.3fs)", age);
+    return;
+  }
+
+  const auto finite = [](std::initializer_list<double> values) {
+    for (const double v : values) if (!std::isfinite(v)) return false;
+    return true;
+  };
+  bool values_valid = false;
+  switch (msg->control_mode) {
+    case easyfly_msgs::msg::UAVCommand::POSITION:
+      values_valid = finite({msg->position_x, msg->position_y, msg->position_z, msg->yaw});
+      break;
+    case easyfly_msgs::msg::UAVCommand::VELOCITY:
+      values_valid = finite({msg->velocity_x, msg->velocity_y, msg->velocity_z, msg->yaw_rate});
+      break;
+    case easyfly_msgs::msg::UAVCommand::ATTITUDE:
+    case easyfly_msgs::msg::UAVCommand::ATTITUDE_THRUST:
+      values_valid = finite({msg->roll, msg->pitch, msg->yaw_att, msg->thrust}) &&
+        msg->thrust >= 0.0 && msg->thrust <= 1.0;
+      break;
+    case easyfly_msgs::msg::UAVCommand::ANGULAR_RATE:
+      values_valid = finite({msg->roll_rate, msg->pitch_rate, msg->yaw_rate_cmd, msg->thrust}) &&
+        msg->thrust >= 0.0 && msg->thrust <= 1.0;
+      break;
+    case easyfly_msgs::msg::UAVCommand::TRAJECTORY:
+      values_valid = finite({msg->position_x, msg->position_y, msg->position_z,
+        msg->velocity_x, msg->velocity_y, msg->velocity_z, msg->yaw});
+      break;
+    default:
+      values_valid = false;
+  }
+  if (!values_valid) {
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "拒绝 /uav_command: control_mode=%u 含非法数值", msg->control_mode);
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(command_mtx_);
+    last_cmd_      = *msg;
+    last_cmd_time_ = now();
+    cmd_received_  = true;
+  }
 
   // 立即发布一次，不等 timer（PX4 OFFBOARD 要求 0.5s 内有 setpoint）
   publish_setpoint();
@@ -291,23 +381,36 @@ void MavlinkBridge::cb_uav_command(const easyfly_msgs::msg::UAVCommand::SharedPt
 
 void MavlinkBridge::publish_setpoint()
 {
-  // 超时保护：超过 setpoint_timeout_ 秒无新指令则停止发布
-  auto elapsed = (now() - last_cmd_time_).seconds();
-  if (!cmd_received_ || elapsed > setpoint_timeout_) {
+  // 只在这里做一个短快照；ROS publish 必须在释放 command_mtx_ 后执行，
+  // 否则 command callback/timer/service 会被慢 DDS 发布阻塞。
+  easyfly_msgs::msg::UAVCommand cmd_snapshot;
+  rclcpp::Time cmd_time;
+  bool command_received = false;
+  {
+    std::lock_guard<std::mutex> lk(command_mtx_);
+    cmd_snapshot = last_cmd_;
+    cmd_time = last_cmd_time_;
+    command_received = cmd_received_;
+  }
+
+  // 超时保护：超过 setpoint_timeout_ 秒无新指令则停止发布。set_mode 服务
+  // 不会触碰 cmd_time；旧命令必须自然过期，不能被模式切换续命。
+  const auto elapsed = (now() - cmd_time).seconds();
+  if (!command_received || elapsed > setpoint_timeout_) {
     return;  // 不发 setpoint，PX4 会在 OFFBOARD 模式下自动切回 POSITION
   }
 
-  switch (last_cmd_.control_mode) {
+  switch (cmd_snapshot.control_mode) {
     case easyfly_msgs::msg::UAVCommand::POSITION: {
       geometry_msgs::msg::PoseStamped pose;
       pose.header.stamp    = now();
-      pose.header.frame_id = "map";
-      pose.pose.position.x = last_cmd_.position_x;
-      pose.pose.position.y = last_cmd_.position_y;
-      pose.pose.position.z = last_cmd_.position_z;
+      pose.header.frame_id = "odom";
+      pose.pose.position.x = cmd_snapshot.position_x;
+      pose.pose.position.y = cmd_snapshot.position_y;
+      pose.pose.position.z = cmd_snapshot.position_z;
 
       // yaw → 四元数
-      double half_yaw = last_cmd_.yaw * 0.5;
+      double half_yaw = cmd_snapshot.yaw * 0.5;
       pose.pose.orientation.z = std::sin(half_yaw);
       pose.pose.orientation.w = std::cos(half_yaw);
 
@@ -316,10 +419,10 @@ void MavlinkBridge::publish_setpoint()
     }
     case easyfly_msgs::msg::UAVCommand::VELOCITY: {
       geometry_msgs::msg::Twist vel;
-      vel.linear.x  = last_cmd_.velocity_x;
-      vel.linear.y  = last_cmd_.velocity_y;
-      vel.linear.z  = last_cmd_.velocity_z;
-      vel.angular.z = last_cmd_.yaw_rate;
+      vel.linear.x  = cmd_snapshot.velocity_x;
+      vel.linear.y  = cmd_snapshot.velocity_y;
+      vel.linear.z  = cmd_snapshot.velocity_z;
+      vel.angular.z = cmd_snapshot.yaw_rate;
 
       pub_setpoint_vel_->publish(vel);
       break;
@@ -332,9 +435,9 @@ void MavlinkBridge::publish_setpoint()
       att.header.stamp = now();
 
       // roll/pitch/yaw → 四元数
-      double half_r = last_cmd_.roll  * 0.5;
-      double half_p = last_cmd_.pitch * 0.5;
-      double half_y = last_cmd_.yaw_att * 0.5;
+      double half_r = cmd_snapshot.roll  * 0.5;
+      double half_p = cmd_snapshot.pitch * 0.5;
+      double half_y = cmd_snapshot.yaw_att * 0.5;
 
       double cr = std::cos(half_r), sr = std::sin(half_r);
       double cp = std::cos(half_p), sp = std::sin(half_p);
@@ -345,7 +448,7 @@ void MavlinkBridge::publish_setpoint()
       att.orientation.y = cr * sp * cy + sr * cp * sy;
       att.orientation.z = cr * cp * sy - sr * sp * cy;
 
-      att.thrust      = static_cast<float>(last_cmd_.thrust);
+      att.thrust      = static_cast<float>(cmd_snapshot.thrust);
       // MAVLink type_mask 位定义: bit0=忽略roll速率 bit1=忽略pitch速率
       // bit2=忽略yaw速率 bit3=忽略推力 bit7=忽略姿态四元数
       // 本模式使用姿态+推力 → 忽略三个角速率位 (0b111)
@@ -361,10 +464,10 @@ void MavlinkBridge::publish_setpoint()
       mavros_msgs::msg::AttitudeTarget att;
       att.header.stamp = now();
 
-      att.body_rate.x = static_cast<float>(last_cmd_.roll_rate);
-      att.body_rate.y = static_cast<float>(last_cmd_.pitch_rate);
-      att.body_rate.z = static_cast<float>(last_cmd_.yaw_rate_cmd);
-      att.thrust      = static_cast<float>(last_cmd_.thrust);
+      att.body_rate.x = static_cast<float>(cmd_snapshot.roll_rate);
+      att.body_rate.y = static_cast<float>(cmd_snapshot.pitch_rate);
+      att.body_rate.z = static_cast<float>(cmd_snapshot.yaw_rate_cmd);
+      att.thrust      = static_cast<float>(cmd_snapshot.thrust);
       // Q14 修复: 本模式使用角速率+推力 → 仅忽略姿态四元数 (bit7)。
       // 原值 0b10000111 把 bit0-2 (三个角速率) 也置了忽略, 角速率指令被静默丢弃!
       att.type_mask   = 0b10000000;
@@ -383,15 +486,15 @@ void MavlinkBridge::publish_setpoint()
       //    此处以命名常量求值为准。
       mavros_msgs::msg::PositionTarget pt;
       pt.header.stamp    = now();
-      pt.header.frame_id = "map";
+      pt.header.frame_id = "odom";
       pt.coordinate_frame = mavros_msgs::msg::PositionTarget::FRAME_LOCAL_NED;
-      pt.position.x = last_cmd_.position_x;
-      pt.position.y = last_cmd_.position_y;
-      pt.position.z = last_cmd_.position_z;
-      pt.velocity.x = last_cmd_.velocity_x;
-      pt.velocity.y = last_cmd_.velocity_y;
-      pt.velocity.z = last_cmd_.velocity_z;
-      pt.yaw        = static_cast<float>(last_cmd_.yaw);
+      pt.position.x = cmd_snapshot.position_x;
+      pt.position.y = cmd_snapshot.position_y;
+      pt.position.z = cmd_snapshot.position_z;
+      pt.velocity.x = cmd_snapshot.velocity_x;
+      pt.velocity.y = cmd_snapshot.velocity_y;
+      pt.velocity.z = cmd_snapshot.velocity_z;
+      pt.yaw        = static_cast<float>(cmd_snapshot.yaw);
       pt.yaw_rate   = 0.0f;
       pt.type_mask  = mavros_msgs::msg::PositionTarget::IGNORE_AFX |
                       mavros_msgs::msg::PositionTarget::IGNORE_AFY |
@@ -403,7 +506,7 @@ void MavlinkBridge::publish_setpoint()
     }
     default:
       RCLCPP_WARN_STREAM(get_logger(),
-        "Unknown control_mode=" << static_cast<int>(last_cmd_.control_mode));
+        "Unknown control_mode=" << static_cast<int>(cmd_snapshot.control_mode));
       break;
   }
 }
@@ -480,9 +583,6 @@ void MavlinkBridge::cb_set_flight_mode(
   RCLCPP_INFO(get_logger(), "SetMode → %s (success=%d)",
     mav_req->custom_mode.c_str(), mav_res->mode_sent);
 
-  if (req->flight_mode == 3) {
-    last_cmd_time_ = now();
-  }
 }
 
 }  // namespace easyfly_mavlink_bridge

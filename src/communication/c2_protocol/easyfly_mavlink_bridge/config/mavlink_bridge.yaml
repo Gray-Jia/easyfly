@@ -10,5 +10,9 @@
     # encoder setpoint 超时 (秒)，超时后停止发布 setpoint
     setpoint_timeout: 1.0
 
+    # 高频运动状态与低频传感器的有效期；超时后对应 *_valid=false
+    motion_freshness_s: 1.0
+    slow_sensor_freshness_s: 5.0
+
     # 是否发布 /gimbal_state（阶段二仍无云台数据源，默认 false）
     enable_gimbal: false

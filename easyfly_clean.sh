@@ -34,7 +34,9 @@ pkill -9 -f easyfly_semantic_map   2>/dev/null
 pkill -9 -f easyfly_global_planner 2>/dev/null
 pkill -9 -f easyfly_target_tracking 2>/dev/null
 pkill -9 -f component_container    2>/dev/null
-pkill -9 -f "ros2 launch"          2>/dev/null
+# 只匹配真正的 ros2 Python 入口。宽泛的 `pkill -f "ros2 launch"` 会把命令行中
+# 恰好包含该文本的测试编排 shell（甚至本脚本的调用者）一起杀掉。
+pkill -9 -f '^/usr/bin/python3 /opt/ros/[^/]*/bin/ros2 launch ' 2>/dev/null
 pkill -f    rviz2                  2>/dev/null
 sleep 2
 

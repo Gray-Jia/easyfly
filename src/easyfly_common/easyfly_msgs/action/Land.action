@@ -1,5 +1,5 @@
 # 降落
-float64 landing_speed     # 降落速度 [m/s], 0=默认
+float64 landing_speed     # 预留；当前 PX4 AUTO.LAND 不支持逐任务设置，必须为 0
 ---
 # 结果
 bool success

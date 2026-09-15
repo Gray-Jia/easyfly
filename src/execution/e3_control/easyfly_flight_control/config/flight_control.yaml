@@ -1,23 +1,8 @@
-# flight_control.yaml — easyfly_flight_control PID 参数
+# flight_control.yaml — setpoint 生成与安全边界参数
 #
 flight_controller:
   ros__parameters:
     control_rate: 20.0
-    land_timeout: 30.0
-
-    pid_x:
-      kp: 1.5
-      ki: 0.05
-      kd: 0.2
-    pid_y:
-      kp: 1.5
-      ki: 0.05
-      kd: 0.2
-    pid_z:
-      kp: 2.0
-      ki: 0.05
-      kd: 0.3
-    pid_yaw:
-      kp: 2.0
-      ki: 0.0
-      kd: 0.0
+    land_timeout: 60.0
+    max_altitude: 50.0
+    max_horizontal_speed: 20.0
