@@ -40,3 +40,5 @@ evidence-v2-10/
 
 # python 字节码
 __pycache__/
+# G1-G4 验收过程归档, 仅本地留存不入库
+artifacts/
