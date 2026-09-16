@@ -20,6 +20,8 @@
 | V2-09 | G4 第 3 级 | **CONTRACT（时钟域，阻塞下游）** | MAVROS 插件节点、bridge、rc_receiver 的时钟域需统一；曾观测到 timesync 每 51s 跳变 | 时钟域修复已验证生效；残留 timesync 插件 int64 溢出噪音（无功能影响）；2026-09-15 决定暂按选项 2 接受噪音，恢复开发期可再议选项 1 |
 | V2-10 | G4 ⑤ 起飞 | **CODE（模型层）** | D435i 相机物理链加入后起飞姿态失稳；E7/E5 表明单改惯量或仅删 sensor 均不足 | **候选 F 已修复并动态验收**：F1–F3 连续 3/3 完成 44s 飞行门禁；按标定链修正最终 sensor pose 后 F4 再次完整通过，G4⑥该项通过 |
 | V2-11 | G4 全链轮 | **CONTRACT（时间戳污染，阻塞仿真钟全链）** | use_sim_time:=true 时坏 timesync 将 mavros 消息时间戳清零，bridge 正确拒收（uav_state 全 invalid）；墙钟模式不受影响 | **已解决（2026-09-16）**：仿真 NONE/0/0、真机 MAVLINK/10/1；静态回归及约 200 秒 SITL 仿真钟动态验收通过 |
+| V2-12 | G5 第 1 轮 | **TEST（测试脚本缺陷）** | T9 合成轨迹固定 trajectory_id=1 + goal 前预热发布，自污染 P0 水位致 trajectory_start_timeout；T1-T8 全绿 | **已解决（2026-09-16）**：静态回归 3/3、干净 SITL `--only T9` 动态复测通过；完整 G5 两轮仍按 test-v2 单独验收 |
+| V2-13 | G5 第 2 轮 | **ENV（SITL 电池预算）** | 套件跑满约 10 分钟后 SITL 电池低于解锁健康阈值，PX4 正确拒绝 T9 起飞 arm；V2-12 修复未被执行到 | 已记录，处置方案待定 |
 
 ---
 
@@ -474,3 +476,117 @@ V2-09 曾判定坏 timesync"零功能影响"——该结论基于当时 header �
 6. 终检：Time jump/RTT **0**；姿态故障 **0**；failsafe 2 条 = 末段 SITL 电池临界（battery warning fast）保护性触发→正常降落→PX4 自行落地上锁——保护链按设计工作，非异常；后续正式轮次应记录飞行前电池百分比并控制会话时长。
 
 **结论：G4 全部检查项在仿真钟全链上达成，V2-11 修复验收通过。** 至此仿真钟模式成为全链可用的正解（G6 TF 时域要求也因此可满足），墙钟规避路径作废。
+
+---
+
+## V2-12 G5 第 1 轮 T9a/T9b 失败：测试脚本固定 trajectory_id + goal 前预热发布自污染水位
+
+- **发现时间**：2026-09-15，G5 第 1 轮（control_regression，仿真钟全链）
+- **test-v2 §18 分类**：**TEST（测试脚本自身缺陷）**——飞行栈行为符合 P0 设计，无功能缺陷
+- **本轮总体结果**：T1-T8 全部 PASS（P0 回归项 T4/T5/T7/T8 均过）；T9c（取消语义）PASS；T9a/T9b FAIL
+
+### 现象
+
+- T9a 跟随到达：`ABORTED trajectory_start_timeout`（非历史失控模式，全程飞行稳定）
+- T9b 断流 abort：期望 `stream_lost`，实际同为 `trajectory_start_timeout`
+- T9c 取消：`CANCELED` + 悬停保持（PASS）
+
+### 根因（证据闭环）
+
+`test/control_regression.py` 的 `_SyntheticTrajectory` 固定 `trajectory_id = 1`（L520），且在发送 goal 前**预热发布 0.5s**（注释"让首帧流起来"，T9a/T9b/T9c 三处）。结合 `flight_controller.cpp` 的 P0 水位逻辑推演：
+
+1. 预热阶段控制器处于 HOVER → `cb_position_cmd` 走 `traj_seen_max_id_ = max(..., 1)` 分支，**水位被待测流自身污染至 1**；
+2. goal 接单进入 TRAJECTORY_WAIT，首帧要求 `trajectory_id > max(traj_baseline_id_, traj_seen_max_id_) = 1`；
+3. 流仍发 id=1 → `advances_wait_watermark` 永假 → 首帧永不生效 → `traj_startup_grace_`（约 2.25s）到期 abort `trajectory_start_timeout`；
+4. **T9c 通过纯属竞态**：cancel 在 2.0s 发出，赶在约 2.25s 的宽限 abort 之前。
+
+排除项：时间戳拒绝 0 条（`/tmp/g5-round1.log` 无 `拒绝 /position_cmd`）——时钟域无关；姿态/断流保护/取消语义全部正常——飞行栈无关。
+
+### 历史意义
+
+test-v2 §2 记载"T9 组件路径通过；真实 SITL 到达未通过"。本发现提示历史 T9 SITL 未通过的（至少一部分）原因可能正是此测试架子缺陷——**流从未被接上，而非飞行动力学问题**。
+
+
+
+### 同轮附带变更
+
+- `test/control_regression.launch.py` 已按批准将 bridge 链接入 `use_sim_time:=true`（V2-09/11 全仿真钟配置，G5 前置修复，本轮 T1-T8 全绿验证其正确性），随下次提交入库。
+- 本轮证据：`/tmp/g5-round1-console.log`（用例明细）、`/tmp/g5-round1.log`（launch 日志）。
+
+### 处置进展（2026-09-16）
+
+- **静态修复完成**：`_SyntheticTrajectory.start_line()` 为每条合成轨迹分配严格递增的 `trajectory_id`，不再固定发送 ID 1。
+- **时序修复完成**：T9a/T9b/T9c 均通过统一入口先发送并确认 `/follow_trajectory` goal 被接受，再启动 `/position_cmd` 流；已删除 goal 前 0.5s 预热逻辑。
+- **拒绝路径已加固**：goal 被拒或超时返回空 handle 时，合成发布器保持停止状态，不执行 cancel/wait，也不会遗留活动流。
+- **静态回归已补充**：`test/test_control_regression_contract.py` 覆盖轨迹 ID 分配、goal→流顺序、无预热和拒绝安全路径；3/3 通过，且 `control_regression.py` 已通过 `py_compile`。
+- **动态针对性复测通过**：从干净 SITL 起场执行 `python3 test/control_regression.py --only T9`，T9a `SUCCEEDED/arrived`（终点误差 0.17m）、T9b `ABORTED/stream_lost`（0.60s）、T9c `CANCELED`，三者均保持 armed + OFFBOARD/悬停语义，控制器日志未再出现 `trajectory_start_timeout`。
+- **安全收尾通过**：复测后 `/land` 返回 `SUCCEEDED/landed`，`/uav_state` 确认 `armed: false`，随后 PX4、Gazebo、MAVROS 与 EasyFly 节点均正常退出。
+- **审核结论**：编码审查通过（APPROVE），未发现 P0/P1 回归；生产 `FlightController` 未修改，本次仅修复测试激励与补充契约回归。
+- **结论**：V2-12 缺陷关闭。该结论仅覆盖 T9 的故障复现路径；G5 阶段总体通过仍须按 `test-v2.md` 完成两轮完整 T1–T9 干净起场验收。
+
+---
+
+## V2-13 G5 第 2 轮 T9 起飞 arm 被拒：SITL 电池预算耗尽（ENV，保护行为正确）
+
+- **发现时间**：2026-09-15，G5 第 2 轮（V2-12 修复后的复验轮）
+- **test-v2 §18 分类**：**ENV（测试资源预算）**——PX4 拒绝解锁是其健康检查的正确保护行为，非代码缺陷
+- **现象**：T1-T8 全部 PASS（连续第二轮）；T9 起飞 arm 连续 3 次被拒（每次重试 10s + 等 25s），`ABORTED arm failed (retried 10s, OFFBOARD stream active)`；V2-12 的 trajectory_id 修复**未被执行到**（T9 死在起飞，未到轨迹段）
+
+### 根因（已证实）
+
+- PX4 日志：`Arming denied: Resolve system health failures first` + `Preflight Fail: Battery unhealthy`（多次）；
+- T8 的低电量注入只作用于 ROS 层（`/mavros/battery` → bridge → mission_fsm 触发 RTL），**PX4 自身不可见**；PX4 的电池是 SITL 模拟真实消耗；
+- 第 2 轮全套 T1-T8 飞行约 10 分钟后，SITL 电池已低于解锁健康阈值 → PX4 拒绝再次解锁（正确保护）；
+- 第 1 轮同环节 0 次 arm 拒绝（电池余量尚足）——**轮间电池余量处于临界波动区**，这是"有时能过有时不能"的 FLAKY 温床。
+
+### 影响
+
+- G5 "连续两轮全绿"要求下，T9 处于电池预算的刀锋上，重跑的通过与否带运气成分；
+- V2-12 的修复仍未获得动态验证。
+
+### 处置选项（待定）
+
+1. **重跑碰运气**：整轮重跑电池满格，第 1 轮已证明预算可以够——但临界波动使其不可靠，不推荐作为正式验收路径；
+2. **确定性方案 A**：回归专用调低 SITL 电池消耗（PX4 参数 `SIM_BAT_DRAIN`，launch 层对 px4_sitl 传参），并/或在 T8→T9 之间恢复电池；
+3. **确定性方案 B**：调整用例顺序把 T9 提到 T8 之前（T8 的 RTL+落地最耗电且引入 arm 恢复等待）；
+4. 无论选哪个，均属测试基建改进（补测试范畴，允许）；PX4 拒绝低电解锁本身是对的行为，应保留为 T9 的前置事实。
+- 本轮证据：`/tmp/g5-round2-console.log`、`/tmp/g5-round2.log`（`Arming denied`/`Battery unhealthy` 行）。
+
+---
+
+## G5 验收记录（2026-09-15，用户裁决通过）
+
+**结论：G5（控制链 T1-T9）验收通过。** 基线：G4 修复后的仿真钟全链配置。
+
+### 证据矩阵
+
+| 项 | 第 1 轮 | 第 2 轮 | T9 单测 | 达成 |
+|---|---|---|---|---|
+| T1 就绪 | ✅ | ✅ | （前置检查通过） | ✅ |
+| T2 起飞/悬停 | ✅ | ✅ | （T9 内置起飞） | ✅ |
+| T3 航点往返 | ✅ 0.48/0.60m | ✅ | — | ✅ |
+| T4 航点取消 | ✅ | ✅ | — | ✅ |
+| T5 降落取消 | ✅ | ✅ | — | ✅ |
+| T6 连续起降 | ✅ | ✅ | — | ✅ |
+| T7 坏任务文件 | ✅ | ✅ | — | ✅ |
+| T8 低电量 RTL | ✅ | ✅ | — | ✅ |
+| T9 轨迹跟随 | ❌ V2-12 | ⚠️ V2-13 未达 | ✅ 12/12（误差 0.02m） | ✅ |
+
+### 与 §12 字面标准的偏差声明（如实记录）
+
+- §12 要求"T1-T9 完整套件连续两轮全绿"。实际达成：**T1-T8 连续两轮全绿 + T9 修复后单测全绿（全新会话）**。
+- 未达字面标准的两轮失败均已根因定位并闭环：第 1 轮 T9 = V2-12（测试脚本缺陷，已修复并验证）；第 2 轮 T9 = V2-13（SITL 电池预算 ENV，PX4 保护行为正确）。
+- **用户裁决**：按上述证据接受 G5 通过，偏差作为已解释豁免记录在案。
+- 后续义务（不影响本次签字）：V2-13 的电池预算确定性方案在 G6 前择机落地，避免感知链长会话复用同一刀锋。
+
+### 无异常项核查
+
+全部轮次无 crash、无 Action 悬挂、无 unexpected mode、无 NaN、无失控 failsafe（T8 的 RTL 与末段电池保护均为设计内行为）。
+
+### 里程碑
+
+schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）与 §6.1 的历史阻塞"T9/E1-E4 受 SITL 劣化阻塞"中的 **T9 部分正式解除**；E1-E4（G8）待感知链（G6）与跟随/导航（G7）门禁推进后对账。
+
+### 待提交
+
+工作树未提交：V2-12 修复（control_regression.py）、control_regression.launch.py 时钟接线、question-v2.md（V2-12/13 + 本记录）。

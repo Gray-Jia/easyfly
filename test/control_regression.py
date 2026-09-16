@@ -369,6 +369,22 @@ class RegressionRunner(Node):
         g.climb_speed = 1.0
         return g
 
+    def _start_follow_stream(self, pub, start, target, timeout=60.0, speed=1.0):
+        """Accept a follow goal before starting its PositionCommand stream.
+
+        The controller uses the first post-goal trajectory frame to advance
+        its trajectory watermark. Publishing before the goal is accepted can
+        make the test's own stream look stale, so this ordering is part of the
+        test contract. Stop first as defensive cleanup for a previous attempt
+        or a rejected goal.
+        """
+        pub.stop()
+        gh = self.send_goal(self.ac_follow, _follow_goal(target, timeout=timeout))
+        if gh is None:
+            return None
+        pub.start_line(start, target, speed=speed)
+        return gh
+
     # ------------------------------------------------ T9 (M4.3 轨迹跟随)
 
     def t9_follow_trajectory(self):
@@ -408,9 +424,9 @@ class RegressionRunner(Node):
         s = self.snap()
         start = (s.position_x, s.position_y, s.position_z)
         tgt = (start[0] + 4.0, start[1], start[2])
-        pub.start_line(start, tgt, speed=1.0)
-        time.sleep(0.5)  # 让首帧流起来 (避免起始宽限)
-        st, res = self.call_action(self.ac_follow, _follow_goal(tgt, timeout=60.0), 90.0)
+        gh = self._start_follow_stream(pub, start, tgt, timeout=60.0)
+        check("T9a 轨迹跟随 goal 被接受", gh is not None, "-")
+        st, res = self.wait_result(gh, 90.0)
         check("T9a 跟随直线到达 SUCCEEDED", st == GoalStatus.STATUS_SUCCEEDED,
               "status=%s msg=%s" % (GSTATUS.get(st, st), res.message if res else "-"))
         pub.stop()
@@ -425,16 +441,22 @@ class RegressionRunner(Node):
         s = self.snap()
         start = (s.position_x, s.position_y, s.position_z)
         tgt = (start[0] + 8.0, start[1], start[2])
-        pub.start_line(start, tgt, speed=1.0)
-        time.sleep(0.5)
-        gh = self.send_goal(self.ac_follow, _follow_goal(tgt, timeout=60.0))
+        gh = self._start_follow_stream(pub, start, tgt, timeout=60.0)
         check("T9b 轨迹跟随 goal 被接受", gh is not None, "-")
-        time.sleep(2.0)          # 飞一段 (流活跃)
-        z_before = self.snap().position_z
-        pub.stop()               # 断流
-        t_stop = time.monotonic()
-        st, res = self.wait_result(gh, 20.0)
-        dt = time.monotonic() - t_stop
+        if gh is None:
+            # 拒绝时 _start_follow_stream 已确保发布器处于停止状态；不要
+            # 对空 goal handle 做 cancel/wait，也不要留下活动的合成流。
+            st, res = None, None
+            dt = 0.0
+            s_before = self.snap()
+            z_before = s_before.position_z if s_before else float("nan")
+        else:
+            time.sleep(2.0)          # 飞一段 (流活跃)
+            z_before = self.snap().position_z
+            pub.stop()               # 断流
+            t_stop = time.monotonic()
+            st, res = self.wait_result(gh, 20.0)
+            dt = time.monotonic() - t_stop
         check("T9b 断流后 abort(stream_lost)", st == GoalStatus.STATUS_ABORTED and
               res is not None and res.message == "stream_lost",
               "status=%s msg=%s (%.2fs)" % (GSTATUS.get(st, st),
@@ -449,13 +471,14 @@ class RegressionRunner(Node):
         s = self.snap()
         start = (s.position_x, s.position_y, s.position_z)
         tgt = (start[0] + 8.0, start[1], start[2])
-        pub.start_line(start, tgt, speed=1.0)
-        time.sleep(0.5)
-        gh = self.send_goal(self.ac_follow, _follow_goal(tgt, timeout=60.0))
+        gh = self._start_follow_stream(pub, start, tgt, timeout=60.0)
         check("T9c goal 被接受", gh is not None, "-")
-        time.sleep(2.0)
-        self._wait_future(gh.cancel_goal_async(), 10.0)
-        st, _ = self.wait_result(gh, 30.0)
+        if gh is None:
+            st = None
+        else:
+            time.sleep(2.0)
+            self._wait_future(gh.cancel_goal_async(), 10.0)
+            st, _ = self.wait_result(gh, 30.0)
         check("T9c 取消后终态 CANCELED", st == GoalStatus.STATUS_CANCELED,
               "status=%s" % GSTATUS.get(st, st))
         pub.stop()
@@ -467,6 +490,7 @@ class RegressionRunner(Node):
 
 
 # ------------------------------------------------ T9 辅助
+
 
 def _follow_goal(tgt, timeout=60.0, radius=0.8):
     g = FollowTrajectory.Goal()
@@ -491,39 +515,53 @@ class _SyntheticTrajectory:
         self._tgt = (0.0, 0.0, 0.0)
         self._speed = 1.0
         self._t0 = 0.0
+        self._next_trajectory_id = 1
+        self._trajectory_id = 0
+        self._lock = threading.Lock()
         self._timer = node.create_timer(1.0 / rate, self._tick)
 
     def start_line(self, start, target, speed=1.0):
-        self._start = tuple(float(v) for v in start)
-        self._tgt = tuple(float(v) for v in target)
-        self._speed = speed
-        self._t0 = time.monotonic()
-        self._active = True
+        with self._lock:
+            self._start = tuple(float(v) for v in start)
+            self._tgt = tuple(float(v) for v in target)
+            self._speed = speed
+            self._t0 = time.monotonic()
+            self._trajectory_id = self._next_trajectory_id
+            self._next_trajectory_id += 1
+            self._active = True
 
     def stop(self):
-        self._active = False
+        with self._lock:
+            self._active = False
 
     def _tick(self):
-        if not self._active:
-            return
-        dx = self._tgt[0] - self._start[0]
-        dy = self._tgt[1] - self._start[1]
-        dz = self._tgt[2] - self._start[2]
+        with self._lock:
+            if not self._active:
+                return
+            start = self._start
+            target = self._tgt
+            speed = self._speed
+            t0 = self._t0
+            trajectory_id = self._trajectory_id
+
+        dx = target[0] - start[0]
+        dy = target[1] - start[1]
+        dz = target[2] - start[2]
         L = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
         ux, uy, uz = dx / L, dy / L, dz / L
-        d = min(self._speed * (time.monotonic() - self._t0), L)
+        d = min(speed * (time.monotonic() - t0), L)
         moving = d < L
         msg = PositionCommand()
         msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.header.frame_id = "odom"
         msg.trajectory_flag = PositionCommand.TRAJECTORY_STATUS_READY
-        msg.trajectory_id = 1
-        msg.position.x = self._start[0] + ux * d
-        msg.position.y = self._start[1] + uy * d
-        msg.position.z = self._start[2] + uz * d
-        msg.velocity.x = ux * self._speed if moving else 0.0
-        msg.velocity.y = uy * self._speed if moving else 0.0
-        msg.velocity.z = uz * self._speed if moving else 0.0
+        msg.trajectory_id = trajectory_id
+        msg.position.x = start[0] + ux * d
+        msg.position.y = start[1] + uy * d
+        msg.position.z = start[2] + uz * d
+        msg.velocity.x = ux * speed if moving else 0.0
+        msg.velocity.y = uy * speed if moving else 0.0
+        msg.velocity.z = uz * speed if moving else 0.0
         msg.yaw = 0.0
         self._pub.publish(msg)
 

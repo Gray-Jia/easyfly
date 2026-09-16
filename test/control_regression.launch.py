@@ -24,17 +24,21 @@ from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
-def _inc(pkg: str, name: str) -> IncludeLaunchDescription:
+def _inc(pkg: str, name: str, **kwargs) -> IncludeLaunchDescription:
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory(pkg), "launch", name)))
+            os.path.join(get_package_share_directory(pkg), "launch", name)),
+        **kwargs)
 
 
 def generate_launch_description():
     sim = _inc("easyfly_px4_sitl", "px4_sitl.launch.py")
 
     bridge = TimerAction(period=8.0, actions=[
-        _inc("easyfly_mavlink_bridge", "mavlink_bridge.launch.py")])
+        # V2-09/11: 桥链与 flight_control/mission_fsm 统一仿真时基,
+        # timesync_mode 由此自动取 NONE (仿真钟下 TIMESYNC 会污染时间戳)
+        _inc("easyfly_mavlink_bridge", "mavlink_bridge.launch.py",
+             launch_arguments={"use_sim_time": "true"}.items())])
 
     control = TimerAction(period=10.0, actions=[
         _inc("easyfly_flight_control", "flight_control.launch.py"),
