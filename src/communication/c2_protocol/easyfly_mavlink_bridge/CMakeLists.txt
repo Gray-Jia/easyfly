@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.8)
 project(easyfly_mavlink_bridge)
 
+include(CTest)
+
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
@@ -41,7 +43,11 @@ install(DIRECTORY launch config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  # TODO: 添加单元测试
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(
+    NAME mavlink_bridge_sim_time_contract
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/test_mavlink_bridge_sim_time_contract.py)
 endif()
 
 ament_package()

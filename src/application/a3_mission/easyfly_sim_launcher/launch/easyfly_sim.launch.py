@@ -29,6 +29,7 @@ def generate_launch_description():
             get_package_share_directory("easyfly_mavlink_bridge"),
             "/launch/mavlink_bridge.launch.py",
         ]),
+        launch_arguments={"use_sim_time": "true"}.items(),
     )
 
     return LaunchDescription([

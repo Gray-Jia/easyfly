@@ -1,0 +1,18 @@
+# MAVROS 2.14.0 creates plugin nodes such as /mavros/time. Apply the clock
+# setting through a wildcard parameter file so both the main node and plugin
+# nodes receive the same use_sim_time value.
+#
+# The time-plugin block deliberately lives in this file as well.  It is passed
+# after MAVROS' px4_config.yaml by mavlink_bridge.launch.py, so the simulation
+# policy below overrides the hardware defaults (MAVLINK/10/1) only when the
+# launch clock domain is simulation time.  The launch substitutions resolve to
+# the real-hardware defaults when use_sim_time is false.
+/**:
+  ros__parameters:
+    use_sim_time: $(var use_sim_time)
+
+/**/time:
+  ros__parameters:
+    timesync_mode: $(var timesync_mode)
+    timesync_rate: $(var timesync_rate)
+    system_time_rate: $(var system_time_rate)

@@ -173,7 +173,8 @@ def generate_launch_description():
     # ---- C2 通信桥接 (mavros + mavlink_bridge): 提供 /uav_state (P1/P3 依赖) ----
     mavlink_bridge = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            get_package_share_directory("easyfly_mavlink_bridge") + "/launch/mavlink_bridge.launch.py"))
+            get_package_share_directory("easyfly_mavlink_bridge") + "/launch/mavlink_bridge.launch.py"),
+        launch_arguments={"use_sim_time": "true"}.items())
 
     # ---- E 执行层 (Q26): 飞控 + 任务状态机, 一键可飞 ----
     flight_control = IncludeLaunchDescription(
