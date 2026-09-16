@@ -590,3 +590,34 @@ schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）�
 ### 待提交
 
 工作树未提交：V2-12 修复（control_regression.py）、control_regression.launch.py 时钟接线、question-v2.md（V2-12/13 + 本记录）。
+
+---
+
+## G6-0 准备记录（2026-09-15）
+
+**目标**：G6（感知链逐层验收，test-v2 §13）开工前的环境与决策就绪。
+
+### 已完成
+
+1. **补建缺口包**：`easyfly_fast_lio_integration`（perception_sitl.launch 引用但不在 install-v2，属 launch 级引用非构建依赖，与 G1 仿真包同款缺口）——已建入 install-v2，`fastlio.launch.py` 就位；
+2. **连带发现并补建**：`easyfly_target_tracking` 同样缺失（同款缺口第二例）——已建入 install-v2；
+3. **依赖闭环验证**：perception_sitl.launch.py 引用的全部 **18 个包** share 目录可解析，18/18 OK；
+4. **基线核对**：对拍基线 `m2_frame.bin`/`m2_baseline.json` 在位（`src/perception/p2_detection/easyfly_object_detection/test/`）；模型 `models/yolo11n.onnx` SHA-256 前缀 `fb11c28e` 与 test-v2 §4.6 冻结值一致。
+
+### 决策与计划
+
+5. **分层执行方式**：perception_sitl.launch.py 为一键全链（定时器分批启动全部节点），违反 §13"禁止一步启动全链"——G6 改用其引用的**子 launch 按层手动起**（calib_tf / coord_tf / detection / fastlio / tracking / pixel_to_3d / pcf / semantic_map 均独立存在）；
+6. **V2-13 电池方案定版（推荐方案 A，实现推迟到 G6.3 开工时）**：G6.1/G6.2 为地面层不受影响；G6.3 起的飞行会话（直线漂移/回环，约 10+ 分钟）在起链后经 mavros param 服务设置 `SIM_BAT_DRAIN` 降低 SITL 电池消耗，具体值在 G6.3 首飞实测标定（先量 10 分钟悬停消耗）；实现载体为 test 侧飞行会话准备脚本（属补测试基建，届时按批准执行）；
+7. **V2-10 遗留复核项确认**：G6.1 的 TF 树检查必须覆盖相机 frame 契约（`camera_color_optical_frame` 等由相机插件发布，结构改动后首次实测）。
+
+### G6 层级与入口（备忘）
+
+| 层 | 内容 | 新增 launch | 飞行 |
+|---|---|---|---|
+| G6.1 | 传感器与 TF | px4_sitl + calib_tf + coord_tf | 否 |
+| G6.2 | 目标检测 | + detection | 否 |
+| G6.3 | FAST-LIO | + fastlio | 是（直线/回环） |
+| G6.4 | 跟踪与 3D 融合 | + tracking + pixel_to_3d | 局部 |
+| G6.5 | 语义地图 | + pcf + semantic_map | 局部 |
+
+每层 60s rosbag 留证后进下一层；失败停在该层按 §18 分类。
