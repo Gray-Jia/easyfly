@@ -33,9 +33,9 @@ src/third_party/slam/fast_lio/doc/
 !CMakeLists.txt
 *.log
 
-# 复验期飞行证据: ulog 体积巨大 (单份可达数百 MB), 仅本地留存
-# 库内只保留轻量日志摘要 (evidence-v2-10)
+# 复验期飞行证据 (ulog 巨大 + 验收日志), 全部仅本地留存, 不入库
 evidence-v2-09/
+evidence-v2-10/
 *.ulg
 
 # python 字节码
