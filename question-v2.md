@@ -22,6 +22,8 @@
 | V2-11 | G4 全链轮 | **CONTRACT（时间戳污染，阻塞仿真钟全链）** | use_sim_time:=true 时坏 timesync 将 mavros 消息时间戳清零，bridge 正确拒收（uav_state 全 invalid）；墙钟模式不受影响 | **已解决（2026-09-16）**：仿真 NONE/0/0、真机 MAVLINK/10/1；静态回归及约 200 秒 SITL 仿真钟动态验收通过 |
 | V2-12 | G5 第 1 轮 | **TEST（测试脚本缺陷）** | T9 合成轨迹固定 trajectory_id=1 + goal 前预热发布，自污染 P0 水位致 trajectory_start_timeout；T1-T8 全绿 | **已解决（2026-09-16）**：静态回归 3/3、干净 SITL `--only T9` 动态复测通过；完整 G5 两轮仍按 test-v2 单独验收 |
 | V2-13 | G5 第 2 轮 | **ENV（SITL 电池预算）** | 套件跑满约 10 分钟后 SITL 电池低于解锁健康阈值，PX4 正确拒绝 T9 起飞 arm；V2-12 修复未被执行到 | 已记录，处置方案待定 |
+| V2-14 | G6.1 | **ENV（DDS 共享内存，已根治）** | pkill -9/timeout 强杀遗留 /dev/shm/fastrtps_* 陈旧段，致新参与者话题可发现但收不到数据 | 已根治（清理脚本 v2：杀进程+清 SHM+重置 daemon） |
+| V2-15 | G6.2 | **PERF（GPU 争抢）+ 测试仪表缺口** | detection 运行时 RTF 降至 ~0.29，管线仿真时基 10.8Hz（相机 30Hz 的 1/3）；节点无分段延迟日志 | 已记录；检测功能本身验收通过 |
 
 ---
 
@@ -621,3 +623,54 @@ schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）�
 | G6.5 | 语义地图 | + pcf + semantic_map | 局部 |
 
 每层 60s rosbag 留证后进下一层；失败停在该层按 §18 分类。
+
+---
+
+## V2-14 FastDDS 陈旧共享内存段致间歇性数据断流（ENV，已根治）
+
+- **发现时间**：2026-09-16，G6.1 第 1 次会话中段
+- **test-v2 §18 分类**：ENV（会话卫生问题，工具链修复）
+- **现象**：会话运行数十分钟后，ROS 侧节点（mavros/bridge/coord）话题陆续"静默"——`topic info -v` 显示发布器存在但订阅者收不到数据；桥重启无效；时好时坏。
+- **根因**：`pkill -9`/`timeout` 强杀进程时 FastDDS 不清理其共享内存段（`/dev/shm/fastrtps_*`）；陈旧段使新参与者的 data-sharing 传输与新会话进程错配——发现（multicast）成功但数据（SHM）不通。前几轮 G4/G5 大量强杀积累了陈旧段。
+- **根治**：清理脚本 v2（/tmp/gzclean.sh）：杀进程 → `rm -f /dev/shm/fastrtps_*` → `ros2 daemon stop`。v2 后全新会话全链数据流验证恢复（local_position 28Hz/uav_state 19Hz/odom+tf 50Hz）。
+- **待办**：脚本抄送入库 `test/`（本地工具 → 仓库工具），防其他机器复发。
+- **连带教训**：`ros2 daemon` 会用坏环境自愈孵化（一次 `source &` 失误后 daemon 长期携带错误 env），凡"全体话题突然查不到"先 `ros2 daemon stop` 再诊断；`pkill -f` 模式文本会匹配调用者自身 shell（经典自伤），脚本文件化规避。
+
+---
+
+## G6.1 验收记录（传感器与 TF 层，2026-09-16 通过）
+
+| 检查组 | 结果 | 数据 |
+|---|---|---|
+| 话题频率（仿真时基归一） | ✅ | color 30.0Hz、aligned_depth 30.0Hz（标称 30）；camera_info ~28；livox lidar ~10、livox imu ~200（墙钟 9.4/186 经 RTF 0.92 还原） |
+| TF 树连通 | ✅ | `odom→base_link`（动态 22Hz，buffer 4.6s）；`base_link→camera_link→{camera_color,camera_depth}_optical_frame`；`base_link→livox_frame`；mavros NED 双系帧齐全（frames.gv 留档） |
+| 相机 frame 契约（V2-10 后首测） | ✅ | `camera_color_optical_frame`/`camera_depth_optical_frame` 由插件发布，rgb8、640×480、RELIABLE/VOLATILE |
+| 时间戳一致性 | ✅ | camera stamp 与 /clock |Δ|=0.07s，同纪元 |
+| 暂停/恢复无倒退 | ✅ | 暂停 → /clock 冻结；恢复 → 448s 单调续增 |
+| 留证 | ✅ | `artifacts/g61/sensors_60s`（4.9GiB，96s，10 话题，本地） |
+
+**方法论结论（入 G6 后续层执行守则）**：① 感知频率必须按仿真时基归一（墙钟读数被 RTF 混淆，G6.1 中 color 墙钟 18.8 实为仿真 30.0）；② tf2_echo 初始 DDS 发现需 10s+，8s 超时会误报 FAIL；③ 遇"全体话题查不到"先 `ros2 daemon stop`；④ 会话起停一律走 gzclean v2。
+
+---
+
+## G6.2 验收记录（目标检测层，2026-09-16 通过，附 PERF 发现）
+
+**环境事实（用户提示后核实）**：模型导出/历史配置属 conda 虚拟环境 `cv_easyfly`（test-v2 §4.6）；C++ 检测节点经 RPATH 直连 `third_party/onnxruntime` SDK，不依赖 conda 激活（ldd 已验证）。
+
+| §13.2 检查项 | 结果 | 数据 |
+|---|---|---|
+| 日志明确 CUDA EP | ✅ | `OnnxBackend 就绪 ... EP=CUDAExecutionProvider`（无静默回退） |
+| 模型固定 | ✅ | `models/yolo11n.onnx`，与 §4.6 SHA-256 前缀 fb11c28e 一致 |
+| m2 基线对拍（配置级） | ✅ | ep=CUDAExecutionProvider、imgsz=640、conf=0.35、model 路径全部一致 |
+| 检测功能 | ✅ | perception_demo 世界实测：检测框平均 5.3、最大 6（基线场景 5 人一致）；/detections frame_id=optical 契约正确 |
+| GPU/CPU 分开报告 | ⏳ | CPU 路径本轮未测（待补） |
+| 分段延迟 | ⚠️ | 节点无预处理/推理/NMS/端到端分段日志（仪表缺口，见下） |
+| 留证 | ✅ | `artifacts/g62/detections_70s`（2.0GiB，69.8s，含 debug_image 供目视核框） |
+
+### V2-15 PERF 发现：detection 运行时 RTF 降至 ~0.29
+
+- 相机满帧 30Hz（仿真时基）下，/detections 仅 10.8Hz（仿真时基）——约 2/3 帧未被处理；墙钟 15.5Hz 由 RTF ~0.29 进一步混淆；
+- 根因指向：ORT CUDA 推理与 Gazebo 渲染（gzclient GUI + gzserver 深度/彩色渲染）争抢 GPU；
+- 影响评估：检测框内容与基线一致、下游跟踪层输入频率在仿真时基仍可用；但 RTF 0.29 会长比放大所有会话耗时，且 G6.3 SLAM 对帧率稳定性敏感——**G6.3 前建议压测**：关 gzclient、降相机帧率或降推理输入，量化 RTF 恢复程度；
+- 仪表缺口：基线 infer_ms=3.448ms（纯推理）无从对照——节点需补分段延迟日志（预处理/推理/NMS/端到端），属测试仪表改进。
+- 证据：`/tmp/g62-detect.log`（EP 行）、`artifacts/g62/`、本轮探针输出。
