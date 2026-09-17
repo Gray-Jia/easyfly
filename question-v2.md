@@ -690,3 +690,28 @@ schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）�
 - **审核**：首次审核发现计数快照竞态和 `drop` 命名歧义，两项 P1 已修复；复审结论 **APPROVE**，无剩余 P0/P1。
 
 **结论**：V2-15 已关闭，G6.2 的 CUDA/CPU 与分段延迟缺口均补齐；可以继续 G6.3。自动验收建议使用 headless 并关闭非必要 debug image，实机若相机只提供 BEST_EFFORT，必须显式覆盖检测输入 QoS。
+
+---
+
+## G6.3 验收记录（FAST-LIO 层，2026-09-17 通过）
+
+**链路**：perception_demo 世界 + easyfly_iris + bridge(仿真钟) + calib_tf + coord_tf + fastlio.launch.py（fastlio_mapping + map_odom_tf 平滑器）；无 teleport，全部数据来自实际飞行。
+
+| §13.3 检查项 | 结果 | 数据 |
+|---|---|---|
+| 地面静止 IMU 初始化 | ✅ | 启动即 `IMU Initial Done` + `Initialize the map kdtree` |
+| /Odometry 频率 | ✅ | 8.3Hz 墙钟 ≈ 10Hz 仿真标称（随 RTF） |
+| 点云/LiDAR 输入 | ✅ | /livox/lidar 8.2Hz 墙钟（10Hz 标称）、/livox/imu 165Hz（200 标称） |
+| 静止漂移（地面 60s） | ✅ | 端到端 **4.99cm**，XY 包络 6.9cm，Z 0.1cm |
+| 直线/回环漂移（飞行 32.27m 矩形） | ✅ | 四段 SLAM vs PX4-EKF 位移差 **0.01-0.05m/8m 段**；总里程 32.27 vs 32.27，**累积比 1.0001** |
+| 回环闭合（SLAM 系内） | ✅ | 矩形闭合偏差 **0.30m**（无回环检测模块的 LIO 合理水平，0.9%/32m） |
+| map→odom 阶跃 | ✅（附观察） | 地面零阶跃（最大 4.6mm）；飞行中平滑器连续修正最大 105mm/帧、>50mm 占 2%（集中拐角），非离散阶跃；G6.5 语义地图跳变守卫复核 |
+| 飞行安全 | ✅ | 矩形四段全程 OFFBOARD、降落 disarm 干净、无 failsafe；电池 100%（单任务会话耗电有限） |
+| 留证 | ✅→已删 | artifacts/g63/{flight,flight2} 完成分析后按用户策略删除 |
+
+**过程记录**：
+- 第 1 次飞行计量无效（arm+OFFBOARD 确认竞态导致追赶航点）——飞行脚本 v2 改为"相位计时以 OFFBOARD 确认为门"后重飞，矩形干净（拐角贴合 0.00-0.06m）；
+- "真值"实为 PX4-EKF 估计（未录 Gazebo ground truth）——SLAM 与 EKF 双里程计交叉验证已足够本层结论；如需绝对真值对拍，后续可加 /gazebo/model_states 录制；
+- V2-13 电池方案：单任务会话实测满电起、无低电量事件，`SIM_BAT_DRAIN` 暂不需要；恢复为"套件级长会话触发时再落地"。
+
+**结论：G6.3 通过。** 下一层 G6.4（跟踪与 3D 融合）。
