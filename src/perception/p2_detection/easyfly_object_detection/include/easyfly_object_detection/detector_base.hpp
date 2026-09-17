@@ -6,6 +6,9 @@
 #ifndef EASYFLY_OBJECT_DETECTION_DETECTOR_BASE_HPP_
 #define EASYFLY_OBJECT_DETECTION_DETECTOR_BASE_HPP_
 
+#include <string>
+#include <vector>
+
 #include <opencv2/opencv.hpp>
 
 #include "easyfly_object_detection/types.hpp"
@@ -29,9 +32,13 @@ public:
     }
 
     /// 通用流程: 参数校验 → 后端推理(letterbox 坐标) → NMS → 反 letterbox → 截断
-    void detect(const cv::Mat & bgr_img, std::vector<Detection> & detections)
+    void detect(const cv::Mat & bgr_img, std::vector<Detection> & detections,
+                DetectionTiming * timing = nullptr)
     {
-        detectImpl(bgr_img, detections);
+        // The caller owns the sample and may have filled node-level fields
+        // (queue/color conversion) before invoking the backend.  Backends
+        // only write their own stage fields; do not reset the whole sample.
+        detectImpl(bgr_img, detections, timing);
 
         // 反 letterbox 到原图坐标
         for (auto & d : detections) {
@@ -46,10 +53,15 @@ public:
 
     const DetectorParams & params() const { return params_; }
 
+    /// Name of the execution provider actually used by the backend.
+    /// Backends that do not expose a provider may keep the default value.
+    virtual std::string activeProvider() const { return "unknown"; }
+
 protected:
     /// 后端实现: 输入原始 BGR 图, 输出 letterbox 坐标系下、已过 NMS 的检测
     virtual void detectImpl(const cv::Mat & bgr_img,
-                            std::vector<Detection> & detections) = 0;
+                            std::vector<Detection> & detections,
+                            DetectionTiming * timing) = 0;
 
     virtual void unletterboxImpl(Detection & d) = 0;
 

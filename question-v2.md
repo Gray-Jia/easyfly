@@ -23,7 +23,7 @@
 | V2-12 | G5 第 1 轮 | **TEST（测试脚本缺陷）** | T9 合成轨迹固定 trajectory_id=1 + goal 前预热发布，自污染 P0 水位致 trajectory_start_timeout；T1-T8 全绿 | **已解决（2026-09-16）**：静态回归 3/3、干净 SITL `--only T9` 动态复测通过；完整 G5 两轮仍按 test-v2 单独验收 |
 | V2-13 | G5 第 2 轮 | **ENV（SITL 电池预算）** | 套件跑满约 10 分钟后 SITL 电池低于解锁健康阈值，PX4 正确拒绝 T9 起飞 arm；V2-12 修复未被执行到 | 已记录，处置方案待定 |
 | V2-14 | G6.1 | **ENV（DDS 共享内存，已根治）** | pkill -9/timeout 强杀遗留 /dev/shm/fastrtps_* 陈旧段，致新参与者话题可发现但收不到数据 | 已根治（清理脚本 v2：杀进程+清 SHM+重置 daemon） |
-| V2-15 | G6.2 | **PERF（GPU 争抢）+ 测试仪表缺口** | detection 运行时 RTF 降至 ~0.29，管线仿真时基 10.8Hz（相机 30Hz 的 1/3）；节点无分段延迟日志 | 已记录；检测功能本身验收通过 |
+| V2-15 | G6.2 | **CONTRACT（图像输入 QoS）+ TEST（仪表缺口）** | RELIABLE 相机与 BEST_EFFORT 检测订阅在大图录制负载下发生回调前丢帧；旧记录缺少分段延迟，曾误判为 GPU 争抢 | **已解决（2026-09-16）**：输入 QoS 默认改为 RELIABLE/KeepLast(5)，补齐 CUDA/CPU 分段仪表；两路径均达到 30.00Hz 仿真时基，独立审核 APPROVE |
 
 ---
 
@@ -663,14 +663,30 @@ schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）�
 | 模型固定 | ✅ | `models/yolo11n.onnx`，与 §4.6 SHA-256 前缀 fb11c28e 一致 |
 | m2 基线对拍（配置级） | ✅ | ep=CUDAExecutionProvider、imgsz=640、conf=0.35、model 路径全部一致 |
 | 检测功能 | ✅ | perception_demo 世界实测：检测框平均 5.3、最大 6（基线场景 5 人一致）；/detections frame_id=optical 契约正确 |
-| GPU/CPU 分开报告 | ⏳ | CPU 路径本轮未测（待补） |
-| 分段延迟 | ⚠️ | 节点无预处理/推理/NMS/端到端分段日志（仪表缺口，见下） |
+| GPU/CPU 分开报告 | ✅ | CUDA 与显式 `use_gpu:=false` CPU fallback 均动态验收；两者都达到 30.00Hz 仿真时基 |
+| 分段延迟 | ✅ | steady_clock 周期统计 queue、颜色转换、预处理、ORT Run、NMS、debug 和端到端 avg/P95/max，并报告回调接收/处理/覆盖计数 |
 | 留证 | ✅ | `artifacts/g62/detections_70s`（2.0GiB，69.8s，含 debug_image 供目视核框） |
 
-### V2-15 PERF 发现：detection 运行时 RTF 降至 ~0.29
+### V2-15 检测吞吐仅约 1/3：输入 QoS 契约不匹配 + 测试仪表缺口（已解决）
 
-- 相机满帧 30Hz（仿真时基）下，/detections 仅 10.8Hz（仿真时基）——约 2/3 帧未被处理；墙钟 15.5Hz 由 RTF ~0.29 进一步混淆；
-- 根因指向：ORT CUDA 推理与 Gazebo 渲染（gzclient GUI + gzserver 深度/彩色渲染）争抢 GPU；
-- 影响评估：检测框内容与基线一致、下游跟踪层输入频率在仿真时基仍可用；但 RTF 0.29 会长比放大所有会话耗时，且 G6.3 SLAM 对帧率稳定性敏感——**G6.3 前建议压测**：关 gzclient、降相机帧率或降推理输入，量化 RTF 恢复程度；
-- 仪表缺口：基线 infer_ms=3.448ms（纯推理）无从对照——节点需补分段延迟日志（预处理/推理/NMS/端到端），属测试仪表改进。
-- 证据：`/tmp/g62-detect.log`（EP 行）、`artifacts/g62/`、本轮探针输出。
+#### 原记录复核与结论修订
+
+- 直接反序列化原始 `artifacts/g62/detections_70s` 后确认：该轮 RTF 实际为 **0.834**，并非原记录的 ~0.29；相机为 30.00Hz 仿真时基，`/detections` 为 9.67Hz。原“GPU 争抢导致 RTF 0.29”的结论没有被留存证据支持，现予撤回。
+- 新增分段仪表后，CUDA 路径 ORT Run 平均约 3.2–3.5ms、完整处理平均约 6–8ms，内部 pending 覆盖接近 0，证明推理吞吐足以处理 30Hz；丢失发生在检测节点回调之前。
+- 根因为 QoS 契约不一致：Gazebo 相机按 G6.1 已确认以 **RELIABLE/VOLATILE** 发布，而检测节点原使用 `SensorDataQoS`（BEST_EFFORT）。在同时传输/录制多路未压缩大图时，检测订阅在 DDS→callback 之前丢失约 2/3 帧，节点原本又没有接收/处理计数，因而被误判为推理丢帧。
+
+#### 修复
+
+- 检测输入 QoS 改为显式可配置；EasyFly 默认使用 `reliable/volatile/KeepLast(5)`，同时保留 `input_qos_reliability:=best_effort` 和深度覆盖入口，供实际 BEST_EFFORT 传感器使用。
+- 补充分段性能仪表：使用 steady_clock 周期报告 callback 接收、处理、callback 内 pending 覆盖，以及 queue、颜色转换、预处理、ORT Run、NMS、debug image、端到端的 avg/P95/max。日志明确使用 `*_wall_hz`，且 `callback_overwrite_pct` 不代表 DDS/发布端端到端丢帧。
+- 检测 launch 新增 CUDA/CPU、debug image、性能周期和输入 QoS 覆盖；`perception_sitl.launch.py` 新增 headless、gzclient、RViz 及上述检测参数入口，默认交互行为保持兼容。
+- 新增检测与 perception SITL 契约测试，覆盖计时字段、调用方 timing 保留、QoS、计数一致快照、日志语义、CPU fallback 接线和 headless 接线。
+
+#### 动态验收（2026-09-16）
+
+- **CUDA + RELIABLE + 高负载 rosbag**：RTF=0.814，相机 30.00Hz、detections 30.00Hz（仿真时基），callback 接收与处理持续约 24.3–24.9 wall Hz，`callback_overwritten=0`；ORT Run 平均约 3.2–3.6ms，端到端平均约 6–8ms。
+- **CPU fallback + RELIABLE**：RTF=0.740，相机 30.00Hz、detections 30.00Hz（仿真时基），ORT Run 平均约 35–36ms，端到端平均约 41–43ms；功能和频率均通过，但性能显著低于 CUDA，已按 test-v2 要求分开报告。
+- **静态/构建**：`easyfly_object_detection`、`easyfly_px4_sitl` 构建通过；检测契约 5/5、SITL 契约 2/2、`py_compile` 与 `git diff --check` 通过。
+- **审核**：首次审核发现计数快照竞态和 `drop` 命名歧义，两项 P1 已修复；复审结论 **APPROVE**，无剩余 P0/P1。
+
+**结论**：V2-15 已关闭，G6.2 的 CUDA/CPU 与分段延迟缺口均补齐；可以继续 G6.3。自动验收建议使用 headless 并关闭非必要 debug image，实机若相机只提供 BEST_EFFORT，必须显式覆盖检测输入 QoS。

@@ -35,8 +35,14 @@ detection:
   use_gpu: true            # CUDA EP; 加载失败自动回退 CPU EP
   gpu_device_id: 0
   max_fps: 30.0            # 处理节流上限 (丢帧策略)
+  # 性能窗口日志使用 steady_clock（墙钟耗时），不受 /clock/仿真暂停影响。
+  # <=0 可关闭性能采样与日志；默认 10s 便于 G6 压测留证。
+  performance_log_period_s: 10.0
 
   # ---- 话题 ----
   input_topic: /camera/color/image_raw
+  # EasyFly Gazebo 相机为 RELIABLE；实机传感器若为 BEST_EFFORT 可覆盖为 best_effort。
+  input_qos_reliability: reliable  # reliable | best_effort
+  input_qos_depth: 5                # 明确有界的 KeepLast 深度 [1,100]
   output_topic: /detections
   publish_debug_image: true  # /detections_debug_image (仅在有订阅者时发布)

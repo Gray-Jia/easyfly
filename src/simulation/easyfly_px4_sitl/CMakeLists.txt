@@ -7,6 +7,10 @@ include(CTest)
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(
+    NAME easyfly_perception_sitl_launch_contract
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/test_perception_sitl_launch_contract.py)
+  add_test(
     NAME easyfly_iris_sdf_physics_and_camera_contract
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/test/validate_easyfly_iris_sdf.py)

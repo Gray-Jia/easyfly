@@ -16,6 +16,21 @@ struct Detection {
     std::string class_name;              // 类别名
 };
 
+/// One detection pipeline timing sample, measured with steady_clock.
+///
+/// These values intentionally do not use a ROS timestamp: the values are
+/// wall-clock durations and remain meaningful when /clock is paused or when
+/// the simulator runs below real time.
+struct DetectionTiming {
+    double queue_ms{0.0};                 // receive callback -> worker start
+    double color_conversion_ms{0.0};      // input rgb8 -> BGR
+    double preprocess_ms{0.0};            // letterbox + tensor preparation
+    double inference_ms{0.0};             // ONNX Runtime session.Run()
+    double postprocess_ms{0.0};           // output parse + confidence/NMS
+    double debug_image_ms{0.0};           // optional annotation + conversion
+    double end_to_end_ms{0.0};            // receive callback -> final publish
+};
+
 /// 检测器参数 (全部来自 config/detection.yaml)
 struct DetectorParams {
     // 模型
@@ -33,7 +48,10 @@ struct DetectorParams {
     // 节点
     std::string input_topic{"/camera/color/image_raw"};
     std::string output_topic{"/detections"};
+    std::string input_qos_reliability{"reliable"}; // reliable | best_effort
+    int input_qos_depth{5};                         // bounded KeepLast depth
     bool publish_debug_image{true};
+    double performance_log_period_s{10.0}; // <=0 disables periodic metrics
 };
 
 }  // namespace easyfly_object_detection

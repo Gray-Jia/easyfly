@@ -19,10 +19,11 @@ public:
     ~OnnxBackend() override = default;
 
     /// 实际生效的 EP 名 ("CUDAExecutionProvider" / "CPUExecutionProvider")
-    std::string activeProvider() const { return active_provider_; }
+    std::string activeProvider() const override { return active_provider_; }
 
 protected:
-    void detectImpl(const cv::Mat & bgr_img, std::vector<Detection> & detections) override;
+    void detectImpl(const cv::Mat & bgr_img, std::vector<Detection> & detections,
+                    DetectionTiming * timing) override;
     void unletterboxImpl(Detection & d) override { unletterbox(d.x1, d.y1, d.x2, d.y2, last_lb_); }
 
 private:

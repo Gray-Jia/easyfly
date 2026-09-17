@@ -101,11 +101,13 @@ void OnnxBackend::createSession(const char * log_tag)
     output_tensor_.resize((4 + num_classes_) * num_preds_);
 }
 
-void OnnxBackend::detectImpl(const cv::Mat & bgr_img, std::vector<Detection> & detections)
+void OnnxBackend::detectImpl(const cv::Mat & bgr_img, std::vector<Detection> & detections,
+                             DetectionTiming * timing)
 {
     detections.clear();
 
     // ---- 前处理: BGR → letterbox → RGB float NCHW ----
+    const auto preprocess_start = std::chrono::steady_clock::now();
     cv::Mat lb;
     last_lb_ = letterbox(bgr_img, lb, params_.imgsz);
 
@@ -123,6 +125,10 @@ void OnnxBackend::detectImpl(const cv::Mat & bgr_img, std::vector<Detection> & d
         ch_g[i] = p[i * 3 + 1] / 255.0f;
         ch_b[i] = p[i * 3 + 2] / 255.0f;
     }
+    if (timing != nullptr) {
+        timing->preprocess_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - preprocess_start).count();
+    }
 
     // ---- 推理 ----
     const std::array<int64_t, 4> in_shape{1, 3, sz, sz};
@@ -135,13 +141,23 @@ void OnnxBackend::detectImpl(const cv::Mat & bgr_img, std::vector<Detection> & d
     std::vector<const char *> output_names_c;
     for (const auto & n : output_names_) output_names_c.push_back(n.c_str());
 
+    const auto inference_start = std::chrono::steady_clock::now();
     auto outputs = session_->Run(
         Ort::RunOptions{nullptr}, input_names_c, &input, 1,
         output_names_c.data(), output_names_c.size());
+    if (timing != nullptr) {
+        timing->inference_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - inference_start).count();
+    }
 
     // ---- 后处理 ----
+    const auto postprocess_start = std::chrono::steady_clock::now();
     const float * out = outputs[0].GetTensorData<float>();
     parseOutput(out, num_preds_, num_classes_, detections);
+    if (timing != nullptr) {
+        timing->postprocess_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - postprocess_start).count();
+    }
 }
 
 void OnnxBackend::parseOutput(const float * output, int num_preds, int num_classes,

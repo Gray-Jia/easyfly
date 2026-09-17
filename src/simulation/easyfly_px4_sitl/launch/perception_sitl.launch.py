@@ -23,8 +23,17 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    GroupAction,
+    IncludeLaunchDescription,
+    SetEnvironmentVariable,
+    TimerAction,
+)
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -40,6 +49,33 @@ def _resolve_px4_dir():
 
 
 def generate_launch_description():
+    # 默认保持历史交互行为；G6 自动验收可使用 headless:=true，或分别
+    # 设置 gzclient:=false rviz:=false debug_image:=false。
+    headless_arg = DeclareLaunchArgument(
+        "headless", default_value="false",
+        description="无界面验收模式：关闭 gzclient、RViz 和 robot_state_publisher")
+    gzclient_arg = DeclareLaunchArgument(
+        "gzclient", default_value="true",
+        description="是否启动 Gazebo GUI（headless=true 时强制关闭）")
+    rviz_arg = DeclareLaunchArgument(
+        "rviz", default_value="true",
+        description="是否启动 RViz2（headless=true 时强制关闭）")
+    debug_image_arg = DeclareLaunchArgument(
+        "debug_image", default_value="auto",
+        description="检测调试图像：auto 跟随 detection.yaml，false 关闭")
+    detection_use_gpu_arg = DeclareLaunchArgument(
+        "detection_use_gpu", default_value="auto",
+        description="检测执行提供者：auto 跟随 YAML，false 强制 CPU，true 请求 CUDA")
+    detection_perf_period_arg = DeclareLaunchArgument(
+        "detection_performance_log_period_s", default_value="auto",
+        description="检测 steady_clock 性能窗口（秒）；auto 跟随 YAML")
+    detection_qos_reliability_arg = DeclareLaunchArgument(
+        "detection_input_qos_reliability", default_value="auto",
+        description="检测输入 QoS：auto 跟随 YAML，或 reliable/best_effort")
+    detection_qos_depth_arg = DeclareLaunchArgument(
+        "detection_input_qos_depth", default_value="auto",
+        description="检测输入 QoS KeepLast 深度：auto 跟随 YAML，范围 1..100")
+
     pkg_px4_sitl       = get_package_share_directory("easyfly_px4_sitl")
     pkg_gazebo_models  = get_package_share_directory("easyfly_gazebo_models")
     pkg_gazebo_worlds  = get_package_share_directory("easyfly_gazebo_worlds")
@@ -97,6 +133,7 @@ def generate_launch_description():
         cmd=["gzclient"],
         output="screen",
         name="gzclient",
+        condition=IfCondition(LaunchConfiguration("gzclient")),
     )
 
     sitl_env = {
@@ -124,6 +161,7 @@ def generate_launch_description():
         arguments=["-d", rviz_config],
         output="screen",
         parameters=[{"use_sim_time": True}],
+        condition=IfCondition(LaunchConfiguration("rviz")),
     )
 
     # ---- URDF 机体可视化: robot_state_publisher (RViz RobotModel 显示飞机) ----
@@ -140,6 +178,7 @@ def generate_launch_description():
             "robot_description": robot_desc,
             "use_sim_time": True,
         }],
+        condition=IfCondition(LaunchConfiguration("rviz")),
     )
 
     # ---- P1 感知预处理 (M1): 静态外参 TF + 内参校验 + odom 动态 TF ----
@@ -151,9 +190,26 @@ def generate_launch_description():
             get_package_share_directory("easyfly_coord_transform") + "/launch/coord_tf.launch.py"))
 
     # ---- P2 目标检测 (M2): YOLO11 OnnxRuntime GPU ----
+    # A headless run must not create the optional debug-image publisher even
+    # when the interactive YAML default is true.  Keep explicit debug_image
+    # overrides intact for non-headless diagnostics.
+    effective_debug_image = PythonExpression([
+        "'false' if '", LaunchConfiguration("headless"),
+        "'.lower() == 'true' else '", LaunchConfiguration("debug_image"), "'"
+    ])
     detection = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            get_package_share_directory("easyfly_object_detection") + "/launch/detection.launch.py"))
+            get_package_share_directory("easyfly_object_detection") + "/launch/detection.launch.py"),
+        launch_arguments={
+            "use_sim_time": "true",
+            "publish_debug_image": effective_debug_image,
+            "use_gpu": LaunchConfiguration("detection_use_gpu"),
+            "performance_log_period_s": LaunchConfiguration(
+                "detection_performance_log_period_s"),
+            "input_qos_reliability": LaunchConfiguration(
+                "detection_input_qos_reliability"),
+            "input_qos_depth": LaunchConfiguration("detection_input_qos_depth"),
+        }.items())
 
     # ---- P4 多目标跟踪 (M4): SORT ----
     tracking = IncludeLaunchDescription(
@@ -195,7 +251,11 @@ def generate_launch_description():
             get_package_share_directory("easyfly_semantic_map") + "/launch/semantic_map.launch.py"))
 
     spawn_delayed = TimerAction(period=3.0, actions=[spawn_model])
-    gui_px4_rviz = TimerAction(period=6.0, actions=[gzclient, px4_sitl, rviz2, robot_state_pub])
+    px4_delayed = TimerAction(period=6.0, actions=[px4_sitl])
+    gui_only = TimerAction(period=6.0, actions=[gzclient, rviz2, robot_state_pub])
+    gui_group = GroupAction(
+        condition=UnlessCondition(LaunchConfiguration("headless")),
+        actions=[gui_only])
     bridge_delayed = TimerAction(period=8.0, actions=[mavlink_bridge])
     p1_nodes = TimerAction(period=12.0, actions=[calib_tf, coord_tf])
     p2_nodes = TimerAction(period=14.0, actions=[detection, fastlio])
@@ -224,9 +284,18 @@ def generate_launch_description():
         set_model_path,
         set_plugin_path,
         set_ld_library_path,
+        headless_arg,
+        gzclient_arg,
+        rviz_arg,
+        debug_image_arg,
+        detection_use_gpu_arg,
+        detection_perf_period_arg,
+        detection_qos_reliability_arg,
+        detection_qos_depth_arg,
         gzserver,
         spawn_delayed,
-        gui_px4_rviz,
+        px4_delayed,
+        gui_group,
         bridge_delayed,
         exec_nodes,
         p1_nodes,
