@@ -8,7 +8,7 @@ LOG="${LOG:-/tmp/easyfly_follow_launch.log}"
 
 set +u  # ROS setup.bash 与 set -u 冲突
 source /opt/ros/humble/setup.bash
-source "$WS/install/setup.bash"
+source "$WS/install-v2/setup.bash"
 set -u
 
 cleanup() {

@@ -7,7 +7,9 @@ follow_acceptance.py — M4.1 TrackTarget 跟随飞行验收 (test-guide 补充�
   F2  静态跟随     跟随最近 person (follow_distance=4) → 稳态距离 4±1.0m
   F3  移动跟随     跟随巡检目标 40s → 均值 4±1.5m, 最小间距 >1.2m
   F4  丢失行为     跟随中删除目标 (gz model -d) → lost_timeout 后 abort + 悬停
-  F5  接管传播     跟随中直接切 RTL → TrackTarget abort (message 含 takeover)
+  F5  用户取消     跟随中 cancel → CANCELED + 悬停 (冻结定义 2026-09-17)
+  F6  外部接管     跟随中外部切 AUTO.RTL → ABORTED(takeover) + RTL 落地 (冻结定义 2026-09-17)
+  执行顺序: F1→F2→F3→F6→恢复→F5→F4 (F4 破坏性: 删目标/可能杀检测, 置于末位)
 
 指标来源: action feedback (节点内部处理 SORT id 轮换/重捕获后的 distance_to_target
 才是真值; 验收脚本按固定 id 采样会被 id 轮换打穿 — Q19)。
@@ -169,7 +171,7 @@ def ensure_airborne(node, alt=2.5):
     下降途中 armed=True 且 z>0.5, 直接跳过起飞会让整个用例在地面被拒 —
     必须先等降落彻底结束 (解除武装) 或确认高度已稳定。"""
     t0 = time.monotonic()
-    while time.monotonic() - t0 < 60:
+    while time.monotonic() - t0 < 90:
         _, st, _ = node.snap()
         if st is None:
             time.sleep(1)
@@ -277,7 +279,7 @@ def main():
         RESULTS.append(("F2", False))
 
     # ---- F5 接管传播 (RTL: 无人机飞回起点, F3/F4 由 ensure_airborne 等待+重新起飞) ----
-    print("\n== F5 接管传播 ==")
+    print("\n== F5 用户取消 ==")
     try:
         ids = node.ids_seen(6.0)
         check("F5 目标可用", len(ids) > 0)
@@ -310,6 +312,114 @@ def main():
     except Exception as e:  # noqa: BLE001
         print("  [FAIL] F5 异常: %s" % e, flush=True)
         RESULTS.append(("F5", False))
+
+
+    # ---- F6 外部接管 (冻结定义 2026-09-17: 外部切 AUTO.RTL → ABORTED takeover) ----
+    print("\n== F6 外部接管 (AUTO.RTL) ==")
+    try:
+        # F4 的后备路径可能杀掉检测容器: 先确认目标流恢复
+        targets, _, _ = node.snap()
+        if targets is None:
+            info("检测输出为空 (F4 后备已杀 detection), 重启 detection...")
+            subprocess.Popen(
+                ["ros2", "launch", "easyfly_object_detection", "detection.launch.py"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < 40:
+                targets, _, _ = node.snap()
+                if targets is not None:
+                    break
+                time.sleep(2)
+        check("F6 检测输出恢复", targets is not None)
+        ids = node.ids_seen(6.0)
+        if not ids:
+            # F4 后无人机悬停在行走走廊 (~20m 外), 相机背对出发区人群 —
+            # 飞回 (0,0,2) 重找目标 (保持 OFFBOARD 流, 不落地)
+            info("无目标 (相机朝向远离人群), 飞回出发区重找...")
+            from geometry_msgs.msg import PoseStamped  # noqa: PLC0415
+            spub = node.create_publisher(
+                PoseStamped, "/mavros/setpoint_position/local", 10)
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < 40:
+                m = PoseStamped()
+                m.header.stamp = node.get_clock().now().to_msg()
+                m.pose.position.x, m.pose.position.y, m.pose.position.z = 0.0, 0.0, 2.0
+                spub.publish(m)
+                ids = node.ids_seen(1.0)
+                if ids:
+                    break
+                time.sleep(0.04)
+            node.destroy_publisher(spub)
+        check("F6 目标可用", len(ids) > 0, "%d 个" % len(ids))
+        if not ids:
+            raise RuntimeError("无目标")
+        # Q19: SORT id 轮换可能使选中的 id 在发起前被重排 — 与 F3 同款重锁循环
+        gh, fb = None, None
+        for attempt in range(3):
+            ids = node.ids_seen(3.0)
+            if not ids:
+                time.sleep(2)
+                continue
+            some_id = min(ids, key=lambda k: math.hypot(ids[k][0], ids[k][1]))
+            info("F6 第%d次锁 id=%d @ (%.1f,%.1f)" % (
+                attempt + 1, some_id, ids[some_id][0], ids[some_id][1]))
+            gh = node.send_follow(some_id, 4.0, 1.5)
+            if gh is None:
+                time.sleep(2)
+                continue
+            t0 = time.monotonic()
+            fb = None
+            while time.monotonic() - t0 < 25:
+                _, _, fb = node.snap()
+                if fb is not None and fb.target_visible:
+                    break
+                time.sleep(0.5)
+            if fb is not None and fb.target_visible:
+                break
+            info("id %d 未建立跟随, 重锁..." % some_id)
+            node.stop_follow()
+            time.sleep(2)
+        check("F6 跟随已建立 (visible)", fb is not None and fb.target_visible)
+        info("外部切 AUTO.RTL (模拟地面站接管, 不经 target_tracking)")
+        import mavros_msgs.srv  # noqa: PLC0415 — 仅本用例使用
+        set_cli = node.create_client(mavros_msgs.srv.SetMode, "/mavros/set_mode")
+        if not set_cli.wait_for_service(10.0):
+            raise RuntimeError("/mavros/set_mode 不可用")
+        req = mavros_msgs.srv.SetMode.Request()
+        req.custom_mode = "AUTO.RTL"
+        node._wait_future(set_cli.call_async(req), 10.0)
+        wrapped = node._wait_future(gh.get_result_async(), 60.0)
+        ok = (wrapped is not None and wrapped.status == GoalStatus.STATUS_ABORTED
+              and wrapped.result is not None
+              and "takeover" in (wrapped.result.message or ""))
+        check("F6 外部 RTL 后 TrackTarget ABORTED(takeover)", ok,
+              "status=%s msg=%r" % (GSTATUS.get(wrapped.status, wrapped.status) if wrapped else "-",
+                                    wrapped.result.message if wrapped and wrapped.result else "-"))
+        # RTL 自动降落 → 落地 disarm (本用例为最后一个飞行用例, 无需恢复空中)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 120:
+            _, st6, _ = node.snap()
+            if st6 is not None and not st6.armed:
+                break
+            time.sleep(2)
+        _, st6, _ = node.snap()
+        check("F6 RTL 落地 disarm", st6 is not None and not st6.armed,
+              "armed=%s z=%.2f" % (st6.armed if st6 else "-", st6.position_z if st6 else -1))
+    except Exception as e:  # noqa: BLE001
+        print("  [FAIL] F6 异常: %s" % e, flush=True)
+        RESULTS.append(("F6", False))
+
+    # ---- RTL 落地后恢复空中 (供 F5 使用) ----
+    print("\n== 恢复: RTL 落地后重新起飞 ==")
+    try:
+        ensure_airborne(node, 2.5)
+        _, st_r, _ = node.snap()
+        check("恢复 起飞成功 (armed+空中)", st_r is not None and st_r.armed and st_r.position_z > 1.0,
+              "z=%.2f armed=%s" % (st_r.position_z if st_r else -1, st_r.armed if st_r else "-"))
+        RESULTS.append(("F6后恢复", True))
+    except Exception as e:  # noqa: BLE001
+        print("  [FAIL] 恢复 异常: %s" % e, flush=True)
+        RESULTS.append(("F6后恢复", False))
 
     print("\n== F3 移动跟随 ==")
     try:
@@ -452,6 +562,7 @@ def main():
     except Exception as e:  # noqa: BLE001
         print("  [FAIL] F4 异常: %s" % e, flush=True)
         RESULTS.append(("F4", False))
+
 
     print("\n" + "=" * 60)
     failed = sum(1 for _, ok in RESULTS if not ok)
