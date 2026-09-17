@@ -33,6 +33,8 @@
 #include <easyfly_msgs/msg/target3_d_array.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include "easyfly_pixel_to_3d/frame_contract.hpp"
+
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -188,7 +190,6 @@ private:
         }
 
         Target3DArray out;
-        out.header = msg->header;
         out.targets.reserve(msg->tracks.size());
 
         // TF 查询: optical → target_frame
@@ -222,7 +223,6 @@ private:
 
         for (const auto & t : msg->tracks) {
             Target3D tgt;
-            tgt.header = msg->header;
             tgt.track_id = t.track_id;
             tgt.class_name = t.class_name;
             tgt.confidence = t.confidence;
@@ -255,6 +255,10 @@ private:
             out.targets.push_back(tgt);
         }
 
+        // Positions above are expressed in target_frame. Preserve the tracks
+        // timestamp for synchronization while making both message headers
+        // describe that same coordinate frame.
+        applyTargetFrameContract(out, msg->header, params_.target_frame);
         target_pub_->publish(out);
         if (params_.publish_markers) publishMarkers(out);
     }

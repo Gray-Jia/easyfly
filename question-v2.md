@@ -24,6 +24,7 @@
 | V2-13 | G5 第 2 轮 | **ENV（SITL 电池预算）** | 套件跑满约 10 分钟后 SITL 电池低于解锁健康阈值，PX4 正确拒绝 T9 起飞 arm；V2-12 修复未被执行到 | 已记录，处置方案待定 |
 | V2-14 | G6.1 | **ENV（DDS 共享内存，已根治）** | pkill -9/timeout 强杀遗留 /dev/shm/fastrtps_* 陈旧段，致新参与者话题可发现但收不到数据 | 已根治（清理脚本 v2：杀进程+清 SHM+重置 daemon） |
 | V2-15 | G6.2 | **CONTRACT（图像输入 QoS）+ TEST（仪表缺口）** | RELIABLE 相机与 BEST_EFFORT 检测订阅在大图录制负载下发生回调前丢帧；旧记录缺少分段延迟，曾误判为 GPU 争抢 | **已解决（2026-09-16）**：输入 QoS 默认改为 RELIABLE/KeepLast(5)，补齐 CUDA/CPU 分段仪表；两路径均达到 30.00Hz 仿真时基，独立审核 APPROVE |
+| V2-16 | G6.4 | **CONTRACT（3D 目标输出坐标系）** | `/target_positions` 数值为 odom 而数组/目标 header 继承 optical | ✅ 已修复并复验关闭（2026-09-17） |
 
 ---
 
@@ -728,7 +729,7 @@ schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）�
 | SORT 遮挡/交叉 | ✅（单测+实况） | 遮挡/交叉语义由 G2 test_sort 6/6 覆盖（合成场景）；实况静态场景验证 ID 全程不漂移 |
 | tracks 与 depth 时间差 | ✅（记录） | 最新戳差 **100ms**（相机→检测→跟踪管线延迟，约 2-3 帧） |
 | 无效深度 | ✅ | 4509 个 3D 实例中 144 个（3.2%）`position_valid=false`，从不产生有效世界坐标 |
-| odom frame 输出与 TF 对齐 | ✅（附注） | 3D 数值与 TF 链对齐（见下）；小瑕疵：`/target_positions.header.frame_id` 标为 optical 而数值为 odom 系——标注语义改进项，不阻塞 |
+| odom frame 输出与 TF 对齐 | ✅（V2-16 已修复） | 3D 数值与 TF 链对齐（见下）；验收时发现 `/target_positions` header 仍标为 optical，V2-16 已将数组及逐目标 header 统一为配置的 `target_frame`，时间戳保持不变 |
 | 固定目标 3D 误差 | ✅ | 稳定 ID 位置 std **2-7cm**（8-16m）；去除 EKF 航向偏置（~20.7°，见下）后与 Gazebo 世界真值对齐：id0↔person_1(8,2) **0.37m**、id3↔person_2(12,-2) **0.51m**、id50↔person_3(16,1.5) **0.59m**（残差=航向拟合 ±1°@12m≈±0.3m + bbox 中心深度偏置） |
 | 留证 | ✅→已删 | artifacts/g64/tracking_60s（3.0GB，60s）按用户策略验收后删除 |
 
@@ -738,3 +739,12 @@ schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）�
 - 验证：world person_2 (12,-2)（半径 12.17/方位 -9.5°）加 20.7° 旋转 → (11.93,2.37)，实测 (11.85,2.35)，残差 8cm；
 - **影响与结论**：全链下游（跟踪/3D/语义地图/跟随）均工作于 odom 系且互相一致，偏置仅在"odom 数值 vs Gazebo 世界坐标直接对比"时出现——后续涉及世界系对拍的验收（G6.5 GetObstacles 等）必须先去除该偏置或使用 TF 变换，不得当作误差。
 - 留证：30s 探针统计输出（本轮会话记录）；`artifacts/g64/tracking_60s` 已删。
+
+### V2-16 `/target_positions` header 与实际数值坐标系不一致（已修复）
+
+- **分类**：CONTRACT。`pixel_to_3d` 已将光学系点通过 TF 转换至配置的 `target_frame`，但此前数组 header 和每个 `Target3D.header` 直接继承 `/tracks_raw`，导致消息声明为 optical、数值实际为 odom。
+- **风险**：当前下游直接读取坐标数值，故未破坏本轮 G6.4 功能结果；任何严格依据 header 再做 TF 的消费者都会发生二次变换，不能继续作为单纯标注瑕疵保留。
+- **修复**：发布前统一将数组与所有目标（包括 `position_valid=false`）的 header 设置为 `target_frame`，同时完整保留输入 tracks 时间戳；未对约 20.7° EKF 航向差做硬编码补偿。
+- **自动验证**：新增 frame contract gtest，覆盖数组级、逐目标级 frame 和时间戳，2/2 通过；`easyfly_pixel_to_3d` 在 `BUILD_TESTING=ON` 下构建通过；独立审核首轮指出私有头安装路径和 `ament_cmake_gtest` 声明问题，均已修正后复审。
+- **动态复核义务**：下次启动 G6.4/G6.5 链路时执行一次 `ros2 topic echo /target_positions --once`，确认数组及目标 header 均为 `odom`，再关闭 V2-16 的动态复核项。
+- **动态复验（2026-09-17，独立执行）**：`test_frame_contract` gtest 在正确 source 环境下 PASSED（注意：无 ROS 环境时 ctest 会因缺 `ament_cmake_test` 模块假失败——复验时先误判，已澄清）；全新会话（perception_demo 全链 7 节点）实测 `/target_positions` **数组 header 及全部逐目标 header 均为 `odom`**，位置数值与 G6.4 记录同族（8-12m 段）。**V2-16 关闭。**

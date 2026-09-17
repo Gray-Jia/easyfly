@@ -9,6 +9,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -21,9 +22,11 @@ add_library(${PROJECT_NAME}_nodes SHARED
   src/pixel_to_3d_node.cpp
 )
 target_compile_options(${PROJECT_NAME}_nodes PRIVATE -Wall -Wextra)
+target_include_directories(${PROJECT_NAME}_nodes PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include)
 ament_target_dependencies(${PROJECT_NAME}_nodes
   rclcpp rclcpp_components ament_index_cpp
-  sensor_msgs visualization_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs
+  sensor_msgs std_msgs visualization_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs
   easyfly_msgs)
 target_link_libraries(${PROJECT_NAME}_nodes yaml-cpp)
 rclcpp_components_register_node(${PROJECT_NAME}_nodes
@@ -40,6 +43,12 @@ install(DIRECTORY config launch
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_frame_contract test/test_frame_contract.cpp)
+  target_include_directories(test_frame_contract PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(test_frame_contract
+    std_msgs easyfly_msgs)
 endif()
 
 ament_package()
