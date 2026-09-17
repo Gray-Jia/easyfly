@@ -715,3 +715,26 @@ schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）�
 - V2-13 电池方案：单任务会话实测满电起、无低电量事件，`SIM_BAT_DRAIN` 暂不需要；恢复为"套件级长会话触发时再落地"。
 
 **结论：G6.3 通过。** 下一层 G6.4（跟踪与 3D 融合）。
+
+---
+
+## G6.4 验收记录（跟踪与 3D 融合层，2026-09-17 通过）
+
+**链路**：perception_demo + bridge(仿真钟) + calib_tf + coord_tf + detection + tracking + pixel_to_3d；管线实测墙钟 /detections 22.7 → /tracks 25.0 → /target_positions 24.4Hz。
+
+| §13.4 检查项 | 结果 | 数据 |
+|---|---|---|
+| ID 稳定性/consolidation | ✅ | 30s 窗口 6 个整合 ID（0-4,50）在 **751/751 帧全程在册**；3 个瞬态 ID（59/60/61，18m 远距噪声）短命出现即被整合器淘汰——SORT 行为正常 |
+| SORT 遮挡/交叉 | ✅（单测+实况） | 遮挡/交叉语义由 G2 test_sort 6/6 覆盖（合成场景）；实况静态场景验证 ID 全程不漂移 |
+| tracks 与 depth 时间差 | ✅（记录） | 最新戳差 **100ms**（相机→检测→跟踪管线延迟，约 2-3 帧） |
+| 无效深度 | ✅ | 4509 个 3D 实例中 144 个（3.2%）`position_valid=false`，从不产生有效世界坐标 |
+| odom frame 输出与 TF 对齐 | ✅（附注） | 3D 数值与 TF 链对齐（见下）；小瑕疵：`/target_positions.header.frame_id` 标为 optical 而数值为 odom 系——标注语义改进项，不阻塞 |
+| 固定目标 3D 误差 | ✅ | 稳定 ID 位置 std **2-7cm**（8-16m）；去除 EKF 航向偏置（~20.7°，见下）后与 Gazebo 世界真值对齐：id0↔person_1(8,2) **0.37m**、id3↔person_2(12,-2) **0.51m**、id50↔person_3(16,1.5) **0.59m**（残差=航向拟合 ±1°@12m≈±0.3m + bbox 中心深度偏置） |
+| 留证 | ✅→已删 | artifacts/g64/tracking_60s（3.0GB，60s）按用户策略验收后删除 |
+
+### 契约发现：odom 系与 Gazebo 世界系存在 ~20.7° EKF 航向偏置
+
+- 无人机 spawn (0,0,0.83) yaw=0，但 PX4 EKF 航向零点为磁对准，odom→base_link 实测 yaw≈15-20°；
+- 验证：world person_2 (12,-2)（半径 12.17/方位 -9.5°）加 20.7° 旋转 → (11.93,2.37)，实测 (11.85,2.35)，残差 8cm；
+- **影响与结论**：全链下游（跟踪/3D/语义地图/跟随）均工作于 odom 系且互相一致，偏置仅在"odom 数值 vs Gazebo 世界坐标直接对比"时出现——后续涉及世界系对拍的验收（G6.5 GetObstacles 等）必须先去除该偏置或使用 TF 变换，不得当作误差。
+- 留证：30s 探针统计输出（本轮会话记录）；`artifacts/g64/tracking_60s` 已删。
