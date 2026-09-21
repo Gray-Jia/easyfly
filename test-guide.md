@@ -1,8 +1,8 @@
 # EasyFly 测试与使用指南（test-guide.md）
 
-> 更新时间：2026-09-13（阶段三完成 + P0/P1/感知修复 + 两轮全项目复查后）
-> 环境：Ubuntu 22.04 + ROS2 Humble + PX4 1.16.1 + Gazebo Classic 11 + RTX GPU（OnnxRuntime CUDA）
-> 已知问题见 `question.md`，本指南只覆盖当前可用功能。
+> 更新时间：2026-09-21（PX4 v1.16.2 路径与 G7 验收状态同步）
+> 环境：Ubuntu 22.04 + ROS2 Humble + PX4 1.16.2 + Gazebo Classic 11 + RTX GPU（OnnxRuntime CUDA）
+> 已知问题见 `question-v2.md`，当前验收结论与冻结版本以 `test-v2.md`、`schedule-v2.md` 为准；本指南只覆盖当前可用功能。
 
 ---
 
@@ -17,7 +17,7 @@ source easyfly_env.bash        # 内含 /opt/ros/humble + install/setup.bash
 
 ```bash
 ros2 pkg list | grep -E "mavros|easyfly" | head    # ROS 包就绪
-ls ~/PX4-Autopilot-1.16.1/build/px4_sitl_default/bin/px4   # PX4 SITL 已编译
+ls ~/PX4-Autopilot-1.16.2/build/px4_sitl_default/bin/px4   # PX4 SITL 已编译
 nvidia-smi                                        # GPU（检测节点用）
 ```
 
@@ -106,7 +106,7 @@ ros2 launch easyfly_px4_sitl px4_sitl.launch.py world:=perception_demo.world
 | 包 | 功能 | 接口 |
 |----|------|------|
 | `easyfly_flight_control` | 3 个 Action Server：起飞 / 降落 / 航点。**实际控制策略**：目标渐近式 setpoint（抗反馈毛刺）+ PX4 OFFBOARD 内环 | `/takeoff`、`/land`、`/goto_waypoint`（action）；订阅 `/uav_state`，发布 `/uav_command` |
-| `easyfly_mission_fsm` | 任务状态机：解析 YAML 任务 → 逐步调用上述 action；1Hz 电池检查（仅报警，见 question.md Q2） | `/execute_mission`（action，goal 为 mission_file 路径）；发布 `/mission_status` |
+| `easyfly_mission_fsm` | 任务状态机：解析 YAML 任务 → 逐步调用上述 action；1Hz 低电量保护会中止任务，空中请求 PX4 RTL，并发布 EMERGENCY 状态 | `/execute_mission`（action，goal 为 mission_file 路径）；发布 `/mission_status` |
 
 ### 感知层（P）
 
@@ -167,7 +167,7 @@ ros2 action send_goal /land easyfly_msgs/action/Land "{}" --feedback
 **起飞内部流程**（自动执行，无需手动干预）：发初始 setpoint 建流 → 切 OFFBOARD → 等流注册 → arm（重试 10s 兜底 EKF 收敛边缘）→ 校验模式切入。**降落后可直接再次起飞**（自动处理 PX4 残留模式），支持连续多轮起降。
 
 约束（当前实现的既定行为）：
-- 航点高度建议 **≤2.5m**（MID-360 平放 5m 以上看不到地面，SLAM 漂移风险，见 question.md Q22）；
+- 航点高度建议 **≤2.5m**（MID-360 平放 5m 以上看不到地面，SLAM 漂移风险；原始排障记录见历史 `question.md` Q22）；
 - Takeoff/Land 只能在 `active_==NONE/HOVER` 状态发起，连续发会被 REJECT；
 - 航点完成半径默认 0.5m；
 - **取消行为**（P0 修复后）：航点/起飞取消 → 无人机减速并悬停在取消点附近（带惯性会过冲 ~1m）；降落取消 → 切回 OFFBOARD 爬回降落前悬停高度；
@@ -198,7 +198,7 @@ ros2 action send_goal /track_target easyfly_msgs/action/TrackTarget "{target_id:
 
 移动目标：perception_demo.world 中 person_4_walking 由 patrol_mover 插件驱动沿 (14,-2)↔(22,-2) 1m/s 巡航。
 
-自动化验收：`bash test/run_follow_acceptance.sh`（F1 就绪/F2 静态/F3 移动/F4 丢失/F5 接管，约 8-12 分钟）。
+自动化验收：`bash test/run_follow_acceptance.sh`（F1 就绪/F2 静态/F3 移动/F4 丢失/F5 用户取消/F6 外部 RTL 接管，约 8-12 分钟）。
 
 ### 任务文件方式（YAML 状态机）
 
@@ -268,7 +268,7 @@ ros2 topic hz /detections                     # ~相机帧率
 ros2 topic echo /detections --once            # 归一化 bbox + class_name + confidence
 ```
 
-可视化：RViz2 检测画面（`/detections_debug_image`，绿框+类别+置信度）。场景中的 person / fire_truck（truck 类）应稳定出框。注意视野下半幅有机身遮挡（question.md Q21）。
+可视化：RViz2 检测画面（`/detections_debug_image`，绿框+类别+置信度）。场景中的 person / fire_truck（truck 类）应稳定出框。注意视野下半幅有机身遮挡（原始排障记录见历史 `question.md` Q21）。
 
 换模型：编辑 `easyfly_object_detection/config/detection.yaml`（model_path / class_names / conf_threshold / imgsz），支持任意 YOLO 导出的 ONNX。
 
@@ -357,7 +357,7 @@ for i in 1 2; do
 done
 ```
 
-两轮均应 SUCCEEDED（第 3 轮起 SITL 磁力计可能退化报 failsafe，属仿真怪癖——见第六节）。
+两轮均应 SUCCEEDED。若任何一轮出现 failsafe，正式验收必须判失败、保存日志并从干净会话重跑；不能把“重启后继续”记作本轮通过。
 
 ---
 
@@ -373,10 +373,10 @@ done
 | SLAM 点云不显示（TF 断链） | FAST-LIO 点云 frame 是 `camera_init`，缺 map→camera_init 桥接 | 已修复（map_odom_tf 自动发布恒等 TF）；若复现检查 fastlio_integration 是否在跑 |
 | 起飞 arm 被拒（日志 "Arming denied"） | EKF/GPS 未收敛或时序窗口 | 内置 arm 重试（10s）通常自愈；仍失败则等 `Ready for takeoff!` 后重发 |
 | 降落后无法再次起飞 | 已修复（"先建流后解锁"流程） | 若复现：查 `/mavros/state` 残留模式，重启 flight_control 节点 |
-| 连续 3+ 轮起降后姿态报错/failsafe | SITL 磁力计退化（仿真怪癖，实机无此问题） | 重启仿真环境后继续 |
+| 连续 3+ 轮起降后姿态报错/failsafe | SITL 磁力计/估计器可能退化 | 保存 PX4/ULog 证据并将本轮判为失败；清理后重跑，禁止用重启掩盖正式验收失败 |
 | RTL 返回点显示 519m | SITL GPS home 与 Gazebo 原点偏差（已知怪癖） | RTL 仍正常执行并降落，需 ~2 分钟；验证链路时耐心等待 |
 | 航点 (x,0) 飞成 (0,x) | EKF 磁偏角问题回归 | 确认 launch 未设置 PX4_HOME_LAT/LON（M6 已删） |
-| FAST-LIO 崩溃后 RViz 全空 | map frame 单点依赖 | 重启 fast_lio（`ros2 launch easyfly_fast_lio_integration fastlio.launch.py`）；长期方案见 question.md Q28 |
+| FAST-LIO 崩溃后 RViz 全空 | map frame 单点依赖 | 重启 fast_lio（`ros2 launch easyfly_fast_lio_integration fastlio.launch.py`）；长期方案原始记录见历史 `question.md` Q28 |
 | 检测节点起不来 | onnxruntime/CUDA 问题 | `nvidia-smi` 确认驱动；检查 third_party/onnxruntime 完整性 |
 | 残留 gazebo 进程占端口 | 上次未正常退出 | `bash easyfly_clean.sh`（一键清理） |
 | **RViz path 乱画 + 点云/飞机消失** | **fastlio_mapping 僵尸多实例**（路径不含 "easyfly"，pkill 常规模式匹配不到；多实例同发 /Odometry 导致 TF 跳变） | `bash easyfly_clean.sh` 后重启仿真；确认：`ros2 node list \| grep -c laser_mapping` = 1 |

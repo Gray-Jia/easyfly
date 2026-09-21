@@ -15,7 +15,7 @@
 | V2-04 | G2 单元测试 | **TEST（测试架子缺陷，已解决）** | test_sort 已改为原生 gtest，结果文件正常生成，6/6 通过 | 已解决（2026-09-15） |
 | V2-05 | G2 单元测试 | lint 债务（非阻塞） | 四包 lint 失败 79 项；V2-04 修复后降为 75 项 | 已记录，列入债务清单 |
 | V2-06 | G3 组件测试 | 测试范围缺口（非阻塞，待补） | §10.2 五组故障注入测试尚未编写，G3 现有范围仅 mock 14/14 | 已记录，G4 前或期间补齐 |
-| V2-07 | G4 准备 | ENV/CONTRACT（配置漂移，已规避） | px4_sitl.launch 默认 PX4 路径仍指向已改名目录，需 PX4_DIR 环境变量 | 已登记，根治待恢复开发期 |
+| V2-07 | G4 准备 | ENV/CONTRACT（配置漂移，已根治） | 两个 SITL launch 的默认 PX4 路径曾落后于已对齐的 v1.16.2 目录 | **已根治（2026-09-18）**：`PX4_DIR > ~/PX4-Autopilot-1.16.2 > 1.16.1 > base`，无模糊 glob，并有隔离 HOME 优先级回归 |
 | V2-08 | G4 第 1 步 | ENV（已处置） | PX4 目录改名致 SITL 构建缓存绝对路径失效，干净重编 | 已处置（2026-09-15 重编） |
 | V2-09 | G4 第 3 级 | **CONTRACT（时钟域，阻塞下游）** | MAVROS 插件节点、bridge、rc_receiver 的时钟域需统一；曾观测到 timesync 每 51s 跳变 | 时钟域修复已验证生效；残留 timesync 插件 int64 溢出噪音（无功能影响）；2026-09-15 决定暂按选项 2 接受噪音，恢复开发期可再议选项 1 |
 | V2-10 | G4 ⑤ 起飞 | **CODE（模型层）** | D435i 相机物理链加入后起飞姿态失稳；E7/E5 表明单改惯量或仅删 sensor 均不足 | **候选 F 已修复并动态验收**：F1–F3 连续 3/3 完成 44s 飞行门禁；按标定链修正最终 sensor pose 后 F4 再次完整通过，G4⑥该项通过 |
@@ -25,6 +25,7 @@
 | V2-14 | G6.1 | **ENV（DDS 共享内存，已根治）** | pkill -9/timeout 强杀遗留 /dev/shm/fastrtps_* 陈旧段，致新参与者话题可发现但收不到数据 | 已根治（清理脚本 v2：杀进程+清 SHM+重置 daemon） |
 | V2-15 | G6.2 | **CONTRACT（图像输入 QoS）+ TEST（仪表缺口）** | RELIABLE 相机与 BEST_EFFORT 检测订阅在大图录制负载下发生回调前丢帧；旧记录缺少分段延迟，曾误判为 GPU 争抢 | **已解决（2026-09-16）**：输入 QoS 默认改为 RELIABLE/KeepLast(5)，补齐 CUDA/CPU 分段仪表；两路径均达到 30.00Hz 仿真时基，独立审核 APPROVE |
 | V2-16 | G6.4 | **CONTRACT（3D 目标输出坐标系）** | `/target_positions` 数值为 odom 而数组/目标 header 继承 optical | ✅ 已修复并复验关闭（2026-09-17） |
+| V2-17 | G7-N | **CODE/CONTRACT（地面模型、规划执行与验收 teardown）** | 空中 ground plane 退化、N2 局部障碍筛选和执行安全裕量曾导致导航验收失败或安全余量不足 | **已修复并连续动态复验通过（2026-09-18）**：G7-N 两轮完整 exit 0；独立 Review APPROVE |
 
 ---
 
@@ -203,14 +204,14 @@ signedness: 'unsigned int' and 'int' [-Wsign-compare]
 
 ---
 
-## V2-07 px4_sitl.launch 默认 PX4 路径与实际目录漂移
+## V2-07 px4_sitl.launch 默认 PX4 路径与实际目录漂移（已根治）
 
 - **发现时间**：2026-09-15，G4 准备阶段
-- **test-v2 §18 分类**：ENV/CONTRACT 边界（配置漂移，非阻塞，有环境变量级规避）
-- **现象**：`src/simulation/easyfly_px4_sitl/launch/px4_sitl.launch.py` 的 `_resolve_px4_dir()` 解析优先级为 `PX4_DIR` 环境变量 > `~/PX4-Autopilot-1.16.1` > `~/PX4-Autopilot`。用户已将 PX4 目录改名为 `PX4-Autopilot-1.16.2`（G0 对齐 v1.16.2），两个默认候选路径均已不存在，不设 `PX4_DIR` 时启动将失败或解析到错误路径。
-- **规避（G4 全程使用）**：每个终端先 `export PX4_DIR=/home/jia/PX4-Autopilot-1.16.2`。
-- **根治建议**：恢复开发后将默认路径改为 `PX4-Autopilot-1.16.2`（或改为宽松匹配 `~/PX4-Autopilot*`）；属 launch 文件一行级修改，随下一批代码修改一起提交并更新基线。
-- **备注**：test-v2 §4.3 已记载"目录名不能作为版本依据"，本条是它在启动层的具体体现。
+- **test-v2 §18 分类**：ENV/CONTRACT 边界（配置漂移，已根治）
+- **现象**：两个 SITL launch 的 `_resolve_px4_dir()` 历史优先级落后于 G0 已对齐的 `PX4-Autopilot-1.16.2`，不设 `PX4_DIR` 时无法稳定解析到当前树。
+- **根治**：`px4_sitl.launch.py` 与 `perception_sitl.launch.py` 统一采用显式优先级 `PX4_DIR > ~/PX4-Autopilot-1.16.2 > ~/PX4-Autopilot-1.16.1 > ~/PX4-Autopilot`；不使用 glob 或模糊版本匹配。`PX4_DIR` 仍可指定任意明确路径。
+- **验证**：新增隔离 `HOME`/环境变量测试，覆盖显式环境变量、1.16.2、1.16.1、base 四种选择；两 launch 模块均通过 `py_compile`。
+- **备注**：test-v2 §4.3 已记载"目录名不能作为版本依据"；这里不以模糊匹配规避，而是把当前冻结版本和兼容回退路径写成确定顺序。
 
 ---
 
@@ -817,11 +818,11 @@ schedule-v2 §8 里程碑 5（"取得控制 T1-T9 同一冻结基线全绿"）�
 
 ---
 
-## V2-17 G7-N N2 锚定失败：semantic_map 地面平面估计随高度失效（CODE，已定位待修复）
+## V2-17 G7-N N2 锚定失败：semantic_map 地面平面估计随高度失效（CODE，已修复并连续动态复验通过）
 
-- **发现时间**：2026-09-18，G7-N 第 1/2 轮（N2 锚定失败两轮确定性复现；其余 N1/N3/N4/N5 全绿）
+- **发现时间**：2026-09-18，G7-N 初始第 1/2 轮（N2 锚定失败两轮确定性复现；两轮均不计作 G7-N 全绿证据，脚本继续执行的其他断言仅作诊断记录）
 - **test-v2 §18 分类**：**CODE（semantic_map 地面剔除缺陷）**——初次误判为 TEST 采样窗口，两轮复现 + 代码/日志取证后重新定性
-- **与 schedule-v2 §6.1 的关系**：§6.1 已记载"通用地面处理仍使用 ground_height 经验值规避，不能泛化到实机或起伏地形"——本条是该已知短板的具体失效实证（飞行高度变化触发）
+- **与 schedule-v2 §6.1 的关系**：§6.1 已记载"通用地面处理仍使用 ground_height 经验值规避，不能泛化到实机或起伏地形"——本条是该已知短板的具体失效实证（飞行高度变化触发）；后续 G7-N 空中态覆盖了该模型，但没有另跑 G6.5 脚本。
 
 ### 现象
 
@@ -841,15 +842,31 @@ N2 起飞到 2.5m 后 `pick_obstacle`（3-8m 环带/尺寸 ≤2.5m/size_z ≥0.3
 - **2.5m 真实空中态（持久 setpoint 流 + arm/OFFBOARD）**：15 障碍，合格锚点 **2**（柱 5.23m + 人 7.98m）——障碍本身在册，问题纯在 ground_plane_z 污染帧；
 - 套件日志：`/tmp/g7n-r1.log`（ground_plane_z 振荡 + 点数崩塌 + `merged=247/2582 簇` 逐帧 merged 日志）。
 
-### 诚实记录：G6.5 验收盲区
+### 诚实记录：G6.5 验收边界
 
-G6.5 的地面剔除检查仅在**地面态**执行（无人机未起飞），"高度变化后的地面估计"未被覆盖——本缺陷由 G7-N 首次暴露。G6.5 地面态结论仍然成立；修复后需在 G6.5 补一项**空中态地面剔除**检查（起飞前后障碍聚类连续性）。
+G6.5 正式脚本的地面剔除检查仍仅在**地面态**执行（无人机未起飞），"高度变化后的地面估计"由 G7-N 首次暴露。G6.5 的地面态结论仍成立；本轮 G7-N 覆盖了空中地面模型和障碍连续性，但不把它描述成单独的 G6.5 脚本复验。
 
-### 修复方案（待批准，CODE 类）
+### 最终修复方案与证据（2026-09-18，已关闭）
 
-**推荐**：ground_plane_z 加时间一致性约束——维护已确立的 ground_z（EMA 或首帧收敛值），单帧 RANSAC 结果偏离已确立值 >1.0m 时**丢弃该帧估计、沿用上一有效值**（真实地面在 odom 系固定不动，跃变必为退化拟合）；辅以合理带 clamp（如 [-3.0, +0.5]）。
-- 修复后按 G0 规则：新基线 → 重跑 G6.5（补空中态检查）→ G7-N 两轮。
+最终补丁采用以下最小闭环：
+
+1. **可信地面跟踪器**：`GroundPlaneTracker` 只接受 fresh `connected + pose_valid + disarmed` 作为地面初始化许可（这是当前系统把 disarmed 视为地面初始化许可的假设）；连续候选、法向/高度创新和历史可信平面约束拒绝机体同高或退化 RANSAC 平面。实测落地净空约 0.053–0.054m，初始化正门槛设为 **0.03m**；空中 disarm 识别仍是需要 landed/contact 的 P2，不扩展消息。
+2. **invalid-map 协议**：Global planner 对首次空快照保持等待；收到后严格要求非零时间戳、`header.frame_id == "odom"`、有限正 resolution、有限 origin x/y、尺寸/数据长度一致且至少一个已知 cell，否则 fail-closed 并取消 child。TargetTracking 对收到的 `Target3DArray` 严格要求 `frame_id == "odom"`，空 frame/错误 frame 取消 child；未收到首帧不误报异常。
+3. **N2 局部障碍切片**：保留新鲜消息、距离、有限值、XY 尺寸、空间关联和多帧票数约束，允许 MID-360 在 2.5m 高度只看到的局部柱体切片，`size_z >= 0.15m`；失败时输出 stale/nonfinite/distance/size/height/cluster 统计诊断。
+4. **执行安全裕量**：Global planner 的 `segment_acceptance` 固定上限/默认 **0.10m**，避免 0.2m 栅格航点以 0.5m 容差切角；semantic_map 的 occupancy inflation 默认和安全下限为 **0.70m**，覆盖栅格、时序和跟踪误差裕量。
+5. **确定性收尾**：`navigate_acceptance.py` 保存 spin thread，在正常/异常路径按 executor shutdown → join → `destroy_node()` → `rclpy.shutdown()` 顺序清理，修复旧的 `exit 134` teardown 竞态。
+
+**动态证据**：最终基线完成两次全新会话的完整 G7-N（N1→N2→N3→N5→N4），均 exit 0；N2 连续轨迹 clearance 分别为 **0.19m、0.20m**。另一次断言打印全绿、clearance **0.24m**，但使用旧 teardown 时进程 exit 134，因此不计入正式轮次。独立 Review 结论为 **APPROVE**，无剩余 P0/P1。
 
 ### 过程教训
 
-初判"早窗期聚类未就绪"（TEST）并加了采样窗/预热等待——复验仍失败后才升级诊断。**两轮确定性复现 + 修复无效 = 立即升级根因等级**，不应停留在第一假设。
+初判"早窗期聚类未就绪"（TEST）并加了采样窗/预热等待——复验仍失败后才升级诊断。**两轮确定性复现 + 修复无效 = 立即升级根因等级**，不应停留在第一假设；最终轮次则把动态证据、执行安全裕量和 teardown 生命周期一起纳入正式结论。
+
+### V2-17 独立复验确认（2026-09-18，系统无关第三方执行）
+
+- **静态门**：三个改动包（semantic_map / global_planner / target_tracking）功能契约测试**全部通过**——含新增 GroundPlaneTracker、goal_validation、map_validity、segment_acceptance、waypoint_lifecycle 等所有 gtest；4+2+1 项 lint 失败为 V2-05 已知债务类，非阻塞；
+- **动态门（独立两轮全新会话，perception_demo 全链）**：
+  - 第 1 轮：N1/N2/N3/N5/N4 **全 PASS，exit 0**，N2 最小 clearance **0.28m**（中心距 1.45m）；
+  - 第 2 轮：**全 PASS，exit 0**，N2 最小 clearance **0.23m**（中心距 1.46m）；
+  - 两轮 clearance 与用户自测的 0.19/0.20m 同量级，绕障行为稳定复现；
+- **结论：V2-17 修复经独立复验确认。G7-N 验收通过，加上此前 G7-F 两轮全绿——G7（跟随 + A\* 导航）整体验收完成。**

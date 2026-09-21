@@ -12,7 +12,8 @@ px4_sitl.launch.py — 启动 Gazebo Classic + PX4 SITL
   px4 (simulator_mavlink ↔ Gazebo mavlink_interface plugin via TCP 4560)
 
 环境要求:
-  - PX4-Autopilot 已编译 (默认 ~/PX4-Autopilot-1.16.1, 可用 PX4_DIR 或 px4_dir 参数覆盖)
+  - PX4-Autopilot 已编译 (默认按 ~/PX4-Autopilot-1.16.2、
+    ~/PX4-Autopilot-1.16.1、~/PX4-Autopilot 的顺序选择，可用 PX4_DIR 覆盖)
   - Gazebo Classic 11 已安装 (gzserver / gzclient)
   - easyfly_gazebo_plugins 已编译 (MID-360 仿真插件 liblivox_laser_simulation.so)
 """
@@ -32,13 +33,16 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 
 
 def _resolve_px4_dir():
-    """优先级: 环境变量 PX4_DIR > ~/PX4-Autopilot-1.16.1 > ~/PX4-Autopilot"""
+    """按 PX4_DIR > ~/PX4-Autopilot-1.16.2 > ~/PX4-Autopilot-1.16.1 >
+    ~/PX4-Autopilot 选择目录。"""
     env = os.environ.get("PX4_DIR", "").strip()
     if env:
         return Path(env).expanduser()
-    default = Path.home() / "PX4-Autopilot-1.16.1"
-    if default.exists():
-        return default
+    for candidate in ("PX4-Autopilot-1.16.2", "PX4-Autopilot-1.16.1",
+                      "PX4-Autopilot"):
+        default = Path.home() / candidate
+        if default.exists():
+            return default
     return Path.home() / "PX4-Autopilot"
 
 

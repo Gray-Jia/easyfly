@@ -1,11 +1,25 @@
+// Copyright 2026 EasyFly Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 // EasyFly P4: 障碍表征节点 (semantic_map, M4.0)
 //
 // 数据流:
 //   /pointcloud_filtered (PointCloud2, base_link 系, 来自 easyfly_pointcloud_filter)
 //     → TF 变换到 world 系 (odom) → 滑动窗口累积
-//     → 地面剔除: RANSAC 拟合水平主平面 (SACMODEL_PERPENDICULAR_PLANE,
-//       免疫 EKF 高度抖动/机体沉降 — 写死裁剪带已实测失效, 地面漏点会
-//       把聚类链成跨场景巨簇)
+//     → 地面候选: RANSAC 拟合水平主平面 + 可信平面跟踪 (SACMODEL_PERPENDICULAR_PLANE,
+//       通过时间一致性、车辆相对高度与平滑更新拒绝退化平面; 写死世界高度裁剪带
+//       已实测失效, 地面漏点会把聚类链成跨场景巨簇)
 //     → PCL 欧式聚类 → 每簇轴对齐包围盒
 //     → /obstacles        (easyfly_msgs/ObstacleInfoArray, world 系)
 //     → /get_obstacles    (srv: 按距机体水平距离查询)
@@ -22,32 +36,10 @@
 // 仅 ~6 点, 无法成簇 — 滑动窗口合并最近 K 帧世界系点云 (各自经 TF 运动补偿)
 // 后聚类, 远目标点数 ×K。无人机移动时窗口内新旧帧位置差表现为目标拖尾,
 // 由消费方 (全局规划) 的膨胀半径吸收; 跟踪类精细需求应订阅帧内结果。
-#include <array>
-#include <cmath>
-#include <deque>
-#include <algorithm>
-#include <mutex>
-#include <memory>
-#include <string>
-#include <vector>
-
-#include <std_msgs/msg/header.hpp>
-
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp_components/register_node_macro.hpp>
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
-
-#include <sensor_msgs/msg/point_cloud2.hpp>
-#include <nav_msgs/msg/occupancy_grid.hpp>
-#include <visualization_msgs/msg/marker_array.hpp>
-#include <easyfly_msgs/msg/obstacle_info_array.hpp>
-#include <easyfly_msgs/srv/get_obstacles.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
-#include <tf2_eigen/tf2_eigen.hpp>
 #include <Eigen/Geometry>
-
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/conversions.h>
@@ -55,8 +47,37 @@
 #include <pcl/common/transforms.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/segmentation/sac_segmentation.h>
-#include <pcl/filters/extract_indices.h>
 #include <pcl/search/kdtree.h>
+
+#include <array>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <deque>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include <std_msgs/msg/header.hpp>
+
+#include <tf2_eigen/tf2_eigen.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
+
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <easyfly_msgs/msg/obstacle_info_array.hpp>
+#include <easyfly_msgs/msg/uav_state.hpp>
+#include <easyfly_msgs/srv/get_obstacles.hpp>
+
+#include "easyfly_semantic_map/ground_plane_tracker.hpp"
+#include "easyfly_semantic_map/grid_inflation.hpp"
+#include "easyfly_semantic_map/map_validity.hpp"
 
 namespace easyfly_semantic_map
 {
@@ -72,13 +93,56 @@ public:
     {
         loadParams();
 
+        GroundPlaneTracker::Params ground_params;
+        ground_params.max_tilt_rad = params_.plane_max_tilt_rad;
+        ground_params.min_inliers = static_cast<std::size_t>(
+            std::max(1, params_.plane_min_inliers));
+        ground_params.min_inlier_ratio = params_.plane_min_inlier_ratio;
+        ground_params.min_ground_clearance = params_.ground_min_clearance;
+        ground_params.max_ground_distance_below_vehicle =
+            params_.ground_max_distance_below_vehicle;
+        ground_params.init_consecutive_frames = params_.ground_init_consecutive_frames;
+        ground_params.init_state_timeout = params_.ground_init_state_timeout;
+        ground_params.init_max_z_difference = params_.ground_init_max_z_difference;
+        ground_params.init_max_normal_angle_rad = params_.ground_init_max_normal_angle_rad;
+        ground_params.max_innovation_z = params_.ground_max_innovation_z;
+        ground_params.max_innovation_angle_rad = params_.ground_max_innovation_angle_rad;
+        ground_params.smoothing_alpha = params_.ground_smoothing_alpha;
+        ground_tracker_ = GroundPlaneTracker(ground_params);
+
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
-        obstacles_pub_ = create_publisher<ObstacleInfoArray>(params_.output_topic, 10);
-        grid_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(params_.grid_topic, 10);
+        // Keep the last map state for late subscribers.  This is important
+        // during reset: a planner that discovers the publisher after the
+        // reset must receive invalid/not-ready, not an old valid map.
+        const auto map_qos = rclcpp::QoS(1).reliable().transient_local();
+        obstacles_pub_ = create_publisher<ObstacleInfoArray>(params_.output_topic, map_qos);
+        grid_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(params_.grid_topic, map_qos);
         marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
             params_.marker_topic, 10);
+        state_sub_ = create_subscription<easyfly_msgs::msg::UAVState>(
+            params_.uav_state_topic, 10,
+            [this](easyfly_msgs::msg::UAVState::ConstSharedPtr msg) {
+                std::lock_guard<std::mutex> lk(state_mtx_);
+                latest_state_ = *msg;
+                state_received_ = true;
+                state_arrival_ = std::chrono::steady_clock::now();
+            });
+
+        invalid_map_timer_ = create_wall_timer(std::chrono::milliseconds(500), [this]() {
+            bool ready = false;
+            {
+                std::lock_guard<std::mutex> lk(latest_mtx_);
+                ready = map_ready_;
+            }
+            if (!ready) publishInvalidMap();
+        });
+
+        // Publish the explicit invalid/not-ready protocol immediately.  A
+        // consumer that was already running must not retain a previous map
+        // while this node is rebuilding after a restart.
+        publishInvalidMap();
 
         // 服务独立回调组 (响应内做 TF 查询, 不阻塞点云回调)
         srv_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -104,19 +168,38 @@ public:
 private:
     struct NodeParams {
         std::string input_topic{"/pointcloud_filtered"};
+        std::string uav_state_topic{"/uav_state"};
         std::string output_topic{"/obstacles"};
         std::string grid_topic{"/occupancy_grid"};
         std::string marker_topic{"/obstacle_markers"};
         std::string service_name{"/get_obstacles"};
         std::string world_frame{"odom"};
+        std::string base_frame{"base_link"};
         double plane_distance_threshold{0.12};  // 地面平面厚度 [m] (RANSAC 内点距离)
+        double plane_max_tilt_rad{0.15};
+        int plane_min_inliers{50};
+        double plane_min_inlier_ratio{0.15};
+        // Direct landed SITL traces are 0.053-0.054m; retain about 0.02m of
+        // measured margin while rejecting zero/near-body-height planes.
+        double ground_min_clearance{0.03};
+        double ground_max_distance_below_vehicle{8.0};
+        int ground_init_consecutive_frames{3};
+        double ground_init_max_z_difference{0.25};
+        double ground_init_max_normal_angle_rad{0.12};
+        double ground_max_innovation_z{0.45};
+        double ground_max_innovation_angle_rad{0.15};
+        double ground_smoothing_alpha{0.25};
+        double ground_init_state_timeout{1.0};
+        double tf_guard_jump_distance{1.0};
+        int tf_guard_init_consecutive_frames{3};
+        int tf_guard_reject_limit{10};
         double obstacle_z_max{4.0};        // 关心高度上限 [m, 离拟合地面]
         double cluster_tolerance{0.4};   // 欧式聚类容差 [m]
         int cluster_min_points{5};
         int cluster_max_points{100000};
         int accumulate_frames{5};        // 滑动窗口帧数 (远目标增密; 1=纯单帧)
         double max_obstacle_size{8.0};   // 单簇包围盒上界 [m] (超过视为噪声链/地面残留)
-        double inflate_radius{0.3};      // 栅格膨胀半径 [m]
+        double inflate_radius{kDefaultGridInflationRadius};  // 栅格膨胀半径 [m]
         bool verbose{false};             // 逐帧统计日志 (调参用)
         int grid_persist_frames{20};     // 占据保持帧数 (≈3s @7Hz; 漏检不立即可穿越)
         double grid_resolution{0.2};     // 栅格分辨率 [m/cell]
@@ -135,13 +218,48 @@ private:
         YAML::Node root = YAML::LoadFile(cfg);
         const auto & p = root["semantic_map"];
         params_.input_topic = p["input_topic"].as<std::string>(params_.input_topic);
+        params_.uav_state_topic =
+            p["uav_state_topic"].as<std::string>(params_.uav_state_topic);
         params_.output_topic = p["output_topic"].as<std::string>(params_.output_topic);
         params_.grid_topic = p["grid_topic"].as<std::string>(params_.grid_topic);
         params_.marker_topic = p["marker_topic"].as<std::string>(params_.marker_topic);
         params_.service_name = p["service_name"].as<std::string>(params_.service_name);
         params_.world_frame = p["world_frame"].as<std::string>(params_.world_frame);
+        params_.base_frame = p["base_frame"].as<std::string>(params_.base_frame);
         params_.plane_distance_threshold =
             p["plane_distance_threshold"].as<double>(params_.plane_distance_threshold);
+        params_.plane_max_tilt_rad =
+            p["plane_max_tilt_rad"].as<double>(params_.plane_max_tilt_rad);
+        params_.plane_min_inliers = p["plane_min_inliers"].as<int>(params_.plane_min_inliers);
+        params_.plane_min_inlier_ratio =
+            p["plane_min_inlier_ratio"].as<double>(params_.plane_min_inlier_ratio);
+        params_.ground_min_clearance =
+            p["ground_min_clearance"].as<double>(params_.ground_min_clearance);
+        params_.ground_max_distance_below_vehicle =
+            p["ground_max_distance_below_vehicle"].as<double>(
+            params_.ground_max_distance_below_vehicle);
+        params_.ground_init_consecutive_frames =
+            p["ground_init_consecutive_frames"].as<int>(params_.ground_init_consecutive_frames);
+        params_.ground_init_max_z_difference =
+            p["ground_init_max_z_difference"].as<double>(params_.ground_init_max_z_difference);
+        params_.ground_init_max_normal_angle_rad =
+            p["ground_init_max_normal_angle_rad"].as<double>(
+            params_.ground_init_max_normal_angle_rad);
+        params_.ground_max_innovation_z =
+            p["ground_max_innovation_z"].as<double>(params_.ground_max_innovation_z);
+        params_.ground_max_innovation_angle_rad =
+            p["ground_max_innovation_angle_rad"].as<double>(
+            params_.ground_max_innovation_angle_rad);
+        params_.ground_smoothing_alpha =
+            p["ground_smoothing_alpha"].as<double>(params_.ground_smoothing_alpha);
+        params_.ground_init_state_timeout =
+            p["ground_init_state_timeout"].as<double>(params_.ground_init_state_timeout);
+        params_.tf_guard_jump_distance =
+            p["tf_guard_jump_distance"].as<double>(params_.tf_guard_jump_distance);
+        params_.tf_guard_init_consecutive_frames =
+            p["tf_guard_init_consecutive_frames"].as<int>(params_.tf_guard_init_consecutive_frames);
+        params_.tf_guard_reject_limit =
+            p["tf_guard_reject_limit"].as<int>(params_.tf_guard_reject_limit);
         params_.obstacle_z_max = p["obstacle_z_max"].as<double>(params_.obstacle_z_max);
         params_.cluster_tolerance = p["cluster_tolerance"].as<double>(params_.cluster_tolerance);
         params_.cluster_min_points = p["cluster_min_points"].as<int>(params_.cluster_min_points);
@@ -155,6 +273,19 @@ private:
         params_.grid_resolution = p["grid_resolution"].as<double>(params_.grid_resolution);
         params_.grid_width = p["grid_width"].as<double>(params_.grid_width);
         params_.grid_height = p["grid_height"].as<double>(params_.grid_height);
+        const double configured_inflate_radius = params_.inflate_radius;
+        params_.inflate_radius = normalizeGridInflationRadius(configured_inflate_radius);
+        if (!std::isfinite(configured_inflate_radius) || configured_inflate_radius < 0.0) {
+            RCLCPP_WARN(
+                get_logger(),
+                "inflate_radius=%.3f 无效，使用安全默认值 %.2fm",
+                configured_inflate_radius, params_.inflate_radius);
+        } else if (configured_inflate_radius < kMinimumGridInflationRadius) {
+            RCLCPP_WARN(
+                get_logger(),
+                "inflate_radius=%.3f 低于安全下限 %.2fm，提升到下限",
+                configured_inflate_radius, kMinimumGridInflationRadius);
+        }
     }
 
     /// 与 pixel_to_3d 同款双路容错 TF 查询
@@ -172,54 +303,115 @@ private:
                 out = tf2::transformToEigen(tf);
                 return true;
             } catch (const tf2::TransformException & e2) {
-                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-                                     "TF %s←%s 不可用: %s", target.c_str(), source.c_str(), e2.what());
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(), *get_clock(), 5000,
+                    "TF %s←%s 不可用: %s", target.c_str(), source.c_str(), e2.what());
                 return false;
             }
         }
+    }
+
+    GroundVehiclePose groundVehiclePose(
+        const double x, const double y, const double z)
+    {
+        GroundVehiclePose pose;
+        pose.x = x;
+        pose.y = y;
+        pose.z = z;
+        std::lock_guard<std::mutex> lk(state_mtx_);
+        if (!state_received_) return pose;
+        pose.connected = latest_state_.connected;
+        pose.pose_valid = latest_state_.pose_valid;
+        pose.armed = latest_state_.armed;
+        pose.state_age_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - state_arrival_).count();
+        return pose;
+    }
+
+    void publishInvalidMap()
+    {
+        {
+            std::lock_guard<std::mutex> lk(latest_mtx_);
+            latest_ = makeInvalidObstacles(params_.world_frame);
+            map_ready_ = false;
+        }
+        obstacles_pub_->publish(makeInvalidObstacles(params_.world_frame));
+        grid_pub_->publish(makeInvalidGrid(
+            params_.grid_width, params_.grid_height, params_.grid_resolution,
+            params_.world_frame));
+
+        visualization_msgs::msg::MarkerArray markers;
+        visualization_msgs::msg::Marker clear;
+        clear.header.frame_id = params_.world_frame;
+        clear.ns = "obstacles";
+        clear.action = visualization_msgs::msg::Marker::DELETEALL;
+        markers.markers.push_back(clear);
+        marker_pub_->publish(markers);
+    }
+
+    void invalidateMap()
+    {
+        acc_buf_.clear();
+        grid_persist_.clear();
+        grid_miss_.clear();
+        publishInvalidMap();
     }
 
     void onCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg)
     {
         if (msg->width == 0) return;
 
-        // → PCL (base_link) → world 系 → 逐帧地面剔除 → 累积
-        // 地面剔除必须在"单帧内"做: 累积窗口里 mavros EKF 姿态噪声 (~0.5°)
-        // 经 25m 杠杆把平面涂抹成 ±0.3m 厚带, 整体 RANSAC 拟不干净;
-        // 单帧内姿态一致, 倾斜的地面仍是完美平面, 每帧独立拟合即可干净移除。
+        // → PCL (input frame) → world 系 → 可信地面平面分类 → 累积
+        // 地面候选仍逐帧由 RANSAC 提取，累积窗口只接收可信平面分类后的点。
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
         pcl::fromROSMsg(*msg, *cloud);
 
+        const rclcpp::Time stamp(msg->header.stamp);
         Eigen::Isometry3d T;
-        if (!lookupTf(params_.world_frame, msg->header.frame_id,
-                      rclcpp::Time(msg->header.stamp), T)) {
+        if (!lookupTf(params_.world_frame, msg->header.frame_id, stamp, T)) {
+            return;
+        }
+        // The filtered cloud is normally already in odom, so T can be the
+        // identity.  The vehicle pose is still needed independently: it is
+        // the physical reference for the TF jump guard and for rejecting a
+        // RANSAC plane which has moved up to the aircraft height.
+        Eigen::Isometry3d vehicle_T;
+        if (!lookupTf(params_.world_frame, params_.base_frame, stamp, vehicle_T)) {
             return;
         }
         // TF 跳变守卫: mavros local_position 存在启动毛刺 (实测首帧 (0.98,-2.52),
         // 与 M6 z=-10 尖峰同族) — 毛刺帧会把整个场景平移复制进累积窗口, 产出
-        // 幻影簇。帧间平移 >1m 物理上不可能 (7Hz 下 2m/s 飞行 Δ0.3m), 丢帧。
-        const Eigen::Vector3d tt = T.translation();
+        // 幻影簇。水平帧间平移 >1m 物理上不可能 (7Hz 下 2m/s 飞行 Δ0.3m), 丢帧。
+        // z 轴不参与此守卫: 起飞/降落本身就是合法的大尺度 z 运动。
+        const Eigen::Vector3d tt = vehicle_T.translation();
+        const auto horizontalDistance = [](const Eigen::Vector3d & first,
+                                           const Eigen::Vector3d & second) {
+            return std::hypot(first.x() - second.x(), first.y() - second.y());
+        };
         if (!tf_init_) {
             // 基线须连续 3 帧稳定才建立 (毛刺值若被当作基线, 之后所有正常帧
             // 都会被误判跳变 → 永久丢帧); 稳定前不产出
-            if (!pend_init_ || (tt - pend_t_).norm() > 0.5) {
+            if (!pend_init_ || horizontalDistance(tt, pend_t_) >
+                params_.tf_guard_jump_distance / 2.0) {
                 pend_t_ = tt;
                 pend_cnt_ = 1;
                 pend_init_ = true;
-            } else if (++pend_cnt_ >= 3) {
+            } else if (++pend_cnt_ >= params_.tf_guard_init_consecutive_frames) {
                 last_tf_t_ = tt;
                 tf_init_ = true;
             }
             return;
         }
-        if ((tt - last_tf_t_).norm() > 1.0) {
+        if (horizontalDistance(tt, last_tf_t_) > params_.tf_guard_jump_distance) {
             // EKF 启动期是"持续错误后收敛"而非孤立尖峰: 固定基线会永久卡死,
             // 连续拒绝 10 帧 (≈1.4s) 视为真值永久移动, 重置基线
-            if (++rej_cnt_ >= 10) {
+            if (++rej_cnt_ >= params_.tf_guard_reject_limit) {
                 RCLCPP_WARN(get_logger(), "TF 位置持续漂移, 基线重置为 (%.2f,%.2f)",
                             tt.x(), tt.y());
                 last_tf_t_ = tt;
                 rej_cnt_ = 0;
+                ground_tracker_.reset();
+                invalidateMap();
             } else {
                 RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
                                      "TF 位置跳变 (%.2f,%.2f→%.2f,%.2f), 丢帧",
@@ -230,48 +422,110 @@ private:
         rej_cnt_ = 0;
         last_tf_t_ = tt;
         pcl::transformPointCloud(*cloud, *cloud, T.matrix());
-        if (cloud->size() < 100) return;  // 平面拟合最少点数
+        // A trusted model can still classify a sparse frame.  Only an
+        // uninitialized tracker requires enough points to fit a new candidate.
+        if (cloud->size() < 100 && !ground_tracker_.initialized()) return;
 
-        // ---- 本帧地面: RANSAC 拟合水平主平面 (地面点占比 ~80%, 必为主平面) ----
+        GroundPlaneUpdate plane_update = GroundPlaneUpdate::kRejected;
+        double candidate_ground_z = std::numeric_limits<double>::quiet_NaN();
         pcl::ModelCoefficients::Ptr coeff(new pcl::ModelCoefficients);
         pcl::PointIndices::Ptr ground_inliers(new pcl::PointIndices);
-        pcl::SACSegmentation<pcl::PointXYZI> seg;
-        seg.setOptimizeCoefficients(true);
-        seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
-        seg.setMethodType(pcl::SAC_RANSAC);
-        seg.setAxis(Eigen::Vector3f(0.0f, 0.0f, 1.0f));
-        seg.setEpsAngle(0.1);  // ±6° 内视为水平 (EKF 姿态噪声量级, 平面本身随帧倾斜)
-        seg.setDistanceThreshold(params_.plane_distance_threshold);
-        seg.setMaxIterations(200);
-        seg.setInputCloud(cloud);
-        seg.segment(*ground_inliers, *coeff);
-        if (ground_inliers->indices.empty()) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "地面平面未拟合到");
+        const GroundVehiclePose vehicle_pose = groundVehiclePose(
+            vehicle_T.translation().x(), vehicle_T.translation().y(),
+            vehicle_T.translation().z());
+        if (cloud->size() >= 100) {
+            // ---- 本帧地面候选: RANSAC 只提供候选, 不能直接决定剔除 ----
+            pcl::SACSegmentation<pcl::PointXYZI> seg;
+            seg.setOptimizeCoefficients(true);
+            seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
+            seg.setMethodType(pcl::SAC_RANSAC);
+            seg.setAxis(Eigen::Vector3f(0.0f, 0.0f, 1.0f));
+            seg.setEpsAngle(0.1);  // ±6° 内视为水平 (EKF 姿态噪声量级, 平面本身随帧倾斜)
+            seg.setDistanceThreshold(params_.plane_distance_threshold);
+            seg.setMaxIterations(200);
+            seg.setInputCloud(cloud);
+            seg.segment(*ground_inliers, *coeff);
+
+            if (!ground_inliers->indices.empty() && coeff->values.size() >= 4) {
+                GroundPlaneCandidate candidate;
+                const double coeff_norm = std::sqrt(
+                    static_cast<double>(coeff->values[0]) * coeff->values[0] +
+                    static_cast<double>(coeff->values[1]) * coeff->values[1] +
+                    static_cast<double>(coeff->values[2]) * coeff->values[2]);
+                if (std::isfinite(coeff_norm) && coeff_norm >= 1e-9) {
+                    candidate.model.normal = {
+                        static_cast<double>(coeff->values[0]) / coeff_norm,
+                        static_cast<double>(coeff->values[1]) / coeff_norm,
+                        static_cast<double>(coeff->values[2]) / coeff_norm};
+                    candidate.model.offset = static_cast<double>(coeff->values[3]) / coeff_norm;
+                    if (candidate.model.normal[2] < 0.0) {
+                        for (double & component : candidate.model.normal) component = -component;
+                        candidate.model.offset = -candidate.model.offset;
+                    }
+                    candidate.inlier_count = ground_inliers->indices.size();
+                    candidate.sample_count = cloud->size();
+                    candidate_ground_z = candidate.model.zAt(vehicle_pose.x, vehicle_pose.y);
+                    plane_update = ground_tracker_.update(candidate, vehicle_pose);
+                }
+            }
+        }
+        if (!ground_tracker_.initialized()) {
+            if (std::isfinite(candidate_ground_z) && std::isfinite(vehicle_pose.z)) {
+                const double candidate_clearance = vehicle_pose.z - candidate_ground_z;
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(), *get_clock(), 5000,
+                    "可信地面平面尚未初始化, 候选净空 %.3fm (要求 >= %.3fm), 丢弃当前帧",
+                    candidate_clearance, params_.ground_min_clearance);
+            } else {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(), *get_clock(), 5000,
+                    "可信地面平面尚未初始化, 候选净空不可用, 丢弃当前帧");
+            }
             return;
         }
-        const float ground_z = -coeff->values[3] / coeff->values[2];  // 水平面 z
+        if (ground_inliers->indices.empty() || coeff->values.size() < 4) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 5000,
+                "当前帧未得到有效地面候选, 使用历史可信平面分类");
+        }
+        if (plane_update == GroundPlaneUpdate::kRejected &&
+            std::isfinite(candidate_ground_z)) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 5000,
+                "地面候选偏离可信模型, 使用历史平面分类当前帧 (候选 z=%.2f, 当前 z=%.2f)",
+                candidate_ground_z,
+                ground_tracker_.model().zAt(vehicle_pose.x, vehicle_pose.y));
+        }
 
-        // 非地面点 (剔除平面内点) + 高度带过滤
-        pcl::ExtractIndices<pcl::PointXYZI> extract;
-        extract.setInputCloud(cloud);
-        extract.setIndices(ground_inliers);
-        extract.setNegative(true);
-        pcl::PointCloud<pcl::PointXYZI>::Ptr above(new pcl::PointCloud<pcl::PointXYZI>);
-        extract.filter(*above);
-        const float z_max = ground_z + static_cast<float>(params_.obstacle_z_max);
-        pcl::PointCloud<pcl::PointXYZI>::Ptr obs(new pcl::PointCloud<pcl::PointXYZI>);
-        obs->reserve(above->size());
-        for (const auto & p : above->points) {
-            if (p.z > ground_z + 0.05f && p.z < z_max) obs->push_back(p);
+        // Classify against the trusted model, never against the rejected
+        // candidate's inlier indices.  This is what prevents a sparse plane
+        // at the aircraft height from deleting all low obstacles.
+        pcl::PointCloud<pcl::PointXYZI>::Ptr obs(
+            new pcl::PointCloud<pcl::PointXYZI>);
+        obs->reserve(cloud->size());
+        std::size_t above_count = 0;
+        for (const auto & p : cloud->points) {
+            const double ground_z = ground_tracker_.model().zAt(p.x, p.y);
+            const double height = static_cast<double>(p.z) - ground_z;
+            if (!ground_tracker_.isGroundPoint(p.x, p.y, p.z,
+                                               params_.plane_distance_threshold)) {
+                ++above_count;
+                if (height > 0.05 && height < params_.obstacle_z_max) {
+                    obs->push_back(p);
+                }
+            }
         }
         if (obs->size() < static_cast<size_t>(params_.cluster_min_points)) return;
 
         if (params_.verbose) {
-            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
-                                 "TF world←%s: (%.2f,%.2f,%.2f) ground_plane_z=%.2f 点数 %zu→%zu→%zu",
-                                 msg->header.frame_id.c_str(),
-                                 T.translation().x(), T.translation().y(), T.translation().z(),
-                                 ground_z, cloud->size(), above->size(), obs->size());
+            RCLCPP_INFO_THROTTLE(
+                get_logger(), *get_clock(), 3000,
+                "TF world←%s: (%.2f,%.2f,%.2f) "
+                "ground_plane_z=%.2f 点数 %zu→%zu→%zu",
+                msg->header.frame_id.c_str(),
+                T.translation().x(), T.translation().y(), T.translation().z(),
+                ground_tracker_.model().zAt(vehicle_pose.x, vehicle_pose.y),
+                cloud->size(), above_count, obs->size());
         }
 
         // 滑动窗口累积 (world 系, 各帧已经各自地面剔除)
@@ -316,6 +570,16 @@ private:
         // 簇 → ObstacleInfo (轴对齐包围盒)
         ObstacleInfoArray arr;
         arr.header.stamp = msg->header.stamp;
+        if (zeroStamp(arr.header.stamp)) {
+            // A zero-stamped cloud cannot establish freshness for consumers;
+            // keep the map explicitly invalid instead of inventing a local
+            // timestamp and allowing stale coordinates into planning.
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 5000,
+                "点云时间戳无效，保持 semantic_map not-ready");
+            invalidateMap();
+            return;
+        }
         arr.header.frame_id = params_.world_frame;
         std::vector<std::array<double, 6>> boxes;  // x1,y1,z1,x2,y2,z2 (栅格/markers 共用)
         boxes.reserve(clusters.size());
@@ -346,6 +610,7 @@ private:
         {
             std::lock_guard<std::mutex> lk(latest_mtx_);
             latest_ = arr;
+            map_ready_ = true;
         }
         obstacles_pub_->publish(arr);
         publishGrid(arr.header, boxes);
@@ -400,7 +665,8 @@ private:
                 grid_persist_[i] = 100;
                 grid_miss_[i] = 0;
             } else if (grid_persist_[i] > 0) {
-                if (++grid_miss_[i] > params_.grid_persist_frames) {
+                if (++grid_miss_[i] > static_cast<uint32_t>(
+                        std::max(0, params_.grid_persist_frames))) {
                     grid_persist_[i] = 0;
                     grid_miss_[i] = 0;
                 }
@@ -446,16 +712,26 @@ private:
         const std::shared_ptr<easyfly_msgs::srv::GetObstacles::Request> req,
         std::shared_ptr<easyfly_msgs::srv::GetObstacles::Response> res)
     {
+        res->obstacles = ObstacleInfoArray{};
         ObstacleInfoArray latest;
-        {
-            std::lock_guard<std::mutex> lk(latest_mtx_);
-            latest = latest_;
+        bool map_ready = false;
+        // Keep the snapshot lock through response construction.  A TF reset
+        // cannot clear the map between this readiness check and the reply.
+        std::unique_lock<std::mutex> latest_lock(latest_mtx_);
+        latest = latest_;
+        map_ready = map_ready_;
+        if (!map_ready ||
+            (latest.header.stamp.sec == 0 && latest.header.stamp.nanosec == 0)) {
+            RCLCPP_INFO_THROTTLE(
+                get_logger(), *get_clock(), 5000,
+                "/get_obstacles 暂无就绪地图，返回空结果");
+            return;
         }
 
         double drone_x = 0.0, drone_y = 0.0;
         if (req->range_limit > 0.0f) {
             Eigen::Isometry3d T;
-            if (lookupTf(params_.world_frame, "base_link", this->now(), T)) {
+            if (lookupTf(params_.world_frame, params_.base_frame, this->now(), T)) {
                 drone_x = T.translation().x();
                 drone_y = T.translation().y();
             }
@@ -479,15 +755,24 @@ private:
     int rej_cnt_{0};
     Eigen::Vector3d pend_t_{Eigen::Vector3d::Zero()};
     Eigen::Vector3d last_tf_t_{Eigen::Vector3d::Zero()};  // TF 跳变守卫
+    GroundPlaneTracker ground_tracker_;
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
 
     std::mutex latest_mtx_;
     ObstacleInfoArray latest_;
+    bool map_ready_{false};
     std::vector<int8_t> grid_persist_;  // 栅格持久化状态 (两段式)
     std::vector<uint32_t> grid_miss_;   // 连续未观测帧数
 
+    std::mutex state_mtx_;
+    easyfly_msgs::msg::UAVState latest_state_;
+    bool state_received_{false};
+    std::chrono::steady_clock::time_point state_arrival_{};
+
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
+    rclcpp::Subscription<easyfly_msgs::msg::UAVState>::SharedPtr state_sub_;
+    rclcpp::TimerBase::SharedPtr invalid_map_timer_;
     rclcpp::Publisher<ObstacleInfoArray>::SharedPtr obstacles_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;

@@ -16,6 +16,8 @@ add_library(${PROJECT_NAME}_nodes SHARED
   src/target_tracking_node.cpp
 )
 target_compile_options(${PROJECT_NAME}_nodes PRIVATE -Wall -Wextra)
+target_include_directories(${PROJECT_NAME}_nodes PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 ament_target_dependencies(${PROJECT_NAME}_nodes
   rclcpp rclcpp_components rclcpp_action ament_index_cpp easyfly_msgs)
 target_link_libraries(${PROJECT_NAME}_nodes yaml-cpp)
@@ -28,12 +30,24 @@ install(TARGETS ${PROJECT_NAME}_nodes
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
+install(DIRECTORY include/
+  DESTINATION include/${PROJECT_NAME}
+  FILES_MATCHING PATTERN "*.hpp")
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_waypoint_lifecycle test/test_waypoint_lifecycle.cpp)
+  target_include_directories(test_waypoint_lifecycle PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_add_gtest(test_target_frame test/test_target_frame.cpp)
+  target_include_directories(test_target_frame PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(test_target_frame easyfly_msgs)
 endif()
 
+ament_export_include_directories(include)
 ament_package()

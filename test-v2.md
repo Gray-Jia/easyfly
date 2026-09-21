@@ -27,9 +27,9 @@
 | 工作区全部测试 | 不能标记通过；跨多轮积累的旧结果为 131 项、84 项失败，当前可见失败主要来自 lint |
 | T1-T8 | 历史上通过，需要在冻结基线上重跑 |
 | T9 | 组件路径通过；真实 SITL 到达未通过 |
-| F1-F5、N1-N5 | 历史上通过，需要重跑 |
+| G7-F、G7-N | 当前修复基线均已连续两轮全绿；G7-F 含新增 F6 外部接管，G8/E1-E4 仍待 |
 | E1-E4 | 未取得完整全绿 |
-| PX4/Gazebo | 存在 Attitude failure (roll) 与 failsafe 阻塞 |
+| PX4/Gazebo | V2-10 姿态问题已关闭，G7-F/G7-N 无 failsafe；完整 EGO/PX4 SITL（G8）仍有待定位的姿态/时钟/failsafe 阻塞 |
 | 实机 | 未验收 |
 
 ## 3. 验收记录必须包含的元数据
@@ -88,12 +88,12 @@
 
 | 项 | 当前实际值 |
 |---|---|
-| 路径 | /home/jia/PX4-Autopilot-1.16.1 |
+| 路径 | /home/jia/PX4-Autopilot-1.16.2 |
 | git describe | v1.16.2-dirty |
 | commit | 54f0455ffcd755534539a7cf33a09a20bf71d29d |
-| 文档/目录名 | 仍写 1.16.1 |
+| 文档/目录名 | 已统一为 1.16.2 |
 
-这是当前最重要的版本矛盾：目录名和旧文档不能作为版本依据。验收报告必须保存 PX4 commit、dirty diff、SITL build target、ROMFS 参数和 ulog。正式冻结前应决定使用 v1.16.2 当前修改，还是恢复到明确的干净 tag，但该决定不应在测试中途进行。
+目录名不作为版本依据，冻结记录仍以 PX4 commit、dirty diff、SITL build target、ROMFS 参数和 ulog 为准；当前目录与 G0 对齐的 v1.16.2 一致。
 
 ### 4.4 视觉、点云和数学库
 
@@ -206,8 +206,8 @@ dpkg-query -W \
   ros-humble-gazebo-plugins \
   libopencv-dev libpcl-dev libeigen3-dev libyaml-cpp-dev
 
-git -C /home/jia/PX4-Autopilot-1.16.1 describe --tags --always --dirty
-git -C /home/jia/PX4-Autopilot-1.16.1 rev-parse HEAD
+git -C /home/jia/PX4-Autopilot-1.16.2 describe --tags --always --dirty
+git -C /home/jia/PX4-Autopilot-1.16.2 rev-parse HEAD
 git -C src/communication/c1_drivers/realsense_ros describe --tags --always --dirty
 git -C src/communication/c1_drivers/realsense_ros rev-parse HEAD
 
@@ -233,7 +233,7 @@ G5 控制链 T1-T9
  ↓
 G6 感知链逐层恢复
  ↓
-G7 跟随 F1-F5 与全局导航 N1-N5
+G7 跟随 F1-F6 与全局导航 N1-N5
  ↓
 G8 EGO E1-E4
  ↓
@@ -556,14 +556,14 @@ bash test/run_control_regression.sh
 bash test/run_follow_acceptance.sh
 ~~~
 
-运行前先修正文档与实现的 F5 定义不一致。建议正式定义为：
+当前冻结定义为：
 
 - F1 就绪；
 - F2 静态距离；
 - F3 移动距离和最小间距；
 - F4 感知断流/目标丢失后 abort 与悬停；
 - F5 用户 cancel 后 CANCELED 与悬停；
-- 另增 F6 外部 RTL/AUTO.LAND 接管后 ABORTED。
+- F6 外部 AUTO.RTL 接管后 ABORTED（AUTO.LAND 走同一让位代码路径，但尚未单独动态验收）。
 
 ### 14.2 A* 导航
 

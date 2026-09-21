@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_follow_acceptance.sh — M4.1 跟随飞行验收编排器
-# 流程: 清理 → 启动感知全链路 (含 mover + 跟随节点) → F1-F5 用例 → 清理
+# 流程: 清理 → 启动感知全链路 (含 mover + 跟随节点) → F1-F6 用例 → 清理
 # 退出码: 0=全部通过; launch 日志: /tmp/easyfly_follow_launch.log
 set -u
 WS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,7 +40,7 @@ if ! kill -0 "$LAUNCH_PGID" 2>/dev/null; then
   exit 1
 fi
 
-echo "[2/3] 运行验收用例 (F1-F5, 约 4-5 分钟)..."
+echo "[2/3] 运行验收用例 (F1-F6, 约 8-12 分钟)..."
 python3 "$WS/test/follow_acceptance.py"
 RC=$?
 

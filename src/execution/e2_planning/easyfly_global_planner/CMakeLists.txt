@@ -44,6 +44,20 @@ if(BUILD_TESTING)
   ament_add_gtest(test_astar test/test_astar.cpp)
   target_include_directories(test_astar PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_add_gtest(test_map_validity test/test_map_validity.cpp)
+  target_include_directories(test_map_validity PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(test_map_validity nav_msgs)
+  ament_add_gtest(test_waypoint_lifecycle test/test_waypoint_lifecycle.cpp)
+  target_include_directories(test_waypoint_lifecycle PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_add_gtest(test_goal_validation test/test_goal_validation.cpp)
+  target_include_directories(test_goal_validation PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(test_goal_validation easyfly_msgs)
+  ament_add_gtest(test_segment_acceptance test/test_segment_acceptance.cpp)
+  target_include_directories(test_segment_acceptance PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
 
 ament_export_include_directories(include)

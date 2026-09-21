@@ -10,9 +10,20 @@ target_tracking:
   default_follow_height: 1.5          # goal 未指定时 [m, 相对目标]
   max_altitude: 2.5                   # 硬上限 [m] (SLAM 2.5m 盲区约束, Q22)
 
-  # ---- 目标位置跳变拒绝 (Q34 EKF 毛刺兜底) ----
-  jump_reject_dist: 2.0               # 同一 id 相邻有效位置突变超过此值视为毛刺 [m]
-  jump_accept_streak: 3               # 连续突变达此次数视为真实快速移动, 采信
+  # ---- 目标观测安全边界 ----
+  # 允许当前 SITL 行人约 1m/s 的运动和少量深度噪声；异常观测永远不会
+  # 因为连续出现而被放行。超过上限的观测被丢弃，持续异常最终触发
+  # lost_timeout → 取消子航点 + 悬停 + ABORTED。
+  max_target_speed: 3.0               # 目标合理最大运动速度 [m/s]
+  max_target_jump: 2.0                # 任意单帧最大位移 [m]
+  jump_guard_margin: 0.5              # 观测/调度抖动余量 [m]
+  max_observation_gap: 1.0            # 速度预算 dt 上限 [s] (拒绝帧也更新)
+
+  # ---- 跟随任务安全边界 ----
+  max_follow_radius: 35.0             # 相对跟随开始位置的最大水平半径 [m]
+  state_timeout: 1.0                  # /uav_state 最大允许新鲜度 [s]
+  child_cancel_timeout: 5.0           # 单次子航点取消等待上限 [s]
+  child_cancel_max_wait: 30.0         # 终止跟随等待子航点终态的总上限 [s]
 
   # ---- 丢失处理 ----
   first_seen_timeout: 15.0            # 发起后多久找不到目标则 abort [s]

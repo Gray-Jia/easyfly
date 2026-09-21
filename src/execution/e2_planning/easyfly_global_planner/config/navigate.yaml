@@ -1,8 +1,11 @@
 # EasyFly E2 全局规划配置 (M4.2)
 global_planner:
-  grid_topic: /occupancy_grid    # semantic_map 产出 (已含 0.3m 膨胀)
+  grid_topic: /occupancy_grid    # semantic_map 产出 (已含约 0.7m 安全膨胀)
   grid_stale_timeout: 5.0        # 栅格数据过期判定 [s]
-  segment_acceptance: 0.5        # 段到位半径 [m]
+  segment_acceptance: 0.1        # 段到位半径 [m]；加载时强制不超过 0.1，避免切角
   max_speed_default: 2.0         # goal.max_speed=0 时 [m/s]
   z_min: 0.5                     # 目标高度下限 [m] (防深度毛刺砸地)
   z_max: 2.5                     # 目标高度上限 [m] (SLAM 盲区约束, Q22)
+  state_timeout: 1.0             # /uav_state 最大新鲜度 [s]
+  child_cancel_timeout: 5.0      # 单次子航点取消等待上限 [s]
+  child_cancel_max_wait: 30.0    # 终止导航等待子航点终态的总上限 [s]

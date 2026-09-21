@@ -24,6 +24,8 @@ add_library(${PROJECT_NAME}_nodes SHARED
   src/semantic_map_node.cpp
 )
 target_compile_options(${PROJECT_NAME}_nodes PRIVATE -Wall -Wextra)
+target_include_directories(${PROJECT_NAME}_nodes PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(${PROJECT_NAME}_nodes ${PCL_LIBRARIES} yaml-cpp)
 ament_target_dependencies(${PROJECT_NAME}_nodes
   rclcpp rclcpp_components ament_index_cpp sensor_msgs nav_msgs visualization_msgs
@@ -37,12 +39,26 @@ install(TARGETS ${PROJECT_NAME}_nodes
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
+install(DIRECTORY include/
+  DESTINATION include/${PROJECT_NAME}
+  FILES_MATCHING PATTERN "*.hpp")
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_ground_plane_tracker test/test_ground_plane_tracker.cpp)
+  target_include_directories(test_ground_plane_tracker PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_add_gtest(test_map_validity test/test_map_validity.cpp)
+  target_include_directories(test_map_validity PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(test_map_validity nav_msgs easyfly_msgs)
+  ament_add_gtest(test_grid_inflation test/test_grid_inflation.cpp)
+  target_include_directories(test_grid_inflation PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
 
 ament_package()

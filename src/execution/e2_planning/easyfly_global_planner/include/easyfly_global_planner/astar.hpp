@@ -1,6 +1,6 @@
 // EasyFly E2: 2D 栅格 A* + 视线剪枝 (M4.2, 纯逻辑 header, 无 ROS 依赖)
 //
-// 输入: 占据栅格 (来自 /occupancy_grid, 已含 semantic_map 的 0.3m 膨胀)
+// 输入: 占据栅格 (来自 /occupancy_grid, 已含 semantic_map 的约 0.7m 安全膨胀)
 // 输出: 世界坐标航点序列 (odom 系, 元素为格子中心)
 //
 // 设计:

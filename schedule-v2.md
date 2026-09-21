@@ -38,7 +38,7 @@ EasyFly 已经形成可运行的 ROS 2 无人机平台主链，通信、仿真�
 | ROS 包数量 | colcon 当前识别 67 个包，包含 EasyFly 包和第三方包 |
 | EasyFly 接口 | 13 msg、6 srv、8 action |
 | RealSense 嵌套仓库 | 由 4.56.4 上新增本地提交 d69f05c1；根仓库缺少 .gitmodules，需补远程可获取方案 |
-| 当前最高可信结论 | P0 代码及组件级验收通过；完整飞行链未通过 |
+| 当前最高可信结论 | P0 代码及组件级验收通过；G7-F 与 G7-N 已连续两轮全绿，G8（EGO E1-E4）仍待 |
 | 放飞结论 | 当前禁止据此直接实机放飞 |
 
 当前未提交 P0 修改主要涉及：
@@ -118,16 +118,13 @@ EasyFly 已经形成可运行的 ROS 2 无人机平台主链，通信、仿真�
 - 跟踪 ID 稳定性和深度同步；
 - pixel_to_3d 的 frame 已从 map 默认值改为 odom 后，全链消费者是否一致。
 
-### 5.2 目标跟随 M4.1 — B
+### 5.2 目标跟随 M4.1 — A
 
-easyfly_target_tracking 已实现 TrackTarget Action、目标重捕获、跳变保护、断流检测、接管传播和高度限制。历史 F1-F5 曾通过，但当前脚本和注释存在语义漂移：
+easyfly_target_tracking 已实现 TrackTarget Action、目标重捕获、跳变保护、断流检测、接管传播和高度限制。G7-F 已按冻结定义完成连续两轮全绿（F1/F2/F3/F4/F5/F6，含用户取消和外部 RTL 接管），退出码均 0；独立 Review APPROVE。
 
-- 文件头仍描述 F5 为 RTL 接管；
-- 当前实现实际检查用户取消后 CANCELED 和悬停。
+F6 外部 RTL 接管与恢复段已纳入正式顺序，破坏性断流用例仍置于末位；G7-F 当前状态为已验收，不再属于待重验历史证据。
 
-验收前必须先冻结 F1-F5 的正式定义，再执行，不能只看脚本退出码。
-
-### 5.3 全局规划 M4.2 — B
+### 5.3 全局规划 M4.2 — A
 
 easyfly_global_planner 已实现：
 
@@ -137,7 +134,7 @@ easyfly_global_planner 已实现：
 - NavigateTo Action；
 - 分段 GoToWaypoint 执行、取消和接管传播。
 
-历史 N1-N5 曾通过，A* gtest 8/8 也有记录。需要在新构建目录中重跑单测和 SITL 导航验收。
+G7-N 已在当前修复基线上完成两次全新会话的完整 N1→N2→N3→N5→N4，均 exit 0；N2 连续轨迹 clearance 为 0.19m/0.20m。此前旧 teardown 下断言全绿但 exit 134 的一轮不计入正式轮次。G8 的 EGO E1-E4 仍待验收。
 
 ## 6. 部分完成或受阻的工作
 
@@ -157,7 +154,8 @@ easyfly_global_planner 已实现：
 - T9a 真实 SITL 轨迹到达未通过；
 - E1-E4 EGO 验收没有取得同一会话全绿；
 - 完整 EGO 动态避障效果未可靠量化；
-- 通用地面处理仍使用 ground_height 经验值规避，不能直接泛化到实机或起伏地形；
+- EGO 路径的通用地面处理仍使用 ground_height 经验值规避，不能直接泛化到实机或起伏地形；
+- G7-N 已在真实空中地面模型下复验 semantic_map 的可信地面跟踪，但这不是单独重跑 G6.5 脚本；G6.5 的正式空中态补测仍可作为后续测试债务记录。
 - NavigateTo→EGO 的统一导航入口尚未完成。
 
 当前阻塞：PX4/Gazebo 会话在进入 EGO 轨迹前出现 Attitude failure (roll)、time jump 或 failsafe。该问题需要先按 test-v2.md 的最小 SITL 隔离流程定位。
@@ -238,7 +236,7 @@ easyfly_sim_launcher 有启动骨架，但不能据此认为应用层 SDK 已完
 4. 定位 PX4 Attitude failure (roll) 的根因。
 5. 取得控制 T1-T9 同一冻结基线全绿。
 6. 取得感知链 M0-M6 的可重复验收数据。
-7. 取得跟随 F1-F5、导航 N1-N5 和 EGO E1-E4 的连续全绿。
+7. G7-F 与 G7-N 已分别取得连续两轮全绿；下一未完成门禁为 EGO E1-E4（G8）。
 8. 建立 EGO 通用地面处理和动态障碍直接测量方法。
 9. 完成 NavigateTo→EGO、reactive avoidance 和轨迹优化策略整合。
 10. 完成精确降落、应用 SDK、服务层、任务脚本、UI 和媒体。
@@ -256,7 +254,7 @@ easyfly_sim_launcher 有启动骨架，但不能据此认为应用层 SDK 已完
 4. 启动最小 PX4/Gazebo/MAVROS/Bridge 链，先定位姿态故障。
 5. 通过最小控制 T1-T9。
 6. 逐段恢复传感器、TF、检测、SLAM、跟踪和 3D 融合。
-7. 依次运行 F1-F5、N1-N5、E1-E4。
+7. G7-F/G7-N 已完成并留存正式结果；下一阶段依次运行 E1-E4（G8），不以 G7 结果替代 EGO 验收。
 8. 做 30 分钟以上稳定性和重复启停测试。
 9. 完成台架/HIL 后，才讨论低风险实机飞行。
 
@@ -270,7 +268,7 @@ easyfly_sim_launcher 有启动骨架，但不能据此认为应用层 SDK 已完
 - 关键外部依赖版本已冻结；
 - 干净构建可重复；
 - P0 mock、功能单测、T1-T9 全绿；
-- F1-F5、N1-N5、E1-E4 至少连续两轮全绿；
+- G7-F、G7-N 已连续两轮全绿；E1-E4（G8）仍需至少连续两轮全绿；
 - PX4 姿态故障有根因和可复现解决方案；
 - 测试报告包含日志、版本、配置、起止时间和失败分类；
 - 没有未解释的飞行 failsafe、坐标跳变或 Action 悬挂。

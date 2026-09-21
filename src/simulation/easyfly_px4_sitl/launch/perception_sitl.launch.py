@@ -16,6 +16,9 @@ perception_sitl.launch.py — 阶段三感知调试启动（Gazebo + PX4 + RViz2
   /camera/aligned_depth_to_color/points      深度点云 (M0 验收用, M1 后可关)
   /livox/lidar                        MID-360 点云 (livox CustomMsg, 10 Hz)
   /livox/imu                          MID-360 内置 IMU (200 Hz)
+
+PX4 路径按 PX4_DIR > ~/PX4-Autopilot-1.16.2 > ~/PX4-Autopilot-1.16.1
+> ~/PX4-Autopilot 解析；不使用模糊版本匹配。
 """
 
 import os
@@ -38,13 +41,16 @@ from launch_ros.actions import Node
 
 
 def _resolve_px4_dir():
-    """优先级: 环境变量 PX4_DIR > ~/PX4-Autopilot-1.16.1 > ~/PX4-Autopilot"""
+    """按 PX4_DIR > ~/PX4-Autopilot-1.16.2 > ~/PX4-Autopilot-1.16.1 >
+    ~/PX4-Autopilot 选择目录。"""
     env = os.environ.get("PX4_DIR", "").strip()
     if env:
         return Path(env).expanduser()
-    default = Path.home() / "PX4-Autopilot-1.16.1"
-    if default.exists():
-        return default
+    for candidate in ("PX4-Autopilot-1.16.2", "PX4-Autopilot-1.16.1",
+                      "PX4-Autopilot"):
+        default = Path.home() / candidate
+        if default.exists():
+            return default
     return Path.home() / "PX4-Autopilot"
 
 

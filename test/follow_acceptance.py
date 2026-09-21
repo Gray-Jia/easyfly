@@ -9,7 +9,7 @@ follow_acceptance.py — M4.1 TrackTarget 跟随飞行验收 (test-guide 补充�
   F4  丢失行为     跟随中删除目标 (gz model -d) → lost_timeout 后 abort + 悬停
   F5  用户取消     跟随中 cancel → CANCELED + 悬停 (冻结定义 2026-09-17)
   F6  外部接管     跟随中外部切 AUTO.RTL → ABORTED(takeover) + RTL 落地 (冻结定义 2026-09-17)
-  执行顺序: F1→F2→F3→F6→恢复→F5→F4 (F4 破坏性: 删目标/可能杀检测, 置于末位)
+  执行顺序: F1→F2→F5→F6→恢复→F3→F4 (F4 破坏性: 删目标/可能杀检测, 置于末位)
 
 指标来源: action feedback (节点内部处理 SORT id 轮换/重捕获后的 distance_to_target
 才是真值; 验收脚本按固定 id 采样会被 id 轮换打穿 — Q19)。
@@ -47,7 +47,11 @@ class FollowAcceptance(Node):
         super().__init__("follow_acceptance")
         self.targets = None
         self.state = None
-        self.fb = None          # 最新 action feedback (distance_to_target 等)
+        self.fb = None          # 当前 TrackTarget goal 的 feedback
+        self._feedback_goal_id = None  # UUID bytes; 防止读取上一 goal 的反馈
+        self._feedback_attempt = 0     # attempt token; 防止旧 callback 串入新 goal
+        self._feedback_seq = 0         # 每条新 feedback 递增，采样不重复消费
+        self._feedback_callback_active = False
         self._lock = threading.Lock()
         self.create_subscription(Target3DArray, "/target_positions",
                                  self._on_targets, QoSProfile(depth=10))
@@ -68,11 +72,57 @@ class FollowAcceptance(Node):
             self.state = msg
     def _on_fb(self, msg):
         with self._lock:
+            # send_goal_async 的 per-goal callback 是主通道；topic 回调只作
+            # 兼容旧 rclpy 的后备，避免同一条 feedback 被记录两次。
+            if self._feedback_callback_active:
+                return
+            if self._feedback_goal_id is None:
+                return
+            if self._uuid_key(msg.goal_id) != self._feedback_goal_id:
+                return
             self.fb = msg.feedback
+            self._feedback_seq += 1
 
     def snap(self):
         with self._lock:
             return self.targets, self.state, self.fb
+
+    @staticmethod
+    def _uuid_key(value):
+        """将 rclpy 的 UUID 消息或 bytes 统一为可比较的 bytes。"""
+        raw = getattr(value, "uuid", value)
+        return bytes(raw)
+
+    def _clear_feedback(self):
+        with self._lock:
+            self._feedback_attempt += 1
+            self._feedback_goal_id = None
+            self.fb = None
+            self._feedback_seq = 0
+            self._feedback_callback_active = False
+
+    def _begin_feedback_attempt(self):
+        with self._lock:
+            self._feedback_attempt += 1
+            token = self._feedback_attempt
+            self._feedback_goal_id = None
+            self.fb = None
+            self._feedback_seq = 0
+            self._feedback_callback_active = True
+            return token
+
+    def _on_goal_feedback(self, token, msg):
+        """Per-goal callback; can bind UUID before send_goal_async returns."""
+        key = self._uuid_key(msg.goal_id)
+        with self._lock:
+            if token != self._feedback_attempt:
+                return
+            if self._feedback_goal_id is None:
+                self._feedback_goal_id = key
+            if key != self._feedback_goal_id:
+                return
+            self.fb = msg.feedback
+            self._feedback_seq += 1
 
     @staticmethod
     def _wait_future(fut, timeout_s):
@@ -86,9 +136,27 @@ class FollowAcceptance(Node):
     def call_action(self, client, goal, result_timeout):
         if not client.wait_for_server(10.0):
             return None, None
-        gh = self._wait_future(client.send_goal_async(goal), 30.0)
+        feedback_token = None
+        feedback_callback = None
+        if client is self.ac_track:
+            feedback_token = self._begin_feedback_attempt()
+
+            def feedback_callback(msg):
+                self._on_goal_feedback(feedback_token, msg)
+        send_fut = (client.send_goal_async(goal, feedback_callback=feedback_callback)
+                    if feedback_callback is not None else client.send_goal_async(goal))
+        gh = self._wait_future(send_fut, 30.0)
         if gh is None or not gh.accepted:
             return "REJECTED", None
+        if feedback_token is not None:
+            with self._lock:
+                if feedback_token == self._feedback_attempt:
+                    # 若早期 per-goal callback 已绑定 UUID，应与 handle 一致；
+                    # 以 handle 作为最终边界，清理任何冲突的早期样本。
+                    handle_key = self._uuid_key(gh.goal_id)
+                    if self._feedback_goal_id != handle_key:
+                        self._feedback_goal_id = handle_key
+                        self.fb = None
         wrapped = self._wait_future(gh.get_result_async(), result_timeout)
         if wrapped is None:
             return None, None
@@ -96,17 +164,44 @@ class FollowAcceptance(Node):
 
     def send_follow(self, target_id, distance=4.0, height=1.5):
         """发起跟随 (不等终态 — 跟随是持续 action). 返回 goal handle 或 None"""
+        # 每次尝试都有 token；per-goal feedback callback 可在 future 返回前
+        # 绑定 UUID，不会丢掉当前 goal 的早期反馈，也不会读到旧 goal。
+        token = self._begin_feedback_attempt()
         g = TrackTarget.Goal()
         g.target_id = target_id
         g.follow_distance = distance
         g.follow_height = height
-        gh = self._wait_future(self.ac_track.send_goal_async(g), 15.0)
-        return gh if (gh is not None and gh.accepted) else None
+
+        def feedback_callback(msg):
+            self._on_goal_feedback(token, msg)
+
+        gh = self._wait_future(
+            self.ac_track.send_goal_async(g, feedback_callback=feedback_callback), 15.0)
+        if gh is None or not gh.accepted:
+            return None
+        with self._lock:
+            if token == self._feedback_attempt:
+                handle_key = self._uuid_key(gh.goal_id)
+                if self._feedback_goal_id != handle_key:
+                    self._feedback_goal_id = handle_key
+                    self.fb = None
+        return gh
 
     def stop_follow(self):
+        self._clear_feedback()
         g = TrackTarget.Goal()
         g.target_id = -2
         return self.call_action(self.ac_track, g, 15.0)
+
+    def wait_follow_established(self, timeout=25.0):
+        """等待当前 goal 自己发布 target_visible=True 的 feedback。"""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            _, _, fb = self.snap()
+            if fb is not None and fb.target_visible:
+                return fb
+            time.sleep(0.25)
+        return None
 
     def ids_seen(self, dur=6.0):
         seen = {}
@@ -123,13 +218,21 @@ class FollowAcceptance(Node):
                     sum(p[1] for p in v) / len(v)) for k, v in seen.items()}
 
     def feedback_distance_samples(self, dur):
-        """经 action feedback 采样跟随距离 (target_visible 时才有效)"""
+        """只消费新到达的 action feedback (target_visible 时才有效)。"""
         samples = []
         t0 = time.monotonic()
+        # Do not count the last feedback used by wait_follow_established (or a
+        # previous sampling window) as a fresh sample for this interval.
+        with self._lock:
+            last_seq = self._feedback_seq
         while time.monotonic() - t0 < dur:
-            _, _, fb = self.snap()
-            if fb is not None and fb.target_visible and fb.distance_to_target > 0:
-                samples.append(fb.distance_to_target)
+            with self._lock:
+                fb = self.fb
+                seq = self._feedback_seq
+            if seq != last_seq:
+                last_seq = seq
+                if fb is not None and fb.target_visible and fb.distance_to_target > 0:
+                    samples.append(fb.distance_to_target)
             time.sleep(0.25)
         return samples
 
@@ -264,6 +367,12 @@ def main():
         # 发现后立刻发起 (间隔越长 SORT id 轮换越可能使 id 失效)
         gh = node.send_follow(static_id, 4.0, 1.5)
         check("F2 跟随 goal 被接受", gh is not None)
+        established = node.wait_follow_established(25.0) if gh is not None else None
+        check("F2 当前 goal 已建立 (visible)", established is not None)
+        if established is None:
+            if gh is not None:
+                node.stop_follow()
+            raise RuntimeError("F2 当前 goal 未建立")
         time.sleep(30)  # 接近 + 稳态
         samples = node.feedback_distance_samples(15.0)
         check("F2 稳态样本数 ≥30", len(samples) >= 30, "%d 个" % len(samples))
@@ -278,7 +387,7 @@ def main():
         print("  [FAIL] F2 异常: %s" % e, flush=True)
         RESULTS.append(("F2", False))
 
-    # ---- F5 接管传播 (RTL: 无人机飞回起点, F3/F4 由 ensure_airborne 等待+重新起飞) ----
+    # ---- F5 用户取消 (当前 goal 已建立后验证 cancel + 悬停) ----
     print("\n== F5 用户取消 ==")
     try:
         ids = node.ids_seen(6.0)
@@ -288,15 +397,14 @@ def main():
         some_id = sorted(ids)[0]
         gh = node.send_follow(some_id, 4.0, 1.5)
         check("F5 跟随 goal 被接受", gh is not None)
-        # 等真正进入跟随 (feedback target_visible), 然后模拟"外部接管检测"路径:
-        # 直接 cancel 跟随 goal — 节点应 cancel 航点 + 悬停 + 返回 CANCELED
-        # (与外部接管共享同一退出路径: cancelWaypoint + 终态上报)
-        t0 = time.monotonic()
-        while time.monotonic() - t0 < 20:
-            _, _, fb = node.snap()
-            if fb is not None and fb.target_visible:
-                break
-            time.sleep(0.5)
+        # 等真正进入跟随 (feedback target_visible)，再直接 cancel 跟随 goal。
+        # 节点应 cancel 航点 + 悬停 + 返回 CANCELED。
+        established = node.wait_follow_established(20.0) if gh is not None else None
+        check("F5 当前 goal 已建立 (visible)", established is not None)
+        if established is None:
+            if gh is not None:
+                node.stop_follow()
+            raise RuntimeError("F5 当前 goal 未建立")
         info("跟随已建立, cancel 跟随 goal (验证退出路径: 航点取消+悬停)")
         cfut = gh.cancel_goal_async()
         node._wait_future(cfut, 10.0)
@@ -317,10 +425,10 @@ def main():
     # ---- F6 外部接管 (冻结定义 2026-09-17: 外部切 AUTO.RTL → ABORTED takeover) ----
     print("\n== F6 外部接管 (AUTO.RTL) ==")
     try:
-        # F4 的后备路径可能杀掉检测容器: 先确认目标流恢复
+        # 前序用例或外部进程可能影响 detection: 先确认目标流恢复
         targets, _, _ = node.snap()
         if targets is None:
-            info("检测输出为空 (F4 后备已杀 detection), 重启 detection...")
+            info("检测输出为空, 重启 detection...")
             subprocess.Popen(
                 ["ros2", "launch", "easyfly_object_detection", "detection.launch.py"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -333,7 +441,7 @@ def main():
         check("F6 检测输出恢复", targets is not None)
         ids = node.ids_seen(6.0)
         if not ids:
-            # F4 后无人机悬停在行走走廊 (~20m 外), 相机背对出发区人群 —
+            # 无人机可能悬停在行走走廊 (~20m 外), 相机背对出发区人群 —
             # 飞回 (0,0,2) 重找目标 (保持 OFFBOARD 流, 不落地)
             info("无目标 (相机朝向远离人群), 飞回出发区重找...")
             from geometry_msgs.msg import PoseStamped  # noqa: PLC0415
@@ -367,19 +475,17 @@ def main():
             if gh is None:
                 time.sleep(2)
                 continue
-            t0 = time.monotonic()
-            fb = None
-            while time.monotonic() - t0 < 25:
-                _, _, fb = node.snap()
-                if fb is not None and fb.target_visible:
-                    break
-                time.sleep(0.5)
-            if fb is not None and fb.target_visible:
+            fb = node.wait_follow_established(25.0)
+            if fb is not None:
                 break
             info("id %d 未建立跟随, 重锁..." % some_id)
             node.stop_follow()
             time.sleep(2)
         check("F6 跟随已建立 (visible)", fb is not None and fb.target_visible)
+        if fb is None or not fb.target_visible or gh is None:
+            if gh is not None:
+                node.stop_follow()
+            raise RuntimeError("F6 当前 goal 未建立")
         info("外部切 AUTO.RTL (模拟地面站接管, 不经 target_tracking)")
         import mavros_msgs.srv  # noqa: PLC0415 — 仅本用例使用
         set_cli = node.create_client(mavros_msgs.srv.SetMode, "/mavros/set_mode")
@@ -470,16 +576,15 @@ def main():
                 time.sleep(2)
                 continue
             t0 = time.monotonic()
-            while time.monotonic() - t0 < 25:
-                _, _, fb = node.snap()
-                if fb is not None and fb.target_visible:
-                    break
-                time.sleep(0.5)
-            _, _, fb = node.snap()
-            if fb is not None and fb.target_visible:
+            fb = node.wait_follow_established(25.0)
+            if fb is not None:
                 break  # 锁定成功
             info("id %d 未建立跟随 (SORT 轮换), 重锁..." % moving_id)
         check("F3 跟随 goal 被接受且建立", gh is not None and fb is not None and fb.target_visible)
+        if gh is None or fb is None or not fb.target_visible:
+            if gh is not None:
+                node.stop_follow()
+            raise RuntimeError("F3 当前 goal 未建立")
         # 条件式接近等待: 距离收敛到 6m 内才开始采样 (起点距走廊 ~20m)
         t0 = time.monotonic()
         while time.monotonic() - t0 < 30:
@@ -489,13 +594,23 @@ def main():
             time.sleep(0.5)
         info("接近完成, 开始 40s 采样")
         samples = node.feedback_distance_samples(40.0)
-        info("有效观测 %d 帧 — 移动目标检出率属 Q19 感知调优范畴, 不作断言" % len(samples))
-        if samples:
-            mean_d = sum(samples) / len(samples)
-            min_d = min(samples)
-            check("F3 平均跟随距离 4±1.5m", abs(mean_d - 4.0) < 1.5, "均值 %.2fm" % mean_d)
-            # 目标折返会穿越跟随点 (航点重发式的固有瞬态), 1.2m=不发生物理碰撞
-            check("F3 最小间距 >1.2m (不撞目标)", min_d > 1.2, "最小 %.2fm" % min_d)
+        expected_samples = max(1, int(40.0 / 0.25))
+        info("有效新 feedback %d 帧" % len(samples))
+        # F3 不能把“循环重复同一条 feedback”当作覆盖；空样本和低覆盖
+        # 都是明确失败，避免移动跟随用例在没有反馈时悄悄跳过验收。
+        check("F3 新鲜 feedback 样本数 ≥30", len(samples) >= 30,
+              "%d/%d" % (len(samples), expected_samples))
+        check("F3 新鲜 feedback 覆盖率 ≥50%%",
+              len(samples) >= expected_samples * 0.5,
+              "%.0f%%" % (100.0 * len(samples) / expected_samples))
+        if not samples:
+            node.stop_follow()
+            raise RuntimeError("F3 没有收到当前 goal 的新鲜 feedback")
+        mean_d = sum(samples) / len(samples)
+        min_d = min(samples)
+        check("F3 平均跟随距离 4±1.5m", abs(mean_d - 4.0) < 1.5, "均值 %.2fm" % mean_d)
+        # 目标折返会穿越跟随点 (航点重发式的固有瞬态), 1.2m=不发生物理碰撞
+        check("F3 最小间距 >1.2m (不撞目标)", min_d > 1.2, "最小 %.2fm" % min_d)
         node.stop_follow()
         time.sleep(2)
     except Exception as e:  # noqa: BLE001
@@ -524,15 +639,12 @@ def main():
         gh = node.send_follow(moving_id, 4.0, 1.5)
         check("F4 跟随 goal 被接受", gh is not None)
         # 等真正建立跟随 (visible) — 否则删目标测的是 first-seen 超时而非丢失路径
-        t0 = time.monotonic()
-        visible = False
-        while time.monotonic() - t0 < 25:
-            _, _, fb = node.snap()
-            if fb is not None and fb.target_visible:
-                visible = True
-                break
-            time.sleep(0.5)
+        visible = node.wait_follow_established(25.0) if gh is not None else None
         check("F4 跟随已建立 (visible)", visible)
+        if visible is None:
+            if gh is not None:
+                node.stop_follow()
+            raise RuntimeError("F4 当前 goal 未建立")
         time.sleep(5)  # 稳定跟随数秒
         info("删除 person_4_walking 模拟目标消失")
         gone = node.gz_delete("person_4_walking")
