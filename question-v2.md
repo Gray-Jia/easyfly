@@ -26,6 +26,7 @@
 | V2-15 | G6.2 | **CONTRACT（图像输入 QoS）+ TEST（仪表缺口）** | RELIABLE 相机与 BEST_EFFORT 检测订阅在大图录制负载下发生回调前丢帧；旧记录缺少分段延迟，曾误判为 GPU 争抢 | **已解决（2026-09-16）**：输入 QoS 默认改为 RELIABLE/KeepLast(5)，补齐 CUDA/CPU 分段仪表；两路径均达到 30.00Hz 仿真时基，独立审核 APPROVE |
 | V2-16 | G6.4 | **CONTRACT（3D 目标输出坐标系）** | `/target_positions` 数值为 odom 而数组/目标 header 继承 optical | ✅ 已修复并复验关闭（2026-09-17） |
 | V2-17 | G7-N | **CODE/CONTRACT（地面模型、规划执行与验收 teardown）** | 空中 ground plane 退化、N2 局部障碍筛选和执行安全裕量曾导致导航验收失败或安全余量不足 | **已修复并连续动态复验通过（2026-09-18）**：G7-N 两轮完整 exit 0；独立 Review APPROVE |
+| V2-18 | G7 复验期 | **CODE（launch 嵌套 yaml 参数丢失→FAST-LIO 段错误）** | launch_ros 重写参数文件丢弃嵌套 dict，fastlio 空参数启动崩；RViz 冻结/无点云的根因；G7-N 结论不受影响 | 已定位（逐层实证），修复方案待批准 |
 
 ---
 
