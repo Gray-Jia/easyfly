@@ -870,3 +870,37 @@ G6.5 正式脚本的地面剔除检查仍仅在**地面态**执行（无人机�
   - 第 2 轮：**全 PASS，exit 0**，N2 最小 clearance **0.23m**（中心距 1.46m）；
   - 两轮 clearance 与用户自测的 0.19/0.20m 同量级，绕障行为稳定复现；
 - **结论：V2-17 修复经独立复验确认。G7-N 验收通过，加上此前 G7-F 两轮全绿——G7（跟随 + A\* 导航）整体验收完成。**
+
+---
+
+## V2-18 G7 复验期 RViz 冻结/无点云：FAST-LIO launch 传参丢失致启动段错误（CODE，已定位待修复）
+
+- **发现时间**：2026-09-19，用户在 G7 复验时目视发现（RViz 飞机不动、无点云），排查由"显示异常"一路下挖至启动段错误
+- **test-v2 §18 分类**：**CODE（launch 参数传递缺陷 + 上游鲁棒性缺陷）**——主责在自研集成包 launch 与 launch_ros 嵌套 yaml 行为的组合
+
+### 现象与因果链（逐层实证）
+
+| 层 | 事实 | 证据 |
+|---|---|---|
+| 显示层 | RViz Fixed Frame=map 下飞机不动、无点云/无信息 | perception.rviz line 208 `Fixed Frame: map` |
+| TF 层 | `map→odom` 从未发布，`/cloud_registered`、`/Odometry` 无数据 | tf2_echo map base_link 超时；话题零流 |
+| 进程层 | **fastlio_mapping 启动即 SIGSEGV（exit -11）** | launch 日志 `process has died`；`ros2 run` 裸跑复现段错误 |
+| 参数层 | **launch 实传参数文件仅含 `use_sim_time: true`，mid360.yaml 13 个参数全部丢失** | 抓取 launch 生成的 `/tmp/launch_params_*` 实证 |
+| 代码层 | 空参数 → `extrinsic_T` 外参向量为空 → 构造函数 `VEC_FROM_ARRAY` 越界 | gdb 栈：`LaserMappingNode::LaserMappingNode` 内崩 |
+| 机理层 | mid360.yaml 为**嵌套分组格式**（common/preprocess/mapping/...），**launch_ros 重写参数文件时不展平嵌套 dict，整个文件内容被静默丢弃**；对照：`ros2 run --params-file mid360.yaml` 直跑完全正常（rclcpp 端展平嵌套） | 双路径对照实验 + Python yaml 解析 13 参数全量健康 + symlink 完好 |
+
+### 为什么 G6.3（09-17 手动链）工作、G7 套件起全崩
+
+- 崩溃自 09-18 起的**全部 G7 套件会话**（g7n-r1/g7nv-r1/g7nv-r2 日志各有 1 次 died）持续存在；
+- launch 与 yaml 自集成提交（9dfd638）以来未改，launch_ros 版本未变——精确的历史行为差异**未定**（候选：环境重启/参数重写路径的边界条件），如实记录为未决细节；
+- **G7-N 套件不受影响的原因**：N 用例走 occupancy_grid（odom 系，pcf+semantic_map 产出），不依赖 FAST-LIO——SLAM 死亡被套件盲区掩盖，仅 RViz/SLAM 受害。G7-N 两轮全绿结论不受本条影响。
+
+### 排除项（均实测排除）
+
+rviz2 `/clock` 订阅 BEST_EFFORT 与 Gazebo 兼容（非时钟问题）；感知链其余健康（/livox/imu 160Hz、/pointcloud_filtered 8Hz、/occupancy_grid 8Hz、/tf 50Hz）；perception_sitl/px4_sitl 近期改动仅 PX4 路径解析（无关）；mid360.yaml 内容与 symlink 完好。
+
+### 修复方案（待批准）
+
+1. **主修（自研集成包，可改）**：`easyfly_fast_lio_integration/launch/fastlio.launch.py` 读入 mid360.yaml 并**递归展平为点分参数字典**（`common.lid_topic` 等）直接传 Node——绕开 launch_ros 嵌套 yaml 重写缺陷，与 `ros2 run` 路径行为一致；
+2. **上游缺陷登记不动**（V2-02 原则）：fast_lio 空参数段错误属上游鲁棒性缺陷，third_party 不改；
+3. **修复后验证义务**：重跑带 FAST-LIO 的链 → fastlio 正常初始化（IMU Initial Done）→ map→odom 发布 → RViz Fixed Frame=map 下飞机移动+点云显示 → /cloud_registered 有流。**G6.3 的 SLAM 结论加注**：当时为手动链验证，套件环境下首次闭环在修复后成立。
