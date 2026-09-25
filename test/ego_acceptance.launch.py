@@ -42,7 +42,9 @@ def generate_launch_description():
                {"world": "perception_demo.world"})
 
     bridge = TimerAction(period=8.0, actions=[
-        _inc("easyfly_mavlink_bridge", "mavlink_bridge.launch.py")])
+        # V2-09/11: 桥链与 flight_control 统一仿真时基 (G5/G7 同款接线)
+        _inc("easyfly_mavlink_bridge", "mavlink_bridge.launch.py",
+             {"use_sim_time": "true"})])
 
     control = TimerAction(period=10.0, actions=[
         _inc("easyfly_flight_control", "flight_control.launch.py")])

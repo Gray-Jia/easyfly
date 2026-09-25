@@ -921,3 +921,40 @@ rviz2 `/clock` 订阅 BEST_EFFORT 与 Gazebo 兼容（非时钟问题）；感�
 - 无参数启动 `fastlio_mapping`：输出明确的外参错误并以 **exit 1** 退出，无 `SIGSEGV/-11`；使用 `mid360.yaml` 启动：输出 `Node init finished`，无参数错误或段错误（本地 smoke 由超时信号结束）；
 - 尚未重新运行完整 `perception_sitl`/RViz 动态闭环，因此组合启动、话题、TF 和 RViz 验收仍待用户按上面的运行时门复验；
 - workspace 级 `colcon test-result` 仍会汇总既有其他包的 lint 失败，本条新增的两个目标测试均独立通过。
+
+---
+
+## V2-19 G8 E1-E4 首轮全败：EGO 链三层缺陷（CODE，已定位待修复）
+
+- **发现时间**：2026-09-20，G8 第 1 轮（E1/E2/E3/E4 全部轨迹断言失败，安全断言全过——无人机全程安全悬停）
+- **test-v2 §18 分类**：**CODE（third_party 时钟移植缺陷 + 准入违例 + 稳定性崩溃）**
+
+### A（根因）：EGO 规划器裸墙钟 → bspline 时间基错域 → traj_server 永久扣发
+
+- 证据链：套件日志 `trajectory starts in the future (dt=-1790346853s); hold publication`（dt = sim − wall = −墙钟纪元）；
+- 定位：`planner_manager.h:56` 与 `ego_replan_fsm.h:143` 的 **`rclcpp::Clock _clock;` 裸构造（默认 RCL_SYSTEM_TIME 墙钟）**，不随 use_sim_time 切换——`local_data_.start_time_ = _clock.now()` 打出的 bspline.start_time 为墙钟；traj_server 用节点时钟（sim，P0 加固的时间跳变保护正确工作）→ 起始时间被判"未来 17.9 亿秒"→ /position_cmd 永不发布 → flight_control `trajectory_start_timeout`；
+- 与 V2-18 同类（ROS2 移植裸时钟缺陷），但位置不同（这次在 third_party EGO 侧）。
+
+### B（准入违例）：EGO 输入点云未剔除地面 → 栅格把地面当障碍
+
+- 证据：诊断链实测 EGO 报 `ERROR: the drone is in obstacle. This should not happen` + dyn_a_star 失败（地面点包围地面机体）；
+- 链路事实：EGO 消费 `/pointcloud_filtered`（pcf 仅距离/体素滤波，**无地面剔除**）；地面剔除在 semantic_map（其输出为聚类/占据格，非点云）——**§15 准入项"EGO 输入点云已明确处理地面"实际不满足**（schedule-v2 §6.1 记载的 ground_height 经验值问题在轻链复活）。
+
+### C（稳定性）：ego_planner std::bad_alloc 崩溃（exit -6）
+
+- 套件轮第 4 次 Triggered 后 `terminate called after throwing std::bad_alloc`，进程死亡（E3 的流中断用例因此失去被测对象）；可能是 A+B 连锁（扣发下无尽 REPLAN + 栅格增长），也可能独立——**A+B 修复后复测再定性**。
+
+### 首轮其余发现（正常项）
+
+- EGO 目标传递链健康（4×Triggered、FSM 完整 EXEC↔REPLAN）；手动 CLI 发 goal 可正常触发规划；
+- 诊断中确认 launch 时钟接线已修（bridge use_sim_time 传递）、编排器 install-v2 已修；
+- 无 ego_to_mavros 双发（§15 结构项满足）；traj_server 的 output_frame=odom 契约满足。
+
+### 修复方向（待批准）
+
+1. **A（主修，third_party EGO）**：`_clock` 改为节点 ROS 时钟（构造时以 node clock 初始化，或 `RCL_ROS_TIME` + 挂接），保证 bspline.start_time 与 traj_server 同域；V2-02 合规（防护性修复 + 记录）；
+2. **B（链路设计）**：EGO 输入改接地面已剔除的点云源（pcf 增加 RANSAC 地面剔除输出，或 semantic_map 提供去地残差点云话题）；或 EGO grid_map 配置 ground 处理参数——按最小改动评估；
+3. C 在 A+B 修复后复测观察，若复现再独立定位；
+4. 修复后重跑 G8 两轮（§15 标准）。
+
+**证据**：`/tmp/g8-r1-console.log`、`/tmp/g8-r1.log`（future 警告/bad_alloc/FSM 时间线）、诊断链实测（in-obstacle 错误）。
