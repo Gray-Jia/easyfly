@@ -39,12 +39,15 @@
 #include <fstream>
 #include <csignal>
 #include <chrono>
+#include <cstdlib>
 #include <unistd.h>
 #include <Python.h>
 #include <so3_math.h>
 #include <rclcpp/rclcpp.hpp>
+#include <stdexcept>
 #include <Eigen/Core>
 #include "IMU_Processing.hpp"
+#include "extrinsic_validation.hpp"
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <visualization_msgs/msg/marker.hpp>
@@ -870,6 +873,15 @@ public:
         this->get_parameter_or<vector<double>>("mapping.extrinsic_T", extrinT, vector<double>());
         this->get_parameter_or<vector<double>>("mapping.extrinsic_R", extrinR, vector<double>());
 
+        string extrinsic_error;
+        if (!fast_lio::validate_extrinsics(extrinT, extrinR, &extrinsic_error)) {
+            RCLCPP_FATAL(
+                this->get_logger(),
+                "Invalid FAST-LIO extrinsics: %s. Check mapping.extrinsic_T/R in the parameter file.",
+                extrinsic_error.c_str());
+            throw std::invalid_argument("Invalid FAST-LIO extrinsics: " + extrinsic_error);
+        }
+
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
 
         path.header.stamp = this->get_clock()->now();
@@ -1160,7 +1172,20 @@ int main(int argc, char** argv)
 
     signal(SIGINT, SigHandle);
 
-    rclcpp::spin(std::make_shared<LaserMappingNode>());
+    try
+    {
+        rclcpp::spin(std::make_shared<LaserMappingNode>());
+    }
+    catch (const std::exception &e)
+    {
+        // Parameter validation happens in the constructor. Convert invalid
+        // configuration into a controlled non-zero exit instead of allowing
+        // an uncaught exception (or an array overrun) to abort the process.
+        std::cerr << "fastlio_mapping failed to start: " << e.what() << std::endl;
+        if (rclcpp::ok())
+            rclcpp::shutdown();
+        return EXIT_FAILURE;
+    }
 
     if (rclcpp::ok())
         rclcpp::shutdown();
@@ -1194,5 +1219,5 @@ int main(int argc, char** argv)
         fclose(fp2);
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }

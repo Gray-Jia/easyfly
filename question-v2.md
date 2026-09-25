@@ -26,7 +26,7 @@
 | V2-15 | G6.2 | **CONTRACT（图像输入 QoS）+ TEST（仪表缺口）** | RELIABLE 相机与 BEST_EFFORT 检测订阅在大图录制负载下发生回调前丢帧；旧记录缺少分段延迟，曾误判为 GPU 争抢 | **已解决（2026-09-16）**：输入 QoS 默认改为 RELIABLE/KeepLast(5)，补齐 CUDA/CPU 分段仪表；两路径均达到 30.00Hz 仿真时基，独立审核 APPROVE |
 | V2-16 | G6.4 | **CONTRACT（3D 目标输出坐标系）** | `/target_positions` 数值为 odom 而数组/目标 header 继承 optical | ✅ 已修复并复验关闭（2026-09-17） |
 | V2-17 | G7-N | **CODE/CONTRACT（地面模型、规划执行与验收 teardown）** | 空中 ground plane 退化、N2 局部障碍筛选和执行安全裕量曾导致导航验收失败或安全余量不足 | **已修复并连续动态复验通过（2026-09-18）**：G7-N 两轮完整 exit 0；独立 Review APPROVE |
-| V2-18 | G7 复验期 | **CODE（launch 嵌套 yaml 参数丢失→FAST-LIO 段错误）** | launch_ros 重写参数文件丢弃嵌套 dict，fastlio 空参数启动崩；RViz 冻结/无点云的根因；G7-N 结论不受影响 | 已定位（逐层实证），修复方案待批准 |
+| V2-18 | G7 复验期 | **CODE（共享 launch context 参数冲突→FAST-LIO 段错误）** | detection 与 FAST-LIO 的通用 `config_file` 冲突导致配置路径退化；已增加 scoped 隔离、兼容别名和 FAST-LIO fail-fast 校验；G7-N 结论不受影响 | 代码修复完成，静态/单元验证通过；完整 SITL/RViz 动态验收待复验 |
 
 ---
 
@@ -874,10 +874,10 @@ G6.5 正式脚本的地面剔除检查仍仅在**地面态**执行（无人机�
 
 ---
 
-## V2-18 G7 复验期 RViz 冻结/无点云：FAST-LIO launch 传参丢失致启动段错误（CODE，已定位待修复）
+## V2-18 G7 复验期 RViz 冻结/无点云：FAST-LIO launch 参数污染致启动段错误（CODE，已修复待动态验收）
 
 - **发现时间**：2026-09-19，用户在 G7 复验时目视发现（RViz 飞机不动、无点云），排查由"显示异常"一路下挖至启动段错误
-- **test-v2 §18 分类**：**CODE（launch 参数传递缺陷 + 上游鲁棒性缺陷）**——主责在自研集成包 launch 与 launch_ros 嵌套 yaml 行为的组合
+- **test-v2 §18 分类**：**CODE（共享 launch context 参数冲突 + 上游鲁棒性缺陷）**——主责在自研集成包的参数命名/传递，FAST-LIO 端增加防御性校验
 
 ### 现象与因果链（逐层实证）
 
@@ -886,22 +886,38 @@ G6.5 正式脚本的地面剔除检查仍仅在**地面态**执行（无人机�
 | 显示层 | RViz Fixed Frame=map 下飞机不动、无点云/无信息 | perception.rviz line 208 `Fixed Frame: map` |
 | TF 层 | `map→odom` 从未发布，`/cloud_registered`、`/Odometry` 无数据 | tf2_echo map base_link 超时；话题零流 |
 | 进程层 | **fastlio_mapping 启动即 SIGSEGV（exit -11）** | launch 日志 `process has died`；`ros2 run` 裸跑复现段错误 |
-| 参数层 | **launch 实传参数文件仅含 `use_sim_time: true`，mid360.yaml 13 个参数全部丢失** | 抓取 launch 生成的 `/tmp/launch_params_*` 实证 |
+| 参数层 | **launch 实传参数文件仅含 `use_sim_time: true`，mid360.yaml 13 个参数未加载** | 抓取 launch 生成的 `/tmp/launch_params_*` 实证 |
 | 代码层 | 空参数 → `extrinsic_T` 外参向量为空 → 构造函数 `VEC_FROM_ARRAY` 越界 | gdb 栈：`LaserMappingNode::LaserMappingNode` 内崩 |
-| 机理层 | mid360.yaml 为**嵌套分组格式**（common/preprocess/mapping/...），**launch_ros 重写参数文件时不展平嵌套 dict，整个文件内容被静默丢弃**；对照：`ros2 run --params-file mid360.yaml` 直跑完全正常（rclcpp 端展平嵌套） | 双路径对照实验 + Python yaml 解析 13 参数全量健康 + symlink 完好 |
+| 机理层 | detection 与 FAST-LIO 被包含在同一个 launch context；detection 先声明通用 `config_file` 为空，FAST-LIO 的同名声明不会覆盖既有值，配置路径退化为 `.../fast_lio/config` 目录并被丢弃。**根因是全局 launch 参数同名冲突，不是嵌套 YAML 本身不能传递。** | ROS 2 `DeclareLaunchArgument` 已存在值不覆盖 + 日志 `Parameter file path is not a file` + `ros2 run --params-file mid360.yaml` 直跑正常 |
 
 ### 为什么 G6.3（09-17 手动链）工作、G7 套件起全崩
 
 - 崩溃自 09-18 起的**全部 G7 套件会话**（g7n-r1/g7nv-r1/g7nv-r2 日志各有 1 次 died）持续存在；
-- launch 与 yaml 自集成提交（9dfd638）以来未改，launch_ros 版本未变——精确的历史行为差异**未定**（候选：环境重启/参数重写路径的边界条件），如实记录为未决细节；
+- G6.3 手动链没有先加载 detection 的空 `config_file`，因此 FAST-LIO 可以使用自己的默认 `mid360.yaml`；G7 套件把 detection 与 FAST-LIO 放到同一父上下文后，冲突稳定复现；
 - **G7-N 套件不受影响的原因**：N 用例走 occupancy_grid（odom 系，pcf+semantic_map 产出），不依赖 FAST-LIO——SLAM 死亡被套件盲区掩盖，仅 RViz/SLAM 受害。G7-N 两轮全绿结论不受本条影响。
 
 ### 排除项（均实测排除）
 
 rviz2 `/clock` 订阅 BEST_EFFORT 与 Gazebo 兼容（非时钟问题）；感知链其余健康（/livox/imu 160Hz、/pointcloud_filtered 8Hz、/occupancy_grid 8Hz、/tf 50Hz）；perception_sitl/px4_sitl 近期改动仅 PX4 路径解析（无关）；mid360.yaml 内容与 symlink 完好。
 
-### 修复方案（待批准）
+### 修复内容（2026-09-21）
 
-1. **主修（自研集成包，可改）**：`easyfly_fast_lio_integration/launch/fastlio.launch.py` 读入 mid360.yaml 并**递归展平为点分参数字典**（`common.lid_topic` 等）直接传 Node——绕开 launch_ros 嵌套 yaml 重写缺陷，与 `ros2 run` 路径行为一致；
-2. **上游缺陷登记不动**（V2-02 原则）：fast_lio 空参数段错误属上游鲁棒性缺陷，third_party 不改；
-3. **修复后验证义务**：重跑带 FAST-LIO 的链 → fastlio 正常初始化（IMU Initial Done）→ map→odom 发布 → RViz Fixed Frame=map 下飞机移动+点云显示 → /cloud_registered 有流。**G6.3 的 SLAM 结论加注**：当时为手动链验证，套件环境下首次闭环在修复后成立。
+1. **launch 参数隔离与兼容**：`easyfly_fast_lio_integration/launch/fastlio.launch.py` 以 `fastlio_config_file` 为主参数，同时保留旧 `config_file:=...` 别名；`perception_sitl.launch.py` 用 `GroupAction(scoped=True, forwarding=False)` 隔离 detection 上下文，并显式传入 `fastlio_config_file:=mid360.yaml`、清空兼容别名，保证旧 standalone 参数仍生效且父级 detection 参数不能污染 FAST-LIO。
+2. **FAST-LIO fail-fast**：增加 `mapping.extrinsic_T/R` 长度（3/9）与有限值校验。参数缺失或包含 NaN/Inf 时打印 FATAL 并抛出明确异常，禁止继续执行 `VEC_FROM_ARRAY`/`MAT_FROM_ARRAY` 越界访问。
+3. **回归测试**：新增 launch 参数隔离契约测试，以及外参校验单元测试，覆盖正常数组、长度错误和非有限值。
+
+### 修复后的验收要求
+
+- 静态/单元门：`easyfly_fast_lio_launch_contract` 与 `fast_lio/test_extrinsic_validation` 通过；
+- 组合启动门：运行 `perception_sitl.launch.py` 后，日志中不再出现 `Parameter file path is not a file`，FAST-LIO 存活并加载 `mid360.yaml`；
+- 运行时门：`/Odometry`、`/cloud_registered` 有数据，`map→odom` 持续发布，RViz Fixed Frame=map 下飞机和点云正常更新；
+- 若再次缺失参数，进程必须输出 `Invalid FAST-LIO extrinsics` 并有序退出，而不是 `SIGSEGV/-11`。
+
+### 当前验证记录（2026-09-21）
+
+- `colcon build --packages-select fast_lio easyfly_fast_lio_integration --cmake-args -DBUILD_TESTING=ON`：通过；
+- `ctest --test-dir build/fast_lio`：外参校验 **3/3 PASS**；
+- `ctest --test-dir build/easyfly_fast_lio_integration`：launch 参数隔离契约 **PASS**；
+- 无参数启动 `fastlio_mapping`：输出明确的外参错误并以 **exit 1** 退出，无 `SIGSEGV/-11`；使用 `mid360.yaml` 启动：输出 `Node init finished`，无参数错误或段错误（本地 smoke 由超时信号结束）；
+- 尚未重新运行完整 `perception_sitl`/RViz 动态闭环，因此组合启动、话题、TF 和 RViz 验收仍待用户按上面的运行时门复验；
+- workspace 级 `colcon test-result` 仍会汇总既有其他包的 lint 失败，本条新增的两个目标测试均独立通过。

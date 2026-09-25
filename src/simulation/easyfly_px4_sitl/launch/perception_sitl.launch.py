@@ -228,9 +228,24 @@ def generate_launch_description():
             get_package_share_directory("easyfly_pixel_to_3d") + "/launch/pixel_to_3d.launch.py"))
 
     # ---- P3 SLAM (M3): fast_lio + map→odom TF ----
-    fastlio = IncludeLaunchDescription(
+    fastlio_include = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            get_package_share_directory("easyfly_fast_lio_integration") + "/launch/fastlio.launch.py"))
+            get_package_share_directory("easyfly_fast_lio_integration") + "/launch/fastlio.launch.py"),
+        launch_arguments={
+            "use_sim_time": "true",
+            "fastlio_config_file": "mid360.yaml",
+            # Explicitly clear the legacy alias inside the scoped child.
+            "config_file": "",
+        }.items())
+    fastlio = GroupAction(
+        scoped=True,
+        forwarding=False,
+        launch_configurations={
+            "use_sim_time": "true",
+            "fastlio_config_file": "mid360.yaml",
+            "config_file": "",
+        },
+        actions=[fastlio_include])
 
     # ---- C2 通信桥接 (mavros + mavlink_bridge): 提供 /uav_state (P1/P3 依赖) ----
     mavlink_bridge = IncludeLaunchDescription(
