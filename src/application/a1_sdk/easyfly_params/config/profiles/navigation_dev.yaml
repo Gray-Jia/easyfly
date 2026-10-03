@@ -1,0 +1,12 @@
+schema_version: 1
+name: navigation_dev
+environment: simulation
+readiness: implemented
+entrypoint: perception
+headless: true
+capabilities:
+  mavlink_state: true
+  perception: true
+  navigation: true
+  landing_detection: false
+  precision_landing: false

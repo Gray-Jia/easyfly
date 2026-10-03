@@ -1,0 +1,13 @@
+schema_version: 1
+name: hardware_unverified
+environment: hardware
+readiness: unverified
+entrypoint: disabled
+headless: true
+capabilities:
+  mavlink_state: false
+  perception: false
+  navigation: false
+  landing_detection: false
+  precision_landing: false
+note: Structural placeholder only; no device/failsafe configuration and no launch authorization.

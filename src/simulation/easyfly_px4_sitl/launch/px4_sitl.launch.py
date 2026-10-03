@@ -30,6 +30,7 @@ from launch.actions import (
     TimerAction,
 )
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.conditions import IfCondition
 
 
 def _resolve_px4_dir():
@@ -51,6 +52,8 @@ def generate_launch_description():
     world_arg = DeclareLaunchArgument(
         "world", default_value="empty.world",
         description="世界文件名 (位于 easyfly_gazebo_worlds)")
+    gzclient_arg = DeclareLaunchArgument(
+        "gzclient", default_value="true", description="Start the Gazebo GUI")
 
     world_name = LaunchConfiguration("world")
 
@@ -124,6 +127,7 @@ def generate_launch_description():
         cmd=["gzclient"],
         output="screen",
         name="gzclient",
+        condition=IfCondition(LaunchConfiguration("gzclient")),
     )
 
     # ---- 5. PX4 SITL ----
@@ -160,6 +164,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         world_arg,
+        gzclient_arg,
         set_model_path,
         set_plugin_path,
         set_ld_library_path,

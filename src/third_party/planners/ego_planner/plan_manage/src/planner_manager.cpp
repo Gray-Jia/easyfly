@@ -259,7 +259,8 @@ namespace ego_planner
         }
 
         double t = 0.0;
-        bool flag_too_far;
+        // Fail closed if the first sampling interval check exits before sampling.
+        bool flag_too_far = true;
         ts *= 1.5; // ts will be divided by 1.5 in the next
         int sample_attempts = 0;
         do

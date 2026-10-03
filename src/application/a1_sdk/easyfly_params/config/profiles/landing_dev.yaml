@@ -1,0 +1,13 @@
+schema_version: 1
+name: landing_dev
+environment: simulation
+readiness: preparation_only
+entrypoint: perception
+headless: true
+capabilities:
+  mavlink_state: true
+  perception: true
+  navigation: true
+  landing_detection: false
+  precision_landing: false
+note: Sensor/TF development only; tag detection and precision landing are not implemented.

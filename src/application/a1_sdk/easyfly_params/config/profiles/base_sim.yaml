@@ -1,0 +1,12 @@
+schema_version: 1
+name: base_sim
+environment: simulation
+readiness: implemented
+entrypoint: base
+headless: true
+capabilities:
+  mavlink_state: true
+  perception: false
+  navigation: false
+  landing_detection: false
+  precision_landing: false

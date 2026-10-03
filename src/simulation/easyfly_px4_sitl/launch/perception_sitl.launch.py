@@ -81,6 +81,9 @@ def generate_launch_description():
     detection_qos_depth_arg = DeclareLaunchArgument(
         "detection_input_qos_depth", default_value="auto",
         description="检测输入 QoS KeepLast 深度：auto 跟随 YAML，范围 1..100")
+    local_planner_ceiling_arg = DeclareLaunchArgument(
+        "local_planner_virtual_ceil_height", default_value="3.2",
+        description="Absolute odom planning ceiling; existing default is unchanged")
 
     pkg_px4_sitl       = get_package_share_directory("easyfly_px4_sitl")
     pkg_gazebo_models  = get_package_share_directory("easyfly_gazebo_models")
@@ -299,7 +302,11 @@ def generate_launch_description():
     # position_cmd 是飞控指令流；急停恢复使用 traj_server 专用 trajectory_ack。
     local_planner = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            get_package_share_directory("easyfly_local_planner") + "/launch/local_planner.launch.py"))
+            get_package_share_directory("easyfly_local_planner") + "/launch/local_planner.launch.py"),
+        launch_arguments={
+            "use_sim_time": "true",
+            "virtual_ceil_height": LaunchConfiguration("local_planner_virtual_ceil_height"),
+        }.items())
     m43_nodes = TimerAction(period=26.0, actions=[local_planner])
 
     return LaunchDescription([
@@ -314,6 +321,7 @@ def generate_launch_description():
         detection_perf_period_arg,
         detection_qos_reliability_arg,
         detection_qos_depth_arg,
+        local_planner_ceiling_arg,
         gzserver,
         spawn_delayed,
         px4_delayed,

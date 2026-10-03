@@ -1,0 +1,8 @@
+# D0 freezes existing defaults; this file checks them, it does not override nodes.
+schema_version: 1
+frame: odom
+max_nonground_points: 200000
+planning_floor: 0.5
+planning_ceiling: 3.2
+trajectory_startup_grace: 8.0
+trajectory_stream_timeout: 0.5
