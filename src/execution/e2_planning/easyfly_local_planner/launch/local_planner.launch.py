@@ -5,17 +5,19 @@ local_planner.launch.py — easyfly_local_planner: EGO-Planner 适配启动 (M4.
       绕开上游 single_run_in_sim.launch.py 的 map_generator / pcl_render_node / rviz。
 
 数据接线 (无 drone_id 前缀, 显式 remap):
-  grid_map/cloud  <- /pointcloud_filtered   (P1 点云, 已变换到 odom 世界系)
+  grid_map/cloud  <- /pointcloud_nonground (semantic_map 可信地面跟踪后的点云, odom 系)
   grid_map/odom   <- /odom                  (P1 coord_transform 由 /uav_state 生成)
   odom_world      <- /odom                  (EGO FSM 自身状态反馈)
   planning/bspline: 内部话题 (ego_planner_node -> traj_server), 保持默认名
-  /position_cmd   : traj_server 输出 (quadrotor_msgs/PositionCommand), 默认即此名
+  /position_cmd   : traj_server 输出 (quadrotor_msgs/PositionCommand), 仅给飞控执行
+  /trajectory_ack : traj_server 专用校验/激活 ACK，FSM 只接受此 topic，不把 position_cmd 当 ACK
 
 坐标系: EGO grid_map 对点云做零变换 (plan_env/grid_map.cpp cloudCallback 直接用原始
-        xyz), 故点云必须已在 odom 系 —— 见 easyfly_pointcloud_filter 的 output_frame。
+        xyz), 故点云必须已在 odom 系。/pointcloud_nonground 仅由 semantic_map 在可信
+        GroundPlaneTracker 就绪后发布；模型未就绪时发布空云，不能回退到原始地面点云。
 
 参数来源: 上游 plan_manage/launch/advanced_param.launch.py (内联), 按 MID-360 重调:
-  obstacles_inflation 0.099->0.35 / max_ray_length 4.5->20 / local_update_range 5.5->15
+  obstacles_inflation 0.099->0.80 / max_ray_length 4.5->20 / local_update_range 8
   use_depth_filter True->False (否则点云被 depth_filter_maxdist=5.0 裁到 5m)
 
 注意 (任务书侦察勘误): ego_replan_fsm.h 中 MANUAL_TARGET=1, PRESET_TARGET=2
@@ -23,7 +25,12 @@ local_planner.launch.py — easyfly_local_planner: EGO-Planner 适配启动 (M4.
 
 用法:
   ros2 launch easyfly_local_planner local_planner.launch.py
-  # 之后 RViz 用 "2D Goal Pose" 发 /move_base_simple/goal; EGO 航线高度硬编码 1.0m
+  # 之后 RViz 用 "2D Goal Pose" 发 /move_base_simple/goal; z=0 会回退到当前安全高度
+
+The ``virtual_ceil_height`` launch argument is an absolute ``odom`` height.
+The reusable production default remains 3.2m; the G8
+``test/ego_acceptance.launch.py`` wrapper explicitly overrides it to 2.0m
+after admitting the perception-demo geometry and hover height.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -35,11 +42,18 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     # flight_type: 1=MANUAL_TARGET(/move_base_simple/goal) 2=PRESET_TARGET(waypoint 列表)
     flight_type = LaunchConfiguration('flight_type')
+    virtual_ceil_height = LaunchConfiguration('virtual_ceil_height')
 
     declare_sim = DeclareLaunchArgument('use_sim_time', default_value='true')
     declare_ft = DeclareLaunchArgument(
         'flight_type', default_value='1',
         description='1=MANUAL_TARGET(默认, 订 /move_base_simple/goal) 2=PRESET_TARGET')
+    declare_virtual_ceil = DeclareLaunchArgument(
+        'virtual_ceil_height', default_value='3.2',
+        description=(
+            'EGO absolute odom hard ceiling in metres. The G8 '
+            'perception_demo wrapper overrides this to 2.0m for its '
+            'fixed-height horizontal-bypass contract.'))
 
     ego_params = {
         'use_sim_time': use_sim_time,
@@ -50,24 +64,52 @@ def generate_launch_description():
         'fsm/planning_horizon': 7.5,
         'fsm/planning_horizen_time': 3.0,
         'fsm/emergency_time': 1.0,
+        # Leave EMERGENCY_STOP only after a published stop trajectory, fresh
+        # odom/cloud, bounded low velocity for several cycles and a 0.5s hold.
+        'fsm/emergency_recovery_hold_time': 0.5,
+        'fsm/emergency_recovery_stable_cycles': 5,
+        'fsm/emergency_recovery_max_speed': 0.1,
+        'fsm/emergency_recovery_clock_jump_limit': 1.0,
+        # A local publish is not an execution ACK.  EGO waits for a newer
+        # matching /position_cmd trajectory_id, retrying within these bounds.
+        'fsm/emergency_recovery_ack_timeout': 0.5,
+        'fsm/emergency_recovery_ack_retry_period': 0.5,
+        'fsm/emergency_recovery_ack_retry_max_period': 5.0,
+        'fsm/traj_server_ack_topic': 'trajectory_ack',
+        'fsm/traj_server_node_name': 'traj_server',
+        'fsm/traj_server_node_fqn': '/traj_server',
+        'fsm/odom_freshness_timeout': 1.0,
+        'fsm/waypoint_future_tolerance': 0.2,
         'fsm/realworld_experiment': False,   # False => have_trigger_ 初始 true, 无需 /traj_start_trigger
         'fsm/fail_safe': True,
         'fsm/waypoint_num': 0,               # MANUAL_TARGET 模式不用 waypoint 列表
         # ---- grid_map (按 MID-360 重调) ----
         'grid_map/resolution': 0.1,
-        'grid_map/map_size_x': 50.0,
+        # E2 can legitimately reach x≈25.2 and E3/E4 retain a conservative
+        # 4m local candidate cap.  The former 50m map (x=±25) clipped that
+        # valid boundary pose and invalidated odom/cloud fail-closed.
+        'grid_map/map_size_x': 80.0,
         'grid_map/map_size_y': 25.0,
-        'grid_map/map_size_z': 3.0,
+        # /pointcloud_nonground 只提供障碍表面，不是飞行高度约束。地图下界
+        # 同时是 EGO 的规划最低飞行边界；保留冻结基线 0.50m，防止优化器
+        # 从柱体下方钻入地面/机体净空区。低于该边界的采样落在图外，
+        # GridMap::getInflateOccupancy() 按 fail-closed 语义返回占据。
+        'grid_map/map_size_z': 5.0,
         'grid_map/local_update_range_x': 8.0,
         'grid_map/local_update_range_y': 8.0,
         'grid_map/local_update_range_z': 3.0,
-        'grid_map/obstacles_inflation': 0.35,
+        # Point-cloud surface + vehicle footprint/safety margin; keeps the
+        # acceptance clearance meaningful instead of weakening the test.
+        'grid_map/obstacles_inflation': 0.80,
         'grid_map/local_map_margin': 10,
-        # 地面在 odom 系的高度每会话不同 (-0.98 ~ -0.06, schedule.md M4.0 踩坑), 而 EGO
-        # 的 grid_map 无地面剔除 (cloudCallback 把图内所有点膨胀为障碍)。取高于地面带的值
-        # 让地面回波落到图外被忽略 —— 否则 (a) 地面成为"地板"障碍, (b) 大量地面点 raycast
-        # 拖垮 CPU 引发 RTF 崩/EKF 退化 (实测两次飞行中 time jump + attitude failsafe)。
-        # 地面带最高 -0.06 → 取 0.5; 机体飞行高度 ~1.0-1.5 (odom) 仍在地图 [0.5,3.5] 内。
+        # 这是规划最低飞行边界，不是 semantic_map 的地面剔除阈值；各会话
+        # odom 地面虽可为负值，但 EGO 不得规划到贴地/地下。map_size_z=5.0
+        # 生产默认 virtual_ceil_height=3.2m 保持历史通用规划走廊；G8
+        # perception_demo 的 wrapper 显式传 2.0m：pillar_1 world top=3.0m、
+        # 日志中 odom top≈2.36m、hover≈1.5m，因此 2.0m 在柱顶下方留约
+        # 0.36m、在 hover 上方留约 0.5m，保持 E1 水平绕柱语义。
+        # GridMap::getInflateOccupancy() 对传入值做连续硬拒绝，不能越过
+        # 单 voxel ceiling。
         'grid_map/ground_height': 0.5,
         'grid_map/cx': 321.04638671875,
         'grid_map/cy': 243.44969177246094,
@@ -87,11 +129,31 @@ def generate_launch_description():
         'grid_map/p_occ': 0.80,
         'grid_map/min_ray_length': 0.1,
         'grid_map/max_ray_length': 10.0,
-        'grid_map/virtual_ceil_height': 3.2,
+        'grid_map/virtual_ceil_height': virtual_ceil_height,
         'grid_map/visualization_truncate_height': 3.0,
         'grid_map/show_occ_time': False,
         'grid_map/pose_type': 1,
         'grid_map/frame_id': 'odom',
+        # EGO must stop/replan-safe when semantic_map stops producing a
+        # non-empty trusted cloud; this bounds stale obstacle data to 1s.
+        'grid_map/trusted_cloud_timeout': 1.0,
+        'grid_map/trusted_cloud_future_tolerance': 0.2,
+        # Odometry is a hard prerequisite for trusted occupancy.  A stopped
+        # or reset ROS clock clears the layer; keep the freshness bound at or
+        # below one second so a continuing cloud cannot revive stale state.
+        'grid_map/odom_freshness_timeout': 1.0,
+        'grid_map/odom_clock_jump_limit': 10.0,
+        # Checked before pcl::fromROSMsg to bound direct PointCloud2 inputs.
+        'grid_map/max_trusted_cloud_points': 200000,
+        # /pointcloud_nonground is obstacle-only: a sparse/occluded frame is
+        # not free space.  Retain trusted occupancy for a bounded window;
+        # invalid/empty semantic frames still clear it fail-closed.
+        'grid_map/trusted_cloud_persistence_frames': 20,
+        # MID-360 returns obstacle surfaces at sparse vertical slices.  Keep
+        # a bounded vertical safety margin so EGO cannot pass through a
+        # surface between two trusted returns; horizontal clearance remains
+        # governed by obstacles_inflation and the G8 >0.8m contract.
+        'grid_map/trusted_cloud_vertical_inflation': 0.40,
         # ---- manager / optimization ----
         'manager/max_vel': 2.0,
         'manager/max_acc': 6.0,
@@ -105,7 +167,8 @@ def generate_launch_description():
         'optimization/lambda_collision': 0.5,
         'optimization/lambda_feasibility': 0.1,
         'optimization/lambda_fitness': 1.0,
-        'optimization/dist0': 0.5,
+        # Match the 0.8m center-clearance contract used by G8.
+        'optimization/dist0': 0.80,
         'optimization/swarm_clearance': 0.5,
         'optimization/max_vel': 2.0,
         'optimization/max_acc': 6.0,
@@ -124,7 +187,7 @@ def generate_launch_description():
         output='screen',
         parameters=[ego_params],
         remappings=[
-            ('grid_map/cloud', '/pointcloud_filtered'),
+            ('grid_map/cloud', '/pointcloud_nonground'),
             ('grid_map/odom', '/odom'),
             ('odom_world', '/odom'),
             ('planning/bspline', '/planning/bspline'),
@@ -141,11 +204,16 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'traj_server/output_frame': 'odom',
+            'traj_server/position_cmd_topic': 'position_cmd',
+            'traj_server/ack_topic': 'trajectory_ack',
+            'traj_server/source_node_name': 'traj_server',
         }],
         remappings=[
             ('planning/bspline', '/planning/bspline'),
-            # position_cmd 默认即 /position_cmd (traj_server.cpp 用绝对名)
+        # 两个输出均使用可 remap 的相对名；FSM 的恢复确认来自 trajectory_ack，
+        # 周期性 position_cmd 只作为飞控指令流。
         ],
     )
 
-    return LaunchDescription([declare_sim, declare_ft, ego_node, traj_node])
+    return LaunchDescription([
+        declare_sim, declare_ft, declare_virtual_ceil, ego_node, traj_node])

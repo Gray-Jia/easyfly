@@ -53,7 +53,9 @@ namespace ego_planner
     GridMap::Ptr grid_map_;
     fast_planner::ObjPredictor::Ptr obj_predictor_;    
     SwarmTrajData swarm_trajs_buf_;
-    rclcpp::Clock _clock;
+    // The planner publishes trajectory timestamps, so it must use the clock
+    // attached to the owning node (including /clock when use_sim_time=true).
+    rclcpp::Clock::SharedPtr clock_;
 
   private:
     /* main planning algorithms & modules */

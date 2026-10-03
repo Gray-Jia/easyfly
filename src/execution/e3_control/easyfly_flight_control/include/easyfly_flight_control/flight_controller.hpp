@@ -17,6 +17,8 @@
 #include <easyfly_msgs/srv/set_flight_mode.hpp>
 #include <quadrotor_msgs/msg/position_command.hpp>
 
+#include "easyfly_flight_control/trajectory_startup_timeout.hpp"
+
 namespace easyfly_flight_control
 {
 
@@ -99,16 +101,16 @@ private:
   // Accepted goal 的所有失败/竞态退出统一经这些 helper 收尾，确保 reservation
   // 与 goal handle 不会在 action 已接受后悬挂。
   void finish_takeoff_goal(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> & gh,
+    std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> gh,
     const std::string & message);
   void finish_land_goal(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> & gh,
+    std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh,
     const std::string & message, bool keep_hover);
   void finish_waypoint_goal(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> & gh,
+    std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> gh,
     const std::string & message);
   void finish_traj_goal(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>> & gh,
+    std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>> gh,
     const std::string & message);
 
   // ---- subscriptions ----
@@ -188,8 +190,9 @@ private:
   std::atomic<bool> traj_cmd_received_{false};
   double traj_target_x_{0.0}, traj_target_y_{0.0}, traj_target_z_{0.0};
   double traj_accept_radius_{0.8};
-  double traj_stream_timeout_{0.5};                  // 流断判定 [s]
-  double traj_startup_grace_{2.0};                   // 起始等首帧宽限 [s] (无则视为流断)
+  double traj_stream_timeout_{kTrajectoryStreamTimeout};  // 首帧后流断判定 [s]
+  double traj_startup_grace_{kDefaultTrajectoryStartupGrace};
+  // 首帧前等待 EGO 有界重试；独立于 traj_stream_timeout_ 和 action deadline。
   int    traj_in_radius_frames_{0};                  // 到达判定去抖
   rclcpp::Time traj_accept_time_;
   rclcpp::Time traj_deadline_;
@@ -208,6 +211,7 @@ private:
   double land_timeout_{30.0};
   double max_altitude_{50.0};
   double max_horizontal_speed_{20.0};
+  double max_goal_distance_{100.0};
 };
 
 }  // namespace easyfly_flight_control

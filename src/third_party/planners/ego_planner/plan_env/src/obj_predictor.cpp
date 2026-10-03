@@ -46,7 +46,7 @@ void ObjHistory::poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr m
 
   Eigen::Vector4d pos_t;
   pos_t(0) = msg->pose.position.x, pos_t(1) = msg->pose.position.y, pos_t(2) = msg->pose.position.z;
-  pos_t(3) = (_clock.now() - global_start_time_).seconds();
+  pos_t(3) = (clock_->now() - global_start_time_).seconds();
 
   history_.push_back(pos_t);
   // cout << "idx: " << obj_idx_ << "pos_t: " << pos_t.transpose() << endl;
@@ -93,11 +93,12 @@ void ObjPredictor::init() {
     scale_init_[i] = false;
 
   /* subscribe to pose */
-  rclcpp::Time t_now = _clock.now();
+  rclcpp::Time t_now = node_handle_->get_clock()->now();
   for (int i = 0; i < obj_num_; i++) {
     shared_ptr<ObjHistory> obj_his(new ObjHistory);
 
     obj_his->init(i, skip_nums, queue_size, t_now);
+    obj_his->setClock(node_handle_->get_clock());
     obj_histories_.push_back(obj_his);
   //TAG 这里，类内订阅一个话题，并且指定回调函数为类内成员变量 的 一个成员函数
   //TAG 另外一般放在回调函数的那个地方的东西就是函数地址（就是没有括号的那个），那这里用到lamba表达式等效于一个匿名函数的地址

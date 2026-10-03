@@ -86,6 +86,13 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION include/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_collision_sampling test/test_collision_sampling.cpp)
+  target_include_directories(test_collision_sampling PRIVATE include)
+  target_link_libraries(test_collision_sampling ${PROJECT_NAME})
+endif()
+
 ament_export_targets(${PROJECT_NAME}Targets HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME})

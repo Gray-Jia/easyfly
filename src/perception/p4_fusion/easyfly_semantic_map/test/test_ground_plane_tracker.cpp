@@ -144,6 +144,94 @@ TEST(GroundPlaneTrackerTest, SmoothsSlowGroundChange)
   EXPECT_LT(smoothed_z, -0.55);
 }
 
+TEST(GroundPlaneTrackerTest, FreezesTrustedModelWhileArmed)
+{
+  auto tracker = initializedTracker();
+  const double trusted_z = tracker.model().zAt(0.0, 0.0);
+
+  // A plausible but different RANSAC plane must not move the trusted model
+  // while the aircraft is armed; this is an expected freeze, not rejection.
+  EXPECT_EQ(
+    tracker.update(horizontalCandidate(-0.20), vehicle(2.5, true)),
+    GroundPlaneUpdate::kFrozen);
+  EXPECT_NEAR(tracker.model().zAt(0.0, 0.0), trusted_z, 1e-6);
+}
+
+TEST(GroundPlaneTrackerTest, FreezesTrustedModelWhenDisconnected)
+{
+  auto tracker = initializedTracker();
+  const double trusted_z = tracker.model().zAt(0.0, 0.0);
+  auto state = vehicle();
+  state.connected = false;
+
+  EXPECT_EQ(
+    tracker.update(horizontalCandidate(-0.20), state),
+    GroundPlaneUpdate::kFrozen);
+  EXPECT_NEAR(tracker.model().zAt(0.0, 0.0), trusted_z, 1e-6);
+}
+
+TEST(GroundPlaneTrackerTest, FreezesTrustedModelWhenPoseIsInvalid)
+{
+  auto tracker = initializedTracker();
+  const double trusted_z = tracker.model().zAt(0.0, 0.0);
+  auto state = vehicle();
+  state.pose_valid = false;
+
+  EXPECT_EQ(
+    tracker.update(horizontalCandidate(-0.20), state),
+    GroundPlaneUpdate::kFrozen);
+  EXPECT_NEAR(tracker.model().zAt(0.0, 0.0), trusted_z, 1e-6);
+}
+
+TEST(GroundPlaneTrackerTest, FreezesTrustedModelWhenStateIsStale)
+{
+  auto tracker = initializedTracker();
+  const double trusted_z = tracker.model().zAt(0.0, 0.0);
+  auto state = vehicle();
+  state.state_age_s = 2.0;
+
+  EXPECT_EQ(
+    tracker.update(horizontalCandidate(-0.20), state),
+    GroundPlaneUpdate::kFrozen);
+  EXPECT_NEAR(tracker.model().zAt(0.0, 0.0), trusted_z, 1e-6);
+}
+
+TEST(GroundPlaneTrackerTest, FreshDisarmedStateRecoversAfterStaleFreeze)
+{
+  auto tracker = initializedTracker();
+  const double trusted_z = tracker.model().zAt(0.0, 0.0);
+  auto stale = vehicle();
+  stale.state_age_s = 2.0;
+
+  EXPECT_EQ(
+    tracker.update(horizontalCandidate(-0.55), stale),
+    GroundPlaneUpdate::kFrozen);
+  EXPECT_NEAR(tracker.model().zAt(0.0, 0.0), trusted_z, 1e-6);
+
+  EXPECT_EQ(
+    tracker.update(horizontalCandidate(-0.55), vehicle()),
+    GroundPlaneUpdate::kAccepted);
+  EXPECT_GT(tracker.model().zAt(0.0, 0.0), trusted_z);
+}
+
+TEST(GroundPlaneTrackerTest, DisarmedStateCanUpdateAfterArmedFreeze)
+{
+  auto tracker = initializedTracker();
+  const double trusted_z = tracker.model().zAt(0.0, 0.0);
+
+  EXPECT_EQ(
+    tracker.update(horizontalCandidate(-0.55), vehicle(2.5, true)),
+    GroundPlaneUpdate::kFrozen);
+  EXPECT_NEAR(tracker.model().zAt(0.0, 0.0), trusted_z, 1e-6);
+
+  // Once disarmed, the existing innovation/smoothing policy is restored.
+  EXPECT_EQ(
+    tracker.update(horizontalCandidate(-0.55), vehicle(2.5, false)),
+    GroundPlaneUpdate::kAccepted);
+  EXPECT_GT(tracker.model().zAt(0.0, 0.0), trusted_z);
+  EXPECT_LT(tracker.model().zAt(0.0, 0.0), -0.55);
+}
+
 TEST(GroundPlaneTrackerTest, PersistentAircraftHeightPlanesNeverReplaceModel)
 {
   auto tracker = initializedTracker();

@@ -38,6 +38,10 @@ install(DIRECTORY launch config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_trajectory_startup_timeout
+    test/test_trajectory_startup_timeout.cpp)
+  target_include_directories(test_trajectory_startup_timeout PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
 
 ament_package()

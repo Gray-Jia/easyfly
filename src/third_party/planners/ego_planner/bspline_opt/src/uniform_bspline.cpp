@@ -1,6 +1,9 @@
 #include "bspline_opt/uniform_bspline.h"
 #include "rclcpp/rclcpp.hpp"
 
+#include <cmath>
+#include <limits>
+
 namespace ego_planner
 {
 
@@ -45,7 +48,7 @@ namespace ego_planner
 
   Eigen::VectorXd UniformBspline::getKnot() { return this->u_; }
 
-  bool UniformBspline::getTimeSpan(double &um, double &um_p)
+  bool UniformBspline::getTimeSpan(double &um, double &um_p) const
   {
     if (p_ > u_.rows() || m_ - p_ > u_.rows())
       return false;
@@ -281,13 +284,45 @@ namespace ego_planner
     // cout << "[B-spline]: parameterization ok." << endl;
   }
 
-  double UniformBspline::getTimeSum()
+  double UniformBspline::getTimeSum() const
   {
     double tm, tmp;
     if (getTimeSpan(tm, tmp))
       return tmp - tm;
     else
       return -1.0;
+  }
+
+  double UniformBspline::getMaxVelocityBound() const
+  {
+    if (control_points_.cols() < 2 || p_ <= 0 || u_.size() == 0)
+    {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    double max_speed = 0.0;
+    for (int i = 0; i + 1 < control_points_.cols(); ++i)
+    {
+      const int denominator_index = i + p_ + 1;
+      if (denominator_index >= u_.rows())
+      {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      const double denominator = u_(denominator_index) - u_(i + 1);
+      if (!std::isfinite(denominator) || denominator <= 0.0)
+      {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      const double speed = static_cast<double>(p_) *
+          (control_points_.col(i + 1) - control_points_.col(i)).norm() /
+          denominator;
+      if (!std::isfinite(speed))
+      {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      max_speed = std::max(max_speed, speed);
+    }
+    return max_speed;
   }
 
   double UniformBspline::getLength(const double &res)

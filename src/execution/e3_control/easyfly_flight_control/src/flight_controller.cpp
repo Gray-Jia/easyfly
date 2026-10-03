@@ -18,6 +18,21 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   land_timeout_ = declare_parameter("land_timeout", 60.0);
   max_altitude_ = declare_parameter("max_altitude", 50.0);
   max_horizontal_speed_ = declare_parameter("max_horizontal_speed", 20.0);
+  max_goal_distance_ = declare_parameter("max_goal_distance", 100.0);
+  const double configured_traj_startup_grace = declare_parameter(
+    "trajectory_startup_grace", kDefaultTrajectoryStartupGrace);
+  traj_startup_grace_ = sanitizeTrajectoryStartupGrace(configured_traj_startup_grace);
+  if (traj_startup_grace_ != configured_traj_startup_grace) {
+    RCLCPP_WARN(
+      get_logger(),
+      "trajectory_startup_grace=%.3fs 无效或超出 [%.1f, %.1f]，回退安全默认 %.1fs",
+      configured_traj_startup_grace, kMinTrajectoryStartupGrace,
+      kMaxTrajectoryStartupGrace, kDefaultTrajectoryStartupGrace);
+  }
+  RCLCPP_INFO(
+    get_logger(),
+    "FollowTrajectory watchdog: startup grace=%.2fs, post-start stream timeout=%.2fs",
+    traj_startup_grace_, traj_stream_timeout_);
   auto period = std::chrono::milliseconds(static_cast<int>(1000.0 / ctl_rate_));
   auto qos = rclcpp::QoS(10);
 
@@ -67,6 +82,14 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
 
 void FlightController::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
 {
+  if (!msg || !std::isfinite(msg->position_x) || !std::isfinite(msg->position_y) ||
+      !std::isfinite(msg->position_z) || !std::isfinite(msg->yaw) ||
+      !std::isfinite(msg->velocity_x) || !std::isfinite(msg->velocity_y) ||
+      !std::isfinite(msg->velocity_z)) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+      "拒绝无效 /uav_state: 位姿或速度包含非有限值");
+    return;
+  }
   {  // Q9: 与 control_loop / 模式校验轮询的跨线程读写保护
     std::lock_guard<std::mutex> lk(state_mtx_);
     uav_ = *msg;
@@ -120,6 +143,23 @@ void FlightController::cb_position_cmd(
     return;
   }
   if (msg_time + rclcpp::Duration::from_seconds(0.02) < traj_accept_time_) return;
+  if (waiting_for_first_frame) {
+    // Re-check with the ROS clock while holding the state lock.  A frame may
+    // have arrived before the deadline but wait behind control_loop; it must
+    // not activate a trajectory after the bounded startup/deadline window.
+    const auto wait_check_time = now();
+    const double startup_gap = (wait_check_time - traj_accept_time_).seconds();
+    const double action_deadline_seconds =
+      (traj_deadline_ - traj_accept_time_).seconds();
+    if (trajectoryStartupTimedOut(
+        startup_gap, traj_startup_grace_, action_deadline_seconds)) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "拒绝过期首帧 /position_cmd: gap=%.2fs, action deadline=%.2fs",
+        startup_gap, action_deadline_seconds);
+      return;
+    }
+  }
   if (waiting_for_first_frame && !advances_wait_watermark) return;
   if (active_ == TRAJECTORY && msg->trajectory_id < traj_active_id_) return;
   traj_seen_max_id_ = std::max(traj_seen_max_id_, msg->trajectory_id);
@@ -410,11 +450,27 @@ void FlightController::control_loop()
     cmd.position_x = hover_x_; cmd.position_y = hover_y_;
     cmd.position_z = hover_z_; cmd.yaw = hover_yaw_;
     pub_uav_cmd_->publish(cmd);
-    const double gap = (now() - traj_accept_time_).seconds();
-    if (gap > traj_startup_grace_) {
+    const auto wait_now = now();
+    const double gap = (wait_now - traj_accept_time_).seconds();
+    const double action_deadline_seconds =
+      (traj_deadline_ - traj_accept_time_).seconds();
+    const double action_remaining = (traj_deadline_ - wait_now).seconds();
+    if (trajectoryStartupTimedOut(
+        gap, traj_startup_grace_, action_deadline_seconds)) {
+      const bool action_deadline_elapsed =
+        !std::isfinite(action_remaining) || action_remaining <= 0.0;
+      RCLCPP_ERROR(
+        get_logger(),
+        "FollowTrajectory 首帧超时: gap=%.2fs, startup grace=%.2fs, "
+        "action remaining=%.2fs (%s; 首帧后流断门仍为 %.2fs)",
+        gap, traj_startup_grace_, action_remaining,
+        action_deadline_elapsed ? "action deadline" : "startup grace",
+        traj_stream_timeout_);
       if (gh_traj_) {
         auto r = std::make_shared<FollowTrajectory::Result>();
-        r->success = false; r->message = "trajectory_start_timeout";
+        r->success = false;
+        r->message = action_deadline_elapsed ?
+          "trajectory_timeout_before_start" : "trajectory_start_timeout";
         gh_traj_->abort(r); gh_traj_.reset();
       }
       action_reserved_ = false;
@@ -431,11 +487,41 @@ void FlightController::control_loop()
       c = latest_cmd_;
       t_cmd = traj_cmd_time_;
     }
-    // 流断判定: 已流过 → >traj_stream_timeout_ 无新帧; 从未流过 → 超过起始宽限
-    const double gap = have_cmd ? (now() - t_cmd).seconds()
-                                : (now() - traj_accept_time_).seconds();
-    const bool stream_lost = have_cmd ? (gap > traj_stream_timeout_)
-                                      : (gap > traj_startup_grace_);
+    const auto trajectory_now = now();
+    const double action_gap = (trajectory_now - traj_accept_time_).seconds();
+    const double action_deadline_seconds =
+      (traj_deadline_ - traj_accept_time_).seconds();
+    // The command must be checked before any TRAJECTORY setpoint is
+    // published.  This closes the boundary race where a late callback
+    // activates the state just after the action deadline.
+    if (trajectoryDeadlineExpired(action_gap, action_deadline_seconds)) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "FollowTrajectory action deadline reached before publish "
+        "(gap=%.2fs, deadline=%.2fs) → 就地悬停 + abort",
+        action_gap, action_deadline_seconds);
+      if (gh_traj_) {
+        auto r = std::make_shared<FollowTrajectory::Result>();
+        r->success = false; r->message = "timeout";
+        gh_traj_->abort(r); gh_traj_.reset();
+      }
+      if (have_cmd) {
+        enter_hover_at(
+          safe_axis(uav.position_x, c.position.x),
+          safe_axis(uav.position_y, c.position.y),
+          safe_axis(uav.position_z, c.position.z),
+          c.yaw);
+      } else {
+        enter_hover_at(uav.position_x, uav.position_y, uav.position_z, uav.yaw);
+      }
+      return;
+    }
+
+    // 流断判定: 已流过 → >=traj_stream_timeout_ 无新帧; 从未流过 → >=起始宽限
+    const double gap = have_cmd ? (trajectory_now - t_cmd).seconds()
+                                : action_gap;
+    const bool stream_lost = trajectoryStreamLost(
+      have_cmd, gap, traj_startup_grace_, traj_stream_timeout_);
     if (stream_lost) {
       RCLCPP_ERROR(get_logger(),
         "FollowTrajectory 流断 (%.2fs 无 /position_cmd) → 就地悬停 + abort", gap);
@@ -479,6 +565,23 @@ void FlightController::control_loop()
       fb->stream_active = true;
       gh_traj_->publish_feedback(fb);
 
+      // Keep the action boundary fail-safe even if the control tick crossed
+      // it while publishing the last valid command.
+      if (trajectoryDeadlineExpired(
+          (now() - traj_accept_time_).seconds(), action_deadline_seconds)) {
+        RCLCPP_ERROR(get_logger(),
+          "FollowTrajectory 超时 (dist=%.2f), abort + 就地悬停", dist);
+        auto r = std::make_shared<FollowTrajectory::Result>();
+        r->success = false; r->message = "timeout";
+        gh_traj_->abort(r); gh_traj_.reset();
+        enter_hover_at(
+          safe_axis(uav.position_x, c.position.x),
+          safe_axis(uav.position_y, c.position.y),
+          safe_axis(uav.position_z, c.position.z),
+          c.yaw);
+        return;
+      }
+
       if (dist < traj_accept_radius_) ++traj_in_radius_frames_;
       else                            traj_in_radius_frames_ = 0;
 
@@ -492,16 +595,6 @@ void FlightController::control_loop()
         x_ramp_ = traj_target_x_; y_ramp_ = traj_target_y_; z_ramp_ = traj_target_z_;
         active_ = HOVER;
         action_reserved_ = false;
-      } else if (now() > traj_deadline_) {
-        RCLCPP_ERROR(get_logger(), "FollowTrajectory 超时 (dist=%.2f), abort + 就地悬停", dist);
-        auto r = std::make_shared<FollowTrajectory::Result>();
-        r->success = false; r->message = "timeout";
-        gh_traj_->abort(r); gh_traj_.reset();
-        enter_hover_at(
-          safe_axis(uav.position_x, c.position.x),
-          safe_axis(uav.position_y, c.position.y),
-          safe_axis(uav.position_z, c.position.z),
-          c.yaw);
       }
     }
   }
@@ -761,6 +854,15 @@ rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
     return rclcpp_action::GoalResponse::REJECT;
   }
   const auto uav = get_uav();
+  const double distance = std::hypot(
+    g->target_x - uav.position_x, g->target_y - uav.position_y);
+  if (!std::isfinite(max_goal_distance_) || max_goal_distance_ <= 0.0 ||
+      !std::isfinite(distance) || distance > max_goal_distance_) {
+    RCLCPP_WARN(get_logger(),
+      "拒绝 GoToWaypoint: 目标水平距离 %.2fm 超出上限 %.2fm",
+      distance, max_goal_distance_);
+    return rclcpp_action::GoalResponse::REJECT;
+  }
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
   if (active_ != HOVER || action_reserved_ || !flight_state_ready(uav) || !uav.armed) {
     return rclcpp_action::GoalResponse::REJECT;
@@ -824,6 +926,15 @@ rclcpp_action::GoalResponse FlightController::handle_traj_goal(
   }
   // 仅 HOVER 可进入 (与既有单动作槽互斥); 需已 arm
   const auto uav = get_uav();
+  const double distance = std::hypot(
+    g->target_x - uav.position_x, g->target_y - uav.position_y);
+  if (!std::isfinite(max_goal_distance_) || max_goal_distance_ <= 0.0 ||
+      !std::isfinite(distance) || distance > max_goal_distance_) {
+    RCLCPP_WARN(get_logger(),
+      "拒绝 FollowTrajectory: 目标水平距离 %.2fm 超出上限 %.2fm",
+      distance, max_goal_distance_);
+    return rclcpp_action::GoalResponse::REJECT;
+  }
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
   if (active_ != HOVER || action_reserved_ || !uav.armed || !flight_state_ready(uav)) {
     return rclcpp_action::GoalResponse::REJECT;
@@ -907,7 +1018,7 @@ void FlightController::enter_hover_at(double x, double y, double z, double yaw)
 }
 
 void FlightController::finish_takeoff_goal(
-  const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> & gh,
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> gh,
   const std::string & message)
 {
   if (!gh) return;
@@ -932,7 +1043,7 @@ void FlightController::finish_takeoff_goal(
 }
 
 void FlightController::finish_land_goal(
-  const std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> & gh,
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh,
   const std::string & message, bool keep_hover)
 {
   if (!gh) return;
@@ -958,7 +1069,7 @@ void FlightController::finish_land_goal(
 }
 
 void FlightController::finish_waypoint_goal(
-  const std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> & gh,
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> gh,
   const std::string & message)
 {
   if (!gh) return;
@@ -982,7 +1093,7 @@ void FlightController::finish_waypoint_goal(
 }
 
 void FlightController::finish_traj_goal(
-  const std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>> & gh,
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>> gh,
   const std::string & message)
 {
   if (!gh) return;

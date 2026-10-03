@@ -142,11 +142,13 @@ include_directories(
 find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME} 
 "msg/Bspline.msg" 
 "msg/DataDisp.msg" 
-"msg/MultiBsplines.msg" 
-DEPENDENCIES builtin_interfaces geometry_msgs)
+"msg/MultiBsplines.msg"
+"msg/TrajectoryAck.msg"
+DEPENDENCIES builtin_interfaces geometry_msgs std_msgs)
 
 
 if(BUILD_TESTING)

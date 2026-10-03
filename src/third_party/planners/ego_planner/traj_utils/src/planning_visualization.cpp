@@ -26,7 +26,7 @@ namespace ego_planner
   {
     visualization_msgs::msg::Marker sphere, line_strip;
     sphere.header.frame_id = line_strip.header.frame_id = "world";
-    sphere.header.stamp = line_strip.header.stamp = _clock.now();
+    sphere.header.stamp = line_strip.header.stamp = node->get_clock()->now();
     sphere.type = visualization_msgs::msg::Marker::SPHERE_LIST;
     line_strip.type = visualization_msgs::msg::Marker::LINE_STRIP;
     sphere.action = line_strip.action = visualization_msgs::msg::Marker::ADD;
@@ -63,7 +63,7 @@ namespace ego_planner
     
     visualization_msgs::msg::Marker sphere, line_strip;
     sphere.header.frame_id = line_strip.header.frame_id = "map";
-    sphere.header.stamp = line_strip.header.stamp = _clock.now();
+    sphere.header.stamp = line_strip.header.stamp = node->get_clock()->now();
     sphere.type = visualization_msgs::msg::Marker::SPHERE_LIST;
     line_strip.type = visualization_msgs::msg::Marker::LINE_STRIP;
     sphere.action = line_strip.action = visualization_msgs::msg::Marker::ADD;
@@ -98,7 +98,7 @@ namespace ego_planner
   {
     visualization_msgs::msg::Marker arrow;
     arrow.header.frame_id = "map";
-    arrow.header.stamp = _clock.now();
+    arrow.header.stamp = node->get_clock()->now();
     arrow.type = visualization_msgs::msg::Marker::ARROW;
     arrow.action = visualization_msgs::msg::Marker::ADD;
 
@@ -139,7 +139,7 @@ namespace ego_planner
   {
     visualization_msgs::msg::Marker sphere;
     sphere.header.frame_id = "world";
-    sphere.header.stamp = _clock.now();
+    sphere.header.stamp = node->get_clock()->now();
     sphere.type = visualization_msgs::msg::Marker::SPHERE;
     sphere.action = visualization_msgs::msg::Marker::ADD;
     sphere.id = id;

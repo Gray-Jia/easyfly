@@ -15,6 +15,7 @@
 
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
+#include <cstddef>
 #include <cv_bridge/cv_bridge.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <iostream>
@@ -35,6 +36,10 @@
 #include <message_filters/time_synchronizer.h>
 
 #include <plan_env/raycast.h>
+#include <plan_env/inflation_safety.h>
+#include <plan_env/odom_freshness.h>
+#include <plan_env/trusted_cloud_persistence.h>
+#include <plan_env/virtual_ceiling.h>
 
 #define logit(x) (log((x) / (1 - (x))))
 
@@ -67,8 +72,29 @@ struct MappingParameters {
   Eigen::Vector3d local_update_range_;
   double resolution_, resolution_inv_;
   double obstacles_inflation_;
+  int inflation_step_;
+  std::size_t inflation_kernel_elements_;
+  // Vertical margin for the semantic trusted cloud.  The cloud contains
+  // obstacle surfaces, so a small z margin is required to cover sparse
+  // vertical returns at the vehicle's flight slice.
+  double trusted_cloud_vertical_inflation_;
+  int trusted_cloud_vertical_step_;
   string frame_id_;
   int pose_type_;
+  double trusted_cloud_timeout_;
+  double trusted_cloud_future_tolerance_;
+  // Odometry is a prerequisite for interpreting the trusted obstacle cloud.
+  // Keep this independently configurable, but cap it to a short fail-closed
+  // interval in initMap (the default is one second).
+  double odom_freshness_timeout_{1.0};
+  double odom_clock_jump_limit_{10.0};
+  std::size_t max_trusted_cloud_points_{200000};
+  // /pointcloud_nonground is an obstacle-only semantic stream.  A missing
+  // return in one frame is not a free-space observation, so accepted voxels
+  // are retained for this bounded number of subsequent trusted frames; the
+  // voxel expires on the frame that reaches the configured missing-frame
+  // boundary (20 by default).
+  std::size_t trusted_cloud_persistence_frames_{20};
 
   /* camera parameters */
   double cx_, cy_, fx_, fy_;
@@ -93,6 +119,9 @@ struct MappingParameters {
   int local_map_margin_;
 
   /* visualization and computation time display */
+  // Despite the historical parameter name, ground_height_ is the planner's
+  // lower flight boundary (map_origin_.z), not a semantic ground-removal
+  // threshold.  Samples below it are outside the map and must fail closed.
   double visualization_truncate_height_, virtual_ceil_height_, ground_height_, virtual_ceil_yp_, virtual_ceil_yn_;
   bool show_occ_time_;
 
@@ -124,9 +153,19 @@ struct MappingData {
   bool occ_need_update_, local_updated_;
   bool has_first_depth_;
   bool has_odom_, has_cloud_;
+  // Both the message timestamp and the node-clock receive time are retained:
+  // a fresh-looking message stamp cannot prove that the odometry stream is
+  // still arriving after the ROS clock advances.
+  plan_env::OdomFreshnessSample last_odom_sample_;
+  bool odom_clock_valid_{false};
+  // Age of each trusted-cloud inflated voxel.  This is separate from the
+  // depth-fusion occupancy buffer because cloudCallback receives obstacle
+  // surfaces only and must not interpret a sparse frame as free space.
+  std::vector<std::uint16_t> trusted_cloud_age_;
 
   // odom_depth_timeout_
   rclcpp::Time last_occ_update_time_;
+  rclcpp::Time last_trusted_cloud_time_;
   bool flag_depth_odom_timeout_;
   bool flag_use_depth_fusion;
 
@@ -197,12 +236,22 @@ public:
   inline double getResolution();
   Eigen::Vector3d getOrigin();
   int getVoxelNum();
+  // Planner bounds used by seed generation.  Keeping these accessors small
+  // avoids duplicating the virtual-ceiling parameter in plan_manage.
+  PLAN_ENV_PUBLIC inline double getGroundHeight() const { return mp_.ground_height_; }
+  PLAN_ENV_PUBLIC inline double getVirtualCeilingHeight() const { return mp_.virtual_ceil_height_; }
   PLAN_ENV_PUBLIC bool getOdomDepthTimeout() { return md_.flag_depth_odom_timeout_; }
+  // True only after a non-empty, finite trusted /pointcloud_nonground frame
+  // has been accepted, and only while it is fresh in the node's ROS clock.
+  PLAN_ENV_PUBLIC bool hasFreshTrustedCloud();
+  // Keep the historical const entry point for downstream callers; freshness
+  // checks may clear stale trusted state, so the implementation delegates to
+  // the non-const overload.
+  PLAN_ENV_PUBLIC bool hasFreshTrustedCloud() const;
 
   typedef std::shared_ptr<GridMap> Ptr;
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-  rclcpp::Clock _clock;
 private:
   MappingParameters mp_;
   MappingData md_;
@@ -222,6 +271,9 @@ private:
 
   // main update process
   void projectDepthImage();
+  void clearTrustedCloudState();
+  void clearOdomState();
+  bool checkOdomFreshness();
   void raycastProcess();
   void clearAndInflateLocalMap();
 
@@ -345,6 +397,16 @@ PLAN_ENV_PUBLIC inline int GridMap::getOccupancy(Eigen::Vector3d pos) {
 }
 
 PLAN_ENV_PUBLIC inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos) {
+  // Outside the map (including below the configured planning floor) is
+  // deliberately occupied to every collision caller: -1 is truthy in the
+  // optimizer/FSM checks, so a trajectory cannot escape the bounded volume by
+  // dipping below the floor.
+  // The virtual ceiling is a hard continuous boundary as well.  The map
+  // update path still marks one voxel below it for visualization/backward
+  // compatibility, but collision sampling must not be able to step over that
+  // sparse layer.
+  if (plan_env::virtualCeilingBlocks(pos(2), mp_.virtual_ceil_height_)) return -1;
+  if (!std::isfinite(pos(0)) || !std::isfinite(pos(1))) return -1;
   if (!isInMap(pos)) return -1;
 
   Eigen::Vector3i id;

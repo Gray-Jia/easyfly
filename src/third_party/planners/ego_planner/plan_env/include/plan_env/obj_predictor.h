@@ -121,12 +121,13 @@ public:
   void getHistory(list<Eigen::Vector4d>& his) {
     his = history_;
   }
-  rclcpp::Clock _clock;
+  void setClock(const rclcpp::Clock::SharedPtr & clock) { clock_ = clock; }
 private:
   list<Eigen::Vector4d> history_;  // x,y,z;t
   int skip_;
   int obj_idx_;
   Eigen::Vector3d scale_;
+  rclcpp::Clock::SharedPtr clock_;
 };
 
 /* ========== predict future trajectory using history ========== */
@@ -169,7 +170,6 @@ public:
   Eigen::Vector3d evaluateConstVel(int obs_id, double time);
 
   typedef shared_ptr<ObjPredictor> Ptr;
-  rclcpp::Clock _clock;
 };
 
 }  // namespace fast_planner

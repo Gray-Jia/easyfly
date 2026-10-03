@@ -6,3 +6,7 @@ flight_controller:
     land_timeout: 60.0
     max_altitude: 50.0
     max_horizontal_speed: 20.0
+    # EGO may need bounded collision-replan retries before its first READY
+    # /position_cmd.  This does not change the action deadline or post-start
+    # 0.5s stream watchdog.
+    trajectory_startup_grace: 8.0

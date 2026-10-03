@@ -1,9 +1,34 @@
 #include "plan_env/grid_map.h"
 #include "rclcpp/logging.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include <cmath>
 #include <functional>
+#include <limits>
+#include <stdexcept>
 // #define current_img_ md_.depth_image_[image_cnt_ & 1]
 // #define last_img_ md_.depth_image_[!(image_cnt_ & 1)]
+
+namespace
+{
+constexpr double kDefaultOdomFreshnessTimeout = 1.0;
+constexpr double kMaxOdomFreshnessTimeout = 1.0;
+constexpr double kDefaultOdomClockJumpLimit = 10.0;
+constexpr double kMaxOdomClockJumpLimit = 60.0;
+constexpr int kDefaultTrustedCloudPointLimit = 200000;
+constexpr int kMaxTrustedCloudPointLimit = 1000000;
+
+std::int64_t secondsToNanoseconds(const double seconds)
+{
+  if (!std::isfinite(seconds) || seconds < 0.0) {
+    return 0;
+  }
+  const long double nanoseconds = static_cast<long double>(seconds) * 1.0e9L;
+  if (nanoseconds >= static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
+    return std::numeric_limits<std::int64_t>::max();
+  }
+  return static_cast<std::int64_t>(nanoseconds);
+}
+}
 
 void GridMap::initMap(std::shared_ptr<rclcpp::Node> &nh)
 {
@@ -38,7 +63,10 @@ void GridMap::initMap(std::shared_ptr<rclcpp::Node> &nh)
   node_->declare_parameter<double>("grid_map/min_ray_length",-0.1);
   node_->declare_parameter<double>("grid_map/max_ray_length",-0.1);
   node_->declare_parameter<double>("grid_map/visualization_truncate_height",-0.1);
-  node_->declare_parameter<double>("grid_map/virtual_ceil_height",-0.1);
+  // -1.0 is the explicit disabled sentinel; positive values are hard
+  // continuous collision ceilings.  Keep declaration and helper semantics in
+  // the same disabled range so a bare launch cannot reject every sample.
+  node_->declare_parameter<double>("grid_map/virtual_ceil_height",-1.0);
   node_->declare_parameter<double>("grid_map/virtual_ceil_yp",-0.1);
   node_->declare_parameter<double>("grid_map/virtual_ceil_yn",-0.1);
   node_->declare_parameter<bool>("grid_map/show_occ_time",false);
@@ -47,6 +75,13 @@ void GridMap::initMap(std::shared_ptr<rclcpp::Node> &nh)
   node_->declare_parameter<int>("grid_map/local_map_margin",1);
   node_->declare_parameter<double>("grid_map/ground_height",1.0);
   node_->declare_parameter<double>("grid_map/odom_depth_timeout",1.0);
+  node_->declare_parameter<double>("grid_map/trusted_cloud_timeout",1.0);
+  node_->declare_parameter<double>("grid_map/trusted_cloud_future_tolerance",0.2);
+  node_->declare_parameter<double>("grid_map/odom_freshness_timeout",1.0);
+  node_->declare_parameter<double>("grid_map/odom_clock_jump_limit",10.0);
+  node_->declare_parameter<int>("grid_map/max_trusted_cloud_points",200000);
+  node_->declare_parameter<double>("grid_map/trusted_cloud_vertical_inflation",0.40);
+  node_->declare_parameter<int>("grid_map/trusted_cloud_persistence_frames",20);
 
   node_->get_parameter("grid_map/resolution",mp_.resolution_);
   node_->get_parameter("grid_map/map_size_x",x_size);
@@ -84,14 +119,91 @@ void GridMap::initMap(std::shared_ptr<rclcpp::Node> &nh)
   node_->get_parameter("grid_map/local_map_margin",mp_.local_map_margin_);
   node_->get_parameter("grid_map/ground_height",mp_.ground_height_);
   node_->get_parameter("grid_map/odom_depth_timeout",mp_.odom_depth_timeout_);
+  node_->get_parameter("grid_map/trusted_cloud_timeout",mp_.trusted_cloud_timeout_);
+  node_->get_parameter(
+      "grid_map/trusted_cloud_future_tolerance", mp_.trusted_cloud_future_tolerance_);
+  node_->get_parameter("grid_map/odom_freshness_timeout", mp_.odom_freshness_timeout_);
+  node_->get_parameter("grid_map/odom_clock_jump_limit", mp_.odom_clock_jump_limit_);
+  int configured_max_trusted_cloud_points = kDefaultTrustedCloudPointLimit;
+  node_->get_parameter(
+      "grid_map/max_trusted_cloud_points", configured_max_trusted_cloud_points);
+  node_->get_parameter(
+      "grid_map/trusted_cloud_vertical_inflation", mp_.trusted_cloud_vertical_inflation_);
+  int configured_persistence_frames = 20;
+  node_->get_parameter(
+      "grid_map/trusted_cloud_persistence_frames", configured_persistence_frames);
+  if (configured_persistence_frames <= 0 || configured_persistence_frames >
+      static_cast<int>(std::numeric_limits<std::uint16_t>::max())) {
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "grid_map/trusted_cloud_persistence_frames=%d 无效，使用 20 帧",
+        configured_persistence_frames);
+    configured_persistence_frames = 20;
+  }
+  mp_.trusted_cloud_persistence_frames_ =
+      static_cast<std::size_t>(configured_persistence_frames);
+  if (!std::isfinite(mp_.trusted_cloud_timeout_) || mp_.trusted_cloud_timeout_ <= 0.0) {
+    mp_.trusted_cloud_timeout_ = 1.0;
+  }
+  if (!std::isfinite(mp_.trusted_cloud_future_tolerance_) ||
+      mp_.trusted_cloud_future_tolerance_ < 0.0) {
+    mp_.trusted_cloud_future_tolerance_ = 0.2;
+  }
+  if (!std::isfinite(mp_.odom_freshness_timeout_) ||
+      mp_.odom_freshness_timeout_ <= 0.0 ||
+      mp_.odom_freshness_timeout_ > kMaxOdomFreshnessTimeout) {
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "grid_map/odom_freshness_timeout=%.17g 无效或超过 %.1fs，使用 %.1fs",
+        mp_.odom_freshness_timeout_, kMaxOdomFreshnessTimeout,
+        kDefaultOdomFreshnessTimeout);
+    mp_.odom_freshness_timeout_ = kDefaultOdomFreshnessTimeout;
+  }
+  if (!std::isfinite(mp_.odom_clock_jump_limit_) ||
+      mp_.odom_clock_jump_limit_ <= mp_.odom_freshness_timeout_ ||
+      mp_.odom_clock_jump_limit_ > kMaxOdomClockJumpLimit) {
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "grid_map/odom_clock_jump_limit=%.17g 无效，使用 %.1fs",
+        mp_.odom_clock_jump_limit_, kDefaultOdomClockJumpLimit);
+    mp_.odom_clock_jump_limit_ = kDefaultOdomClockJumpLimit;
+  }
+  if (configured_max_trusted_cloud_points <= 0 ||
+      configured_max_trusted_cloud_points > kMaxTrustedCloudPointLimit) {
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "grid_map/max_trusted_cloud_points=%d 无效，使用 %d",
+        configured_max_trusted_cloud_points, kDefaultTrustedCloudPointLimit);
+    configured_max_trusted_cloud_points = kDefaultTrustedCloudPointLimit;
+  }
+  mp_.max_trusted_cloud_points_ =
+      static_cast<std::size_t>(configured_max_trusted_cloud_points);
+  if (!std::isfinite(mp_.resolution_) || mp_.resolution_ <= 0.0 ||
+      !std::isfinite(1.0 / mp_.resolution_)) {
+    RCLCPP_FATAL(
+        node_->get_logger(),
+        "grid_map/resolution=%.17g 无效，必须为有限正值且倒数有限",
+        mp_.resolution_);
+    throw std::invalid_argument("grid_map/resolution must be finite and positive");
+  }
+  if (!std::isfinite(x_size) || !std::isfinite(y_size) || !std::isfinite(z_size) ||
+      x_size <= 0.0 || y_size <= 0.0 || z_size <= 0.0) {
+    RCLCPP_FATAL(
+        node_->get_logger(),
+        "grid_map/map_size 必须为有限正值: %.17g %.17g %.17g",
+        x_size, y_size, z_size);
+    throw std::invalid_argument("grid_map/map_size must be finite and positive");
+  }
 
-
-  if( mp_.virtual_ceil_height_ - mp_.ground_height_ > z_size)
+  if (mp_.virtual_ceil_height_ - mp_.ground_height_ > z_size)
   {
     mp_.virtual_ceil_height_ = mp_.ground_height_ + z_size;
   }
 
   mp_.resolution_inv_ = 1 / mp_.resolution_;
+  // ground_height_ is the lower planning boundary.  The semantic input is
+  // already ground-filtered, but EGO still needs a bounded flight volume so
+  // optimization cannot route below the physical floor to bypass an obstacle.
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
 
@@ -108,18 +220,104 @@ void GridMap::initMap(std::shared_ptr<rclcpp::Node> &nh)
   cout << "max: " << mp_.clamp_max_log_ << endl;
   cout << "thresh log: " << mp_.min_occupancy_log_ << endl;
 
-  for (int i = 0; i < 3; ++i)
-    mp_.map_voxel_num_(i) = ceil(mp_.map_size_(i) / mp_.resolution_);
+  for (int i = 0; i < 3; ++i) {
+    const long double voxel_count = std::ceil(
+        static_cast<long double>(mp_.map_size_(i)) /
+        static_cast<long double>(mp_.resolution_));
+    if (!std::isfinite(voxel_count) || voxel_count < 1.0L ||
+        voxel_count > static_cast<long double>(std::numeric_limits<int>::max())) {
+      RCLCPP_FATAL(
+          node_->get_logger(),
+          "grid_map/map_size[%d]/resolution 产生无效体素数: %.17Lg",
+          i, voxel_count);
+      throw std::invalid_argument("grid_map voxel count is out of range");
+    }
+    mp_.map_voxel_num_(i) = static_cast<int>(voxel_count);
+  }
+
+  plan_env::InflationKernelConfig inflation_kernel;
+  const double configured_inflation = mp_.obstacles_inflation_;
+  if (!plan_env::computeInflationKernel(
+          mp_.resolution_, configured_inflation,
+          mp_.map_voxel_num_(0), mp_.map_voxel_num_(1), mp_.map_voxel_num_(2),
+          inflation_kernel)) {
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "grid_map/obstacles_inflation=%.17g 或对应膨胀核超出安全范围，使用 0.80m",
+        configured_inflation);
+    if (!plan_env::computeInflationKernel(
+            mp_.resolution_, 0.80,
+            mp_.map_voxel_num_(0), mp_.map_voxel_num_(1), mp_.map_voxel_num_(2),
+            inflation_kernel)) {
+      RCLCPP_FATAL(
+          node_->get_logger(),
+          "默认 obstacles_inflation=0.80m 在当前 resolution/map 尺寸下也无法安全表示");
+      throw std::invalid_argument("grid_map inflation kernel is out of range");
+    }
+    mp_.obstacles_inflation_ = 0.80;
+  }
+  mp_.inflation_step_ = inflation_kernel.step;
+  mp_.inflation_kernel_elements_ = inflation_kernel.kernel_elements;
+
+  const double configured_vertical_inflation = mp_.trusted_cloud_vertical_inflation_;
+  if (!plan_env::computeTrustedCloudVerticalStep(
+          mp_.resolution_, configured_vertical_inflation,
+          mp_.map_voxel_num_(2), mp_.trusted_cloud_vertical_step_)) {
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "grid_map/trusted_cloud_vertical_inflation=%.17g 无效或超出安全范围，使用 0.40m",
+        configured_vertical_inflation);
+    mp_.trusted_cloud_vertical_inflation_ = 0.40;
+    if (!plan_env::computeTrustedCloudVerticalStep(
+            mp_.resolution_, mp_.trusted_cloud_vertical_inflation_,
+            mp_.map_voxel_num_(2), mp_.trusted_cloud_vertical_step_)) {
+      RCLCPP_FATAL(
+          node_->get_logger(),
+          "默认 trusted_cloud_vertical_inflation=0.40m 在当前 resolution/map 尺寸下无法安全表示");
+      throw std::invalid_argument("trusted cloud vertical inflation is out of range");
+    }
+  }
+
+  RCLCPP_INFO(
+      node_->get_logger(),
+      "GridMap trusted cloud: frame=%s inflation=%.2fm resolution=%.2fm "
+      "inflation_step=%d kernel=%zu vertical_inflation=%.2fm vertical_step=%d "
+      "planning_floor=%.2fm map_top=%.2fm virtual_ceil=%.2fm "
+      "fresh_timeout=%.2fs odom_timeout=%.2fs odom_jump=%.2fs max_points=%zu "
+      "persistence=%zu frames",
+      mp_.frame_id_.c_str(), mp_.obstacles_inflation_, mp_.resolution_,
+      mp_.inflation_step_, mp_.inflation_kernel_elements_,
+      mp_.trusted_cloud_vertical_inflation_, mp_.trusted_cloud_vertical_step_,
+      mp_.ground_height_, mp_.map_origin_(2) + mp_.map_size_(2),
+      mp_.virtual_ceil_height_,
+      mp_.trusted_cloud_timeout_, mp_.odom_freshness_timeout_,
+      mp_.odom_clock_jump_limit_, mp_.max_trusted_cloud_points_,
+      mp_.trusted_cloud_persistence_frames_);
 
   mp_.map_min_boundary_ = mp_.map_origin_;
   mp_.map_max_boundary_ = mp_.map_origin_ + mp_.map_size_;
 
   // initialize data buffers
 
-  int buffer_size = mp_.map_voxel_num_(0) * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2);
+  std::size_t buffer_size = 1;
+  for (int i = 0; i < 3; ++i) {
+    const std::size_t dim = static_cast<std::size_t>(mp_.map_voxel_num_(i));
+    if (dim == 0 || buffer_size > std::numeric_limits<std::size_t>::max() / dim) {
+      throw std::invalid_argument("grid_map buffer size overflow");
+    }
+    buffer_size *= dim;
+  }
+  // toAddress() intentionally returns int for compatibility with the
+  // original EGO planner.  Do not allocate a larger map that cannot be
+  // addressed safely by the existing API.
+  if (buffer_size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    RCLCPP_FATAL(node_->get_logger(), "grid_map buffer too large: %zu cells", buffer_size);
+    throw std::invalid_argument("grid_map buffer exceeds addressable size");
+  }
 
   md_.occupancy_buffer_ = vector<double>(buffer_size, mp_.clamp_min_log_ - mp_.unknown_flag_);
   md_.occupancy_buffer_inflate_ = vector<char>(buffer_size, 0);
+  md_.trusted_cloud_age_ = vector<std::uint16_t>(buffer_size, 0);
 
   md_.count_hit_and_miss_ = vector<short>(buffer_size, 0);
   md_.count_hit_ = vector<short>(buffer_size, 0);
@@ -185,8 +383,12 @@ void GridMap::initMap(std::shared_ptr<rclcpp::Node> &nh)
   md_.has_first_depth_ = false;
   md_.has_odom_ = false;
   md_.has_cloud_ = false;
+  md_.last_odom_sample_ = {};
+  md_.odom_clock_valid_ = false;
   md_.image_cnt_ = 0;
-  md_.last_occ_update_time_=rclcpp::Time(0,0);
+  const auto clock_type = node_->get_clock()->get_clock_type();
+  md_.last_occ_update_time_ = rclcpp::Time(0, 0, clock_type);
+  md_.last_trusted_cloud_time_ = rclcpp::Time(0, 0, clock_type);
 
   md_.fuse_time_ = 0.0;
   md_.update_num_ = 0;
@@ -228,7 +430,55 @@ void GridMap::resetBuffer(Eigen::Vector3d min_pos, Eigen::Vector3d max_pos)
       for (int z = min_id(2); z <= max_id(2); ++z)
       {
         md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 0;
+        plan_env::clearTrustedCloudVoxel(
+          md_.occupancy_buffer_inflate_, md_.trusted_cloud_age_,
+          static_cast<std::size_t>(toAddress(x, y, z)));
       }
+}
+
+void GridMap::clearTrustedCloudState()
+{
+  // /pointcloud_nonground is an obstacle-only stream.  When its producer or
+  // odometry becomes invalid, clear the complete trusted layer rather than a
+  // camera-relative window: otherwise an out-of-map/NaN camera pose can leave
+  // stale occupancy alive and a later valid pose can appear to resurrect it.
+  plan_env::clearTrustedCloudStorage(
+    md_.occupancy_buffer_inflate_, md_.trusted_cloud_age_);
+  md_.has_cloud_ = false;
+  const auto clock_type = node_->get_clock()->get_clock_type();
+  md_.last_trusted_cloud_time_ = rclcpp::Time(0, 0, clock_type);
+  md_.local_bound_min_ = Eigen::Vector3i::Zero();
+  md_.local_bound_max_ = mp_.map_voxel_num_ - Eigen::Vector3i::Ones();
+}
+
+void GridMap::clearOdomState()
+{
+  clearTrustedCloudState();
+  md_.has_odom_ = false;
+  md_.camera_pos_ = Eigen::Vector3d::Constant(
+    std::numeric_limits<double>::quiet_NaN());
+  md_.last_odom_sample_ = {};
+  md_.odom_clock_valid_ = false;
+}
+
+bool GridMap::checkOdomFreshness()
+{
+  if (!node_ || !md_.has_odom_ || !md_.odom_clock_valid_) {
+    clearOdomState();
+    return false;
+  }
+
+  const auto now_ns = node_->get_clock()->now().nanoseconds();
+  const auto result = plan_env::evaluateOdomFreshness(
+    md_.last_odom_sample_, now_ns,
+    secondsToNanoseconds(mp_.odom_freshness_timeout_),
+    secondsToNanoseconds(mp_.trusted_cloud_future_tolerance_),
+    secondsToNanoseconds(mp_.odom_clock_jump_limit_));
+  if (result != plan_env::OdomFreshnessResult::kFresh) {
+    clearOdomState();
+    return false;
+  }
+  return true;
 }
 
 int GridMap::setCacheOccupancy(Eigen::Vector3d pos, int occ)
@@ -646,10 +896,9 @@ void GridMap::clearAndInflateLocalMap()
 
   // inflate occupied voxels to compensate robot size
 
-  int inf_step = ceil(mp_.obstacles_inflation_ / mp_.resolution_);
+  const int inf_step = mp_.inflation_step_;
   // int inf_step_z = 1;
-  vector<Eigen::Vector3i> inf_pts(pow(2 * inf_step + 1, 3));
-  // inf_pts.resize(4 * inf_step + 3);
+  vector<Eigen::Vector3i> inf_pts(mp_.inflation_kernel_elements_);
   Eigen::Vector3i inf_pt;
 
   // clear outdated data
@@ -689,7 +938,9 @@ void GridMap::clearAndInflateLocalMap()
     int ceil_id = floor((mp_.virtual_ceil_height_ - mp_.map_origin_(2)) * mp_.resolution_inv_) - 1;
     for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
       for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y) {
-        md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
+        plan_env::markTrustedCloudVoxel(
+          md_.occupancy_buffer_inflate_, md_.trusted_cloud_age_,
+          static_cast<std::size_t>(toAddress(x, y, ceil_id)));
       }
   }
 }
@@ -703,23 +954,23 @@ void GridMap::visCallback()
 
 void GridMap::updateOccupancyCallback()
 {
-  if (md_.last_occ_update_time_.seconds() < 1.0 ) md_.last_occ_update_time_ = _clock.now();
+  if (md_.last_occ_update_time_.seconds() < 1.0 ) md_.last_occ_update_time_ = node_->get_clock()->now();
   
   if (!md_.occ_need_update_)
   {
-    if ( md_.flag_use_depth_fusion && (_clock.now() - md_.last_occ_update_time_).seconds() > mp_.odom_depth_timeout_ )
+    if ( md_.flag_use_depth_fusion && (node_->get_clock()->now() - md_.last_occ_update_time_).seconds() > mp_.odom_depth_timeout_ )
     {
       // ROS_ERROR("odom or depth lost! ros::Time::now()=%f, md_.last_occ_update_time_=%f, mp_.odom_depth_timeout_=%f", 
-      //   _clock.now().seconds(), md_.last_occ_update_time_.seconds(), mp_.odom_depth_timeout_);
+      //   node_->get_clock()->now().seconds(), md_.last_occ_update_time_.seconds(), mp_.odom_depth_timeout_);
 
       RCLCPP_ERROR(rclcpp::get_logger("GridMap"),"odom or depth lost! ros::Time::now()=%f, md_.last_occ_update_time_=%f, mp_.odom_depth_timeout_=%f", 
-        _clock.now().seconds(), md_.last_occ_update_time_.seconds(), mp_.odom_depth_timeout_);
+        node_->get_clock()->now().seconds(), md_.last_occ_update_time_.seconds(), mp_.odom_depth_timeout_);
 
       md_.flag_depth_odom_timeout_ = true;
     }
     return;
   }
-  md_.last_occ_update_time_ = _clock.now();
+  md_.last_occ_update_time_ = node_->get_clock()->now();
 
   /* update occupancy */
   // ros::Time t1, t2, t3, t4;
@@ -788,12 +1039,80 @@ void GridMap::depthPoseCallback(const sensor_msgs::msg::Image::ConstSharedPtr& i
 
 void GridMap::odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom)
 {
-  if (md_.has_first_depth_)
-    return;
+  const auto invalidateOdom = [this]() { clearOdomState(); };
 
-  md_.camera_pos_(0) = odom->pose.pose.position.x;
-  md_.camera_pos_(1) = odom->pose.pose.position.y;
-  md_.camera_pos_(2) = odom->pose.pose.position.z;
+  if (!node_ || !odom || odom->header.frame_id != mp_.frame_id_) {
+    invalidateOdom();
+    return;
+  }
+
+  const auto clock_type = node_->get_clock()->get_clock_type();
+  const rclcpp::Time stamp(odom->header.stamp, clock_type);
+  const rclcpp::Time now = node_->get_clock()->now();
+  const auto now_ns = now.nanoseconds();
+  const auto & position = odom->pose.pose.position;
+  const auto & orientation = odom->pose.pose.orientation;
+  const bool finite_pose = std::isfinite(position.x) &&
+    std::isfinite(position.y) && std::isfinite(position.z) &&
+    std::isfinite(orientation.x) && std::isfinite(orientation.y) &&
+    std::isfinite(orientation.z) && std::isfinite(orientation.w);
+  const plan_env::OdomFreshnessSample current_sample{
+    stamp.nanoseconds(), now_ns};
+  const auto current_result = plan_env::evaluateOdomFreshness(
+    current_sample, now_ns,
+    secondsToNanoseconds(mp_.odom_freshness_timeout_),
+    secondsToNanoseconds(mp_.trusted_cloud_future_tolerance_),
+    secondsToNanoseconds(mp_.odom_clock_jump_limit_));
+  if (!finite_pose || current_result != plan_env::OdomFreshnessResult::kFresh) {
+    invalidateOdom();
+    return;
+  }
+
+  Eigen::Vector3d position_eigen(position.x, position.y, position.z);
+  if (!isInMap(position_eigen)) {
+    RCLCPP_WARN_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 5000,
+      "GridMap odom outside map; clearing trusted cloud: "
+      "pos=(%.3f, %.3f, %.3f), bounds x=(%.3f, %.3f) "
+      "y=(%.3f, %.3f) z=(%.3f, %.3f), frame=%s",
+      position.x, position.y, position.z,
+      mp_.map_min_boundary_(0), mp_.map_max_boundary_(0),
+      mp_.map_min_boundary_(1), mp_.map_max_boundary_(1),
+      mp_.map_min_boundary_(2), mp_.map_max_boundary_(2),
+      mp_.frame_id_.c_str());
+    invalidateOdom();
+    return;
+  }
+
+  // A stopped stream or clock reset is cleared before accepting a new sample,
+  // so the first valid odometry/cloud pair in the new epoch always starts
+  // from an empty trusted layer.
+  if (md_.odom_clock_valid_) {
+    const auto previous_result = plan_env::evaluateOdomFreshness(
+      md_.last_odom_sample_, now_ns,
+      secondsToNanoseconds(mp_.odom_freshness_timeout_),
+      secondsToNanoseconds(mp_.trusted_cloud_future_tolerance_),
+      secondsToNanoseconds(mp_.odom_clock_jump_limit_));
+    if (previous_result != plan_env::OdomFreshnessResult::kFresh) {
+      clearOdomState();
+    }
+  }
+
+  md_.last_odom_sample_ = current_sample;
+  md_.odom_clock_valid_ = true;
+  if (md_.has_first_depth_) {
+    // Depth fusion normally owns camera_pos_ once its first frame arrives.
+    // After freshness invalidation it is deliberately NaN, however, so the
+    // first valid odom in the new epoch must restore a usable trusted-cloud
+    // pose without taking ownership away from an already-valid depth pose.
+    if (!md_.has_odom_ || !md_.camera_pos_.allFinite()) {
+      md_.camera_pos_ = position_eigen;
+    }
+    md_.has_odom_ = true;
+    return;
+  }
+
+  md_.camera_pos_ = position_eigen;
 
   md_.has_odom_ = true;
 }
@@ -801,33 +1120,110 @@ void GridMap::odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom)
 void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr img)
 {
 
+  md_.has_cloud_ = false;
+  const auto clock_type = node_->get_clock()->get_clock_type();
+  md_.last_trusted_cloud_time_ = rclcpp::Time(0, 0, clock_type);
+
+  const auto clearLocalCloud = [this]() {clearTrustedCloudState();};
+
+  if (!img || img->width == 0 || img->height == 0 ||
+      img->header.frame_id != mp_.frame_id_) {
+    clearLocalCloud();
+    return;
+  }
+
+  // A cloud cannot revive a stopped odometry stream.  This check is before
+  // pcl::fromROSMsg so an otherwise valid-looking cloud never rebuilds the
+  // trusted layer after an odom timeout or ROS-clock reset.
+  if (!checkOdomFreshness()) {
+    return;
+  }
+
+  const auto width = static_cast<std::uint64_t>(img->width);
+  const auto height = static_cast<std::uint64_t>(img->height);
+  if (height == 0 || width > std::numeric_limits<std::uint64_t>::max() / height) {
+    clearLocalCloud();
+    return;
+  }
+  const auto raw_point_count = width * height;
+  if (mp_.max_trusted_cloud_points_ == 0 ||
+      raw_point_count > static_cast<std::uint64_t>(mp_.max_trusted_cloud_points_)) {
+    clearLocalCloud();
+    return;
+  }
+
+  // Message stamps must be interpreted in exactly the same clock domain as
+  // the owning node.  Constructing the stamp with the default clock type can
+  // throw when use_sim_time and system-time messages are mixed.
+  const rclcpp::Time msg_stamp(img->header.stamp, clock_type);
+  const rclcpp::Time now = node_->get_clock()->now();
+  const double age = (now - msg_stamp).seconds();
+  if (msg_stamp.nanoseconds() <= 0 || !std::isfinite(age) ||
+      age < -mp_.trusted_cloud_future_tolerance_ ||
+      age > mp_.trusted_cloud_timeout_) {
+    clearLocalCloud();
+    return;
+  }
+
   pcl::PointCloud<pcl::PointXYZ> latest_cloud;
   pcl::fromROSMsg(*img, latest_cloud);
 
-  md_.has_cloud_ = true;
+  if (latest_cloud.points.empty() ||
+      latest_cloud.points.size() > mp_.max_trusted_cloud_points_) {
+    clearLocalCloud();
+    return;
+  }
+  for (const auto & point : latest_cloud.points) {
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+        !std::isfinite(point.z)) {
+      clearLocalCloud();
+      return;
+    }
+  }
 
   if (!md_.has_odom_)
   {
+    clearTrustedCloudState();
     std::cout << "no odom!" << std::endl;
     return;
   }
 
-  if (latest_cloud.points.size() == 0)
+  if (!md_.camera_pos_.allFinite())
+  {
+    clearLocalCloud();
     return;
+  }
 
-  if (isnan(md_.camera_pos_(0)) || isnan(md_.camera_pos_(1)) || isnan(md_.camera_pos_(2)))
+  // This stream contains trusted obstacle surfaces, not a complete depth
+  // image.  Clearing the local inflated map for every accepted frame would
+  // therefore turn a short occlusion/sparse return window into a false free
+  // corridor.  Age old trusted voxels instead; invalid or explicitly empty
+  // frames still take the fail-closed clearLocalCloud path above.
+  if (!plan_env::ageTrustedCloudVoxels(
+      md_.occupancy_buffer_inflate_, md_.trusted_cloud_age_,
+      mp_.trusted_cloud_persistence_frames_)) {
+    RCLCPP_ERROR(
+        node_->get_logger(),
+        "trusted-cloud persistence storage/configuration invalid; clearing local map");
+    clearLocalCloud();
     return;
+  }
 
-  this->resetBuffer(md_.camera_pos_ - mp_.local_update_range_,
-                    md_.camera_pos_ + mp_.local_update_range_);
+  // The topic is semantic_map's trusted, ground-removed output.  Record the
+  // arrival in the owning node's ROS clock only after all basic validity
+  // checks and an odometry reference are available.  The FSM separately
+  // rejects this state once trusted_cloud_timeout_ has elapsed.
+  md_.has_cloud_ = true;
+  md_.last_trusted_cloud_time_ = node_->get_clock()->now();
 
   pcl::PointXYZ pt;
   Eigen::Vector3d p3d, p3d_inf;
 
-  int inf_step = ceil(mp_.obstacles_inflation_ / mp_.resolution_);
-  int inf_step_z = 1;
+  const int inf_step = mp_.inflation_step_;
+  const int inf_step_z = mp_.trusted_cloud_vertical_step_;
 
   double max_x, max_y, max_z, min_x, min_y, min_z;
+  std::size_t local_point_count = 0;
 
   min_x = mp_.map_max_boundary_(0);
   min_y = mp_.map_max_boundary_(1);
@@ -849,6 +1245,8 @@ void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr img)
     if (fabs(devi(0)) < mp_.local_update_range_(0) && fabs(devi(1)) < mp_.local_update_range_(1) &&
         fabs(devi(2)) < mp_.local_update_range_(2))
     {
+
+      ++local_point_count;
 
       /* inflate the point */
       for (int x = -inf_step; x <= inf_step; ++x)
@@ -875,7 +1273,9 @@ void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr img)
 
             int idx_inf = toAddress(inf_pt);
 
-            md_.occupancy_buffer_inflate_[idx_inf] = 1;
+            plan_env::markTrustedCloudVoxel(
+              md_.occupancy_buffer_inflate_, md_.trusted_cloud_age_,
+              static_cast<std::size_t>(idx_inf));
           }
     }
   }
@@ -901,9 +1301,41 @@ void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr img)
     int ceil_id = floor((mp_.virtual_ceil_height_ - mp_.map_origin_(2)) * mp_.resolution_inv_) - 1;
     for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
       for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y) {
-        md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
+        plan_env::markTrustedCloudVoxel(
+          md_.occupancy_buffer_inflate_, md_.trusted_cloud_age_,
+          static_cast<std::size_t>(toAddress(x, y, ceil_id)));
       }
   }
+
+  RCLCPP_INFO_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 1000,
+      "trusted cloud accepted: points=%zu local=%zu xyz=[%.2f,%.2f]x[%.2f,%.2f]x[%.2f,%.2f] "
+      "camera=(%.2f,%.2f,%.2f) persistence=%zu",
+      latest_cloud.points.size(), local_point_count,
+      min_x, max_x, min_y, max_y, min_z, max_z,
+      md_.camera_pos_(0), md_.camera_pos_(1), md_.camera_pos_(2),
+      mp_.trusted_cloud_persistence_frames_);
+}
+
+bool GridMap::hasFreshTrustedCloud()
+{
+  if (!checkOdomFreshness()) {
+    return false;
+  }
+  if (!md_.has_cloud_ || !node_ ||
+      !std::isfinite(mp_.trusted_cloud_timeout_) ||
+      mp_.trusted_cloud_timeout_ <= 0.0 ||
+      md_.last_trusted_cloud_time_.nanoseconds() <= 0) {
+    return false;
+  }
+  const double age =
+      (node_->get_clock()->now() - md_.last_trusted_cloud_time_).seconds();
+  return std::isfinite(age) && age >= 0.0 && age <= mp_.trusted_cloud_timeout_;
+}
+
+bool GridMap::hasFreshTrustedCloud() const
+{
+  return const_cast<GridMap *>(this)->hasFreshTrustedCloud();
 }
 
 void GridMap::publishMap()
@@ -1005,7 +1437,7 @@ void GridMap::publishMapInflate(bool all_info)
   // ROS_INFO("pub map");
 }
 
-bool GridMap::odomValid() { return md_.has_odom_; }
+bool GridMap::odomValid() { return checkOdomFreshness(); }
 
 bool GridMap::hasDepthObservation() { return md_.has_first_depth_; }
 

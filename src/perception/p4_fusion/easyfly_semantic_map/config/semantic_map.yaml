@@ -5,6 +5,7 @@ semantic_map:
   input_topic: /pointcloud_filtered
   uav_state_topic: /uav_state     # 独立飞行状态，用于安全地面初始化
   output_topic: /obstacles            # ObstacleInfoArray
+  nonground_topic: /pointcloud_nonground # trusted ground-removed cloud for EGO
   grid_topic: /occupancy_grid         # OccupancyGrid (供全局规划)
   marker_topic: /obstacle_markers     # RViz 立方体
   service_name: /get_obstacles        # GetObstacles srv
@@ -36,10 +37,51 @@ semantic_map:
 
   # ---- 欧式聚类 ----
   cluster_tolerance: 0.6              # 簇内点间距阈值 [m] (兼顾大物体成簇与近距目标不合并)
-  cluster_min_points: 5               # 最小簇点数 (配 5 帧累积, 20m 行人约 30 点)
+  cluster_min_points: 5               # 当前帧最小簇点数
   cluster_max_points: 100000
-  accumulate_frames: 5                # 滑动窗口累积帧数 (远目标增密; 飞行中目标会有 K 帧拖尾)
+  nonground_voxel_size: 0.10          # /pointcloud_nonground 发布前体素叶尺寸 [m]
+  input_timeout: 1.0                  # 输入无新帧超时即 invalid (node ROS time) [s]
+  cloud_stamp_timeout: 1.0            # 输入点云时间戳最大允许旧度 [s]
+  cloud_stamp_future_tolerance: 0.2   # 输入点云未来时间容差 [s]
+  clock_jump_forward_limit: 10.0      # ROS 时钟异常前跳门限 [s]
+  max_input_points: 200000            # 单帧点数上限，超限拒绝并 invalid
+  # Must equal GridMap grid_map/max_trusted_cloud_points (200000).  The
+  # semantic callback counts current voxels and complete prediction footprints
+  # together before publishing.
+  max_nonground_points: 200000        # 当前帧+预测非地面点总上限，超限拒绝并 invalid
   max_obstacle_size: 8.0              # 单簇包围盒上界 [m], 超过视为地面残留/噪声链
+
+  # ---- 动态障碍跨帧跟踪与短时预测 ----
+  # 连续、无歧义、方向一致的当前帧速度证据才会发布 is_dynamic=true；异常帧
+  # 只保留静态观测。预测点追加到 /pointcloud_nonground，受总点数预算约束；
+  # 预算按完整九点平面 footprint 分配，余数不会形成 partial step。
+  dynamic_association_gate: 1.5       # 簇中心最大关联距离 [m]
+  dynamic_association_ambiguity_distance: 0.10 # 关联距离歧义门 [m]
+  dynamic_association_cost_margin: 0.10 # 归一化匹配 cost 歧义门 (无量纲)
+  dynamic_association_z_gate: 1.0     # 高度兼容门 [m]; 关联代价仍以 XY 为主
+  dynamic_association_xy_size_ratio: 6.0 # 稀疏点云水平 footprint 尺寸比上限
+  dynamic_association_z_size_ratio: 8.0  # 高度切片尺寸比上限
+  dynamic_min_dt: 0.03                # 速度估计最小时间差 [s]
+  dynamic_max_dt: 1.5                 # 速度估计最大时间差 [s]
+  dynamic_speed_deadband: 0.20        # 低于此速度视为静态抖动 [m/s]
+  dynamic_max_speed: 5.0              # 超速样本 fail-safe [m/s]
+  dynamic_min_direction_cosine: 0.60  # 当前帧连续速度方向一致性门限 (<=0 回安全默认)
+  dynamic_min_confirmations: 2        # 至少连续两次有效速度更新
+  dynamic_velocity_ema_alpha: 0.50    # 有界 XY 速度 EMA 系数
+  dynamic_min_displacement: 0.15      # 动态确认所需累计 XY 位移 [m]
+  dynamic_dormant_max_misses: 2        # 允许的短时漏簇历史帧数; 漏帧不发布预测
+  dynamic_prediction_horizon: 1.5     # 前向扫掠时域 [s]
+  dynamic_prediction_steps: 8         # 扫掠离散步数
+  dynamic_max_prediction_points: 256  # 所有动态障碍共享的完整 footprint 点预算
+  dynamic_prediction_min_half_x: 0.20  # confirmed dynamic 最小 X 半边长 [m]
+  dynamic_prediction_min_half_y: 0.20  # confirmed dynamic 最小 Y 半边长 [m]
+  dynamic_prediction_uncertainty_growth: 0.10 # 包络随预测时间增长 [m/s]
+  dynamic_prediction_max_uncertainty: 0.50 # 包络增长上限 [m]
+  # Predictor-only size gate.  Oversized/environmental clusters remain in
+  # static /obstacles and occupancy output, but cannot acquire swept velocity.
+  dynamic_max_bbox_size_x: 2.5       # 单个动态目标 X 尺寸上限 [m]
+  dynamic_max_bbox_size_y: 2.5       # 单个动态目标 Y 尺寸上限 [m]
+  dynamic_max_bbox_size_z: 2.5       # 单个动态目标 Z 尺寸上限 [m]
 
   # ---- 占据栅格 ----
   inflate_radius: 0.7                 # 障碍足迹膨胀 [m] (含栅格/跟踪误差裕量；低于 0.7 将被提升)

@@ -127,7 +127,9 @@ namespace ego_planner
 
     inline int getOrder(void) { return order_; }
     inline double getSwarmClearance(void) { return swarm_clearance_; }
-    rclcpp::Clock _clock;
+    // Semantic timestamps use the owning planner node's ROS clock.  Solver
+    // elapsed-time measurements use steady_clock in the implementation.
+    rclcpp::Clock::SharedPtr clock_;
   private:
     GridMap::Ptr grid_map_;
     fast_planner::ObjPredictor::Ptr moving_objs_;

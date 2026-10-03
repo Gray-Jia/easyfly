@@ -1,4 +1,5 @@
 #include "path_searching/dyn_a_star.h"
+#include <chrono>
 
 using namespace std;
 using namespace Eigen;
@@ -127,7 +128,8 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
 
 bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_pt)
 {
-    rclcpp::Time time_1 = _clock.now();
+    const auto steady_now = std::chrono::steady_clock::now;
+    const auto time_1 = steady_now();
     ++rounds_;
 
     step_size_ = step_size;
@@ -241,8 +243,8 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
                         neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);
                     }
                 }
-        rclcpp::Time time_2 = _clock.now();
-        if ((time_2 - time_1).seconds() > 0.2)
+        const auto time_2 = steady_now();
+        if (std::chrono::duration<double>(time_2 - time_1).count() > 0.2)
         {
             // ROS_WARN("Failed in A star path searching !!! 0.2 seconds time limit exceeded.");
             RCLCPP_WARN(rclcpp::get_logger("dyn_a_star"), "Failed in A star path searching !!! 0.2 seconds time limit exceeded.");
@@ -250,11 +252,11 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
         }
     }
 
-    rclcpp::Time time_2 = _clock.now();
+    const auto time_2 = steady_now();
 
-    if ((time_2 - time_1).seconds() > 0.1)
+    if (std::chrono::duration<double>(time_2 - time_1).count() > 0.1)
         // ROS_WARN("Time consume in A star path finding is %.3fs, iter=%d", (time_2 - time_1).toSec(), num_iter);
-        RCLCPP_WARN(rclcpp::get_logger("dyn_a_star"), "Time consume in A star path finding is %.3fs, iter=%d", (time_2 - time_1).seconds(), num_iter);
+        RCLCPP_WARN(rclcpp::get_logger("dyn_a_star"), "Time consume in A star path finding is %.3fs, iter=%d", std::chrono::duration<double>(time_2 - time_1).count(), num_iter);
 
     return false;
 }

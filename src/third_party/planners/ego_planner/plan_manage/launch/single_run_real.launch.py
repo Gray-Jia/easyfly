@@ -127,6 +127,7 @@ def generate_launch_description():
             # planner 输出
             ('planning/bspline', '/drone_0_planning/bspline'),
             ('planning/data_display', '/drone_0_planning/data_display'),
+            ('trajectory_ack', '/drone_0_planning/trajectory_ack'),
             ('planning/broadcast_bspline_from_planner', '/broadcast_bspline'),
             ('planning/broadcast_bspline_to_planner', '/broadcast_bspline'),
             ('optimal_list', '/drone_0_ego_planner_node/optimal_list'),
@@ -140,6 +141,16 @@ def generate_launch_description():
             'fsm/planning_horizon': 7.5,
             'fsm/planning_horizen_time': 3.0,
             'fsm/emergency_time': 1.0,
+            'fsm/emergency_recovery_hold_time': 0.5,
+            'fsm/emergency_recovery_stable_cycles': 5,
+            'fsm/emergency_recovery_max_speed': 0.1,
+            'fsm/emergency_recovery_clock_jump_limit': 1.0,
+            'fsm/emergency_recovery_ack_timeout': 0.5,
+            'fsm/emergency_recovery_ack_retry_period': 0.5,
+            'fsm/emergency_recovery_ack_retry_max_period': 5.0,
+            'fsm/traj_server_ack_topic': 'trajectory_ack',
+            'fsm/traj_server_node_name': 'drone_0_traj_server',
+            'fsm/traj_server_node_fqn': '/drone_0_traj_server',
             'fsm/realworld_experiment': True,          # 真机：需外部触发
             'fsm/fail_safe': True,
             'fsm/waypoint_num': 4,
@@ -242,8 +253,12 @@ def generate_launch_description():
         remappings=[
             ('position_cmd', '/drone_0_planning/pos_cmd'),
             ('planning/bspline', '/drone_0_planning/bspline'),
+            ('trajectory_ack', '/drone_0_planning/trajectory_ack'),
         ],
         parameters=[{
+            'traj_server/position_cmd_topic': 'position_cmd',
+            'traj_server/ack_topic': 'trajectory_ack',
+            'traj_server/source_node_name': 'drone_0_traj_server',
             'traj_server/time_forward': 1.0,
             'traj_server/pos_gain_x': 5.0,
             'traj_server/pos_gain_y': 5.0,

@@ -266,6 +266,30 @@ def main():
         _, _, _, armed, mode = node.snapshot()
         checks.append(check("land cancel confirms OFFBOARD before CANCELED",
                             status == GoalStatus.STATUS_CANCELED and armed and mode == 3))
+
+        # Regression for V2-19: an active FollowTrajectory is externally
+        # taken over after the goal callback has stored its handle.  The
+        # controller must abort the goal cleanly and keep the action server
+        # alive; passing the handle by const-reference while resetting the
+        # member used to alias the same shared_ptr and crash here.
+        takeover = FollowTrajectory.Goal()
+        takeover.target_x, takeover.target_y, takeover.target_z = x + 20.0, y, z
+        takeover.acceptance_radius = 0.5
+        takeover.timeout = 30.0
+        takeover_gh = send_goal(node.follow, takeover)
+        for _ in range(40):
+            node.publish_position_command(trajectory_id=200)
+            time.sleep(0.01)
+        time.sleep(0.2)
+        takeover_mode = SetFlightMode.Request()
+        takeover_mode.flight_mode = 6
+        wait_future(node.cli_mode.call_async(takeover_mode), 3.0)
+        takeover_status, takeover_res = result(takeover_gh, 6.0)
+        checks.append(check(
+            "active trajectory external takeover aborts without action-server crash",
+            takeover_gh is not None and
+            takeover_status == GoalStatus.STATUS_ABORTED and
+            takeover_res is not None and "takeover" in takeover_res.message))
     finally:
         executor.shutdown()
         node.destroy_node()

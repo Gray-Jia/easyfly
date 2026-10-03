@@ -4,7 +4,7 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_prefix
 from launch.substitutions import LaunchConfiguration
-from launch.actions import ExecuteProcess
+from launch.actions import ExecuteProcess, DeclareLaunchArgument
 def generate_launch_description():
     # show_public_param=False
     # sensorOffsetX = 0.0
@@ -18,6 +18,22 @@ def generate_launch_description():
     # local_planner_dir = get_package_share_directory('local_planner')
     # local_planner_para_dir = os.path.join(get_package_share_directory('local_planner'), 'config', 'localPlanner.yaml')
     # local_planner_para_dir_1 = os.path.join(get_package_share_directory('local_planner'), 'config', 'pathFollower.yaml')
+
+    traj_server_ack_topic = LaunchConfiguration(
+        'traj_server_ack_topic', default='trajectory_ack')
+    traj_server_node_name = LaunchConfiguration(
+        'traj_server_node_name', default='traj_server')
+    traj_server_node_fqn = LaunchConfiguration(
+        'traj_server_node_fqn', default='/traj_server')
+    declare_traj_ack = DeclareLaunchArgument(
+        'traj_server_ack_topic', default_value='trajectory_ack',
+        description='Dedicated traj_server validation/activation ACK topic')
+    declare_traj_name = DeclareLaunchArgument(
+        'traj_server_node_name', default_value='traj_server',
+        description='Expected unique traj_server graph node name for ACK source validation')
+    declare_traj_fqn = DeclareLaunchArgument(
+        'traj_server_node_fqn', default_value='/traj_server',
+        description='Expected complete traj_server node FQN (name plus namespace)')
 
     # print(local_planner_para_dir)
     # print(LaunchConfiguration('test'))
@@ -40,6 +56,7 @@ def generate_launch_description():
             ('grid_map/depth', LaunchConfiguration('grid_map/depth')),
             ('grid_map/occupancy_inflate', LaunchConfiguration('grid_map/occupancy_inflate')),
             ('optimal_list', LaunchConfiguration('optimal_list')),
+            ('trajectory_ack', traj_server_ack_topic),
             ],
         parameters=[
             # local_planner_para_dir,#9
@@ -49,6 +66,18 @@ def generate_launch_description():
                     {'fsm/planning_horizon': LaunchConfiguration('planning_horizon')},
                     {'fsm/planning_horizen_time': 3.0},
                     {'fsm/emergency_time': 1.0},
+                    {'fsm/emergency_recovery_hold_time': 0.5},
+                    {'fsm/emergency_recovery_stable_cycles': 5},
+                    {'fsm/emergency_recovery_max_speed': 0.1},
+                    {'fsm/emergency_recovery_clock_jump_limit': 1.0},
+                    {'fsm/emergency_recovery_ack_timeout': 0.5},
+                    {'fsm/emergency_recovery_ack_retry_period': 0.5},
+                    {'fsm/emergency_recovery_ack_retry_max_period': 5.0},
+                    {'fsm/traj_server_ack_topic': traj_server_ack_topic},
+                    {'fsm/traj_server_node_name': traj_server_node_name},
+                    {'fsm/traj_server_node_fqn': traj_server_node_fqn},
+                    {'fsm/odom_freshness_timeout': 1.0},
+                    {'fsm/waypoint_future_tolerance': 0.2},
                     {'fsm/realworld_experiment': False},
                     {'fsm/fail_safe': True},
 
@@ -140,15 +169,16 @@ def generate_launch_description():
     #     name="drone_"+drone_id+"_traj_server",
     #     # parameters=[local_planner_para_dir,]
     #     remappings=[
-    #     # 重映射 position_cmd 话题
+    #     # position_cmd 仅为飞控指令；trajectory_ack 才是 FSM 恢复确认
     #         ('position_cmd', "/drone_"+drone_id+"_planning/pos_cmd"),
+    #         ('trajectory_ack', "/drone_"+drone_id+"_planning/trajectory_ack"),
 
     #         # 重映射 planning/bspline 话题
     #         ('planning/bspline', "/drone_"+drone_id+"_planning/bspline"),
     #         ],
 
     # )
-    ld = LaunchDescription()
+    ld = LaunchDescription([declare_traj_ack, declare_traj_name])
     ld.add_action(ego_planner_node)
 
 

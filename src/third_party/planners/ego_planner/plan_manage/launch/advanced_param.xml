@@ -41,6 +41,15 @@
 
   <arg name="drone_id"/>
 
+  <!-- Dedicated traj_server validation/activation ACK.  The value is relative
+       to the per-drone planning namespace so it remains remappable. -->
+  <arg name="traj_server_ack_topic"
+       default="drone_$(arg drone_id)_planning/trajectory_ack"/>
+  <arg name="traj_server_node_name"
+       default="drone_$(arg drone_id)_traj_server"/>
+  <arg name="traj_server_node_fqn"
+       default="/drone_$(arg drone_id)_traj_server"/>
+
 
   <!-- main node -->
   <!-- <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen" launch-prefix="valgrind"> -->
@@ -51,6 +60,7 @@
     <remap from="~planning/data_display" to = "/drone_$(arg drone_id)_planning/data_display"/>
     <remap from="~planning/broadcast_bspline_from_planner" to = "/broadcast_bspline"/>
     <remap from="~planning/broadcast_bspline_to_planner" to = "/broadcast_bspline"/>
+    <remap from="~trajectory_ack" to="$(arg traj_server_ack_topic)"/>
 
     <remap from="~grid_map/odom" to="/drone_$(arg drone_id)_$(arg odometry_topic)"/>
     <remap from="~grid_map/cloud" to="/drone_$(arg drone_id)_$(arg cloud_topic)"/>
@@ -65,6 +75,18 @@
     <param name="fsm/planning_horizon" value="$(arg planning_horizon)" type="double"/> <!--always set to 1.5 times grater than sensing horizen-->
     <param name="fsm/planning_horizen_time" value="3" type="double"/>
     <param name="fsm/emergency_time" value="1.0" type="double"/>
+    <param name="fsm/emergency_recovery_hold_time" value="0.5" type="double"/>
+    <param name="fsm/emergency_recovery_stable_cycles" value="5" type="int"/>
+    <param name="fsm/emergency_recovery_max_speed" value="0.1" type="double"/>
+    <param name="fsm/emergency_recovery_clock_jump_limit" value="1.0" type="double"/>
+    <param name="fsm/emergency_recovery_ack_timeout" value="0.5" type="double"/>
+    <param name="fsm/emergency_recovery_ack_retry_period" value="0.5" type="double"/>
+    <param name="fsm/emergency_recovery_ack_retry_max_period" value="5.0" type="double"/>
+    <param name="fsm/traj_server_ack_topic" value="$(arg traj_server_ack_topic)"/>
+    <param name="fsm/traj_server_node_name" value="$(arg traj_server_node_name)"/>
+    <param name="fsm/traj_server_node_fqn" value="$(arg traj_server_node_fqn)"/>
+    <param name="fsm/odom_freshness_timeout" value="1.0" type="double"/>
+    <param name="fsm/waypoint_future_tolerance" value="0.2" type="double"/>
     <param name="fsm/realworld_experiment" value="false"/>
     <param name="fsm/fail_safe" value="true"/>
 

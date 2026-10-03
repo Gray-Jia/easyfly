@@ -1,12 +1,19 @@
 #include "bspline_opt/uniform_bspline.h"
+#include "plan_manage/bspline_runtime_validator.h"
+#include "plan_manage/swarm_bspline_validator.h"
 
 #include "traj_utils/msg/bspline.hpp"
+#include "traj_utils/msg/trajectory_ack.hpp"
 #include "quadrotor_msgs/msg/position_command.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/logging.hpp"
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <utility>
+#include <vector>
 rclcpp::Publisher<quadrotor_msgs::msg::PositionCommand>::SharedPtr pos_cmd_pub;
+rclcpp::Publisher<traj_utils::msg::TrajectoryAck>::SharedPtr trajectory_ack_pub;
 
 quadrotor_msgs::msg::PositionCommand cmd;
 double pos_gain[3] = {0, 0, 0};
@@ -25,60 +32,96 @@ double last_yaw_, last_yaw_dot_;
 double time_forward_;
 std::shared_ptr<rclcpp::Clock> node_clock;
 std::string output_frame = "odom";
+std::string position_cmd_topic = "position_cmd";
+std::string trajectory_ack_topic = "trajectory_ack";
+std::string source_node_name = "traj_server";
+std::uint64_t activation_sequence = 0;
 
 void bsplineCallback(const std::shared_ptr<traj_utils::msg::Bspline> msg)
 {
-  // parse pos traj
-  const size_t expected_knots = msg->pos_pts.size() + static_cast<size_t>(msg->order) + 1U;
-  if (!node_clock || msg->order < 1 ||
-      msg->pos_pts.size() <= static_cast<size_t>(msg->order) ||
-      msg->knots.size() != expected_knots ||
-      msg->traj_id <= 0 ||
-      msg->traj_id > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+  if (!msg)
   {
-    RCLCPP_ERROR(rclcpp::get_logger("traj_server"), "reject malformed B-spline metadata");
+    if (node_clock)
+    {
+      RCLCPP_ERROR_THROTTLE(
+          rclcpp::get_logger("traj_server"), *node_clock, 2000,
+          "reject null B-spline message");
+    }
+    else
+    {
+      RCLCPP_ERROR(rclcpp::get_logger("traj_server"), "reject null B-spline message");
+    }
     receive_traj_ = false;
     return;
   }
-  for (const auto & p : msg->pos_pts)
-  {
-    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
-    {
-      RCLCPP_ERROR(rclcpp::get_logger("traj_server"), "reject non-finite B-spline control point");
-      receive_traj_ = false;
-      return;
-    }
-  }
-  double previous_knot = -std::numeric_limits<double>::infinity();
-  for (const double knot : msg->knots)
-  {
-    if (!std::isfinite(knot) || knot < previous_knot)
-    {
-      RCLCPP_ERROR(rclcpp::get_logger("traj_server"),
-                   "reject non-finite or non-monotonic B-spline knot vector");
-      receive_traj_ = false;
-      return;
-    }
-    previous_knot = knot;
-  }
-  
-  Eigen::MatrixXd pos_pts(3, msg->pos_pts.size());
 
-  Eigen::VectorXd knots(msg->knots.size());
-  for (size_t i = 0; i < msg->knots.size(); ++i)
+  // This must be the first message-dependent operation.  In particular, do
+  // not convert untrusted order/id values, allocate Eigen matrices, resize
+  // trajectory storage, or index the knot vector before this shared ingress
+  // contract has bounded and checked every field.
+  const auto validation = ego_planner::swarm_validation::validateCubicBspline(*msg);
+  if (!validation.valid())
+  {
+    if (node_clock)
+    {
+      RCLCPP_ERROR_THROTTLE(
+          rclcpp::get_logger("traj_server"), *node_clock, 2000,
+          "reject malformed B-spline: %s",
+          ego_planner::swarm_validation::validationErrorName(validation.error));
+    }
+    else
+    {
+      RCLCPP_ERROR(
+          rclcpp::get_logger("traj_server"), "reject malformed B-spline: %s",
+          ego_planner::swarm_validation::validationErrorName(validation.error));
+    }
+    receive_traj_ = false;
+    return;
+  }
+
+  if (!node_clock)
+  {
+    RCLCPP_ERROR(rclcpp::get_logger("traj_server"), "reject B-spline before node clock is ready");
+    receive_traj_ = false;
+    return;
+  }
+
+  // parse pos traj; sizes are bounded by validateBspline above.
+  Eigen::MatrixXd pos_pts(
+      3, static_cast<Eigen::Index>(msg->pos_pts.size()));
+
+  Eigen::VectorXd knots(
+      static_cast<Eigen::Index>(msg->knots.size()));
+  for (std::size_t i = 0; i < msg->knots.size(); ++i)
   {
     knots(i) = msg->knots[i];
   }
 
-  for (size_t i = 0; i < msg->pos_pts.size(); ++i)
+  for (std::size_t i = 0; i < msg->pos_pts.size(); ++i)
   {
     pos_pts(0, i) = msg->pos_pts[i].x;
     pos_pts(1, i) = msg->pos_pts[i].y;
     pos_pts(2, i) = msg->pos_pts[i].z;
   }
 
-  UniformBspline pos_traj(pos_pts, msg->order, 0.1);
-  pos_traj.setKnot(knots);
+  UniformBspline candidate_position(pos_pts, msg->order, 0.1);
+  candidate_position.setKnot(knots);
+  UniformBspline candidate_velocity = candidate_position.getDerivative();
+  UniformBspline candidate_acceleration = candidate_velocity.getDerivative();
+  const auto runtime_validation =
+      ego_planner::swarm_validation::validateCubicRuntimeTrajectory(
+          candidate_position, candidate_velocity, candidate_acceleration,
+          msg->pos_pts.size(), msg->knots.size(), validation.duration);
+  if (!runtime_validation.valid())
+  {
+    RCLCPP_ERROR_THROTTLE(
+        rclcpp::get_logger("traj_server"), *node_clock, 2000,
+        "reject runtime B-spline candidate: %s",
+        ego_planner::swarm_validation::runtimeValidationErrorName(
+            runtime_validation.error));
+    receive_traj_ = false;
+    return;
+  }
 
   // parse yaw traj
 
@@ -89,31 +132,62 @@ void bsplineCallback(const std::shared_ptr<traj_utils::msg::Bspline> msg)
 
   //UniformBspline yaw_traj(yaw_pts, msg->order, msg->yaw_dt);
 
-  start_time_ = rclcpp::Time(msg->start_time, node_clock->get_clock_type());
-  if (start_time_.nanoseconds() == 0)
+  const rclcpp::Time candidate_start_time(
+      msg->start_time, node_clock->get_clock_type());
+  if (candidate_start_time.nanoseconds() == 0)
   {
     RCLCPP_ERROR(rclcpp::get_logger("traj_server"), "reject B-spline with zero start_time");
     receive_traj_ = false;
     return;
   }
-  traj_id_ = static_cast<uint32_t>(msg->traj_id);
-
-  traj_.clear();
-  traj_.push_back(pos_traj);
-  traj_.push_back(traj_[0].getDerivative());
-  traj_.push_back(traj_[1].getDerivative());
-
-  traj_duration_ = traj_[0].getTimeSum();
-
-  if (!std::isfinite(traj_duration_) || traj_duration_ <= 0.0)
+  const uint32_t candidate_traj_id = static_cast<uint32_t>(msg->traj_id);
+  const double candidate_duration = candidate_position.getTimeSum();
+  if (trajectory_ack_pub && node_clock &&
+    activation_sequence == std::numeric_limits<std::uint64_t>::max())
   {
-    RCLCPP_ERROR(rclcpp::get_logger("traj_server"), "reject B-spline with invalid duration");
+    // Wrapping to one would make an old ACK indistinguishable from a fresh
+    // activation on the same publisher GID. Reject before activation.
+    RCLCPP_ERROR(rclcpp::get_logger("traj_server"),
+      "trajectory ACK activation_sequence exhausted; reject candidate");
     receive_traj_ = false;
-    traj_.clear();
     return;
   }
+  std::vector<UniformBspline> candidate_traj;
+  candidate_traj.reserve(3);
+  candidate_traj.push_back(candidate_position);
+  candidate_traj.push_back(candidate_velocity);
+  candidate_traj.push_back(candidate_acceleration);
+
+  // Publish/activate only after position, velocity and acceleration have all
+  // passed structure, knot, control-point and sample checks.
+  start_time_ = candidate_start_time;
+  traj_id_ = candidate_traj_id;
+  traj_duration_ = candidate_duration;
+  traj_ = std::move(candidate_traj);
 
   receive_traj_ = true;
+
+  // This is the only recovery ACK.  It is emitted after the complete
+  // position/velocity/acceleration candidate has passed validation and has
+  // been atomically activated; the periodic PositionCommand stream is not an
+  // execution acknowledgement.
+  if (trajectory_ack_pub && node_clock) {
+    traj_utils::msg::TrajectoryAck ack;
+    ack.header.stamp = node_clock->now();
+    ack.header.frame_id = output_frame;
+    ack.trajectory_id = candidate_traj_id;
+    ack.status = traj_utils::msg::TrajectoryAck::STATUS_ACCEPTED;
+    ++activation_sequence;
+    ack.activation_sequence = activation_sequence;
+    ack.source_node = source_node_name;
+    try {
+      trajectory_ack_pub->publish(ack);
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("traj_server"),
+        "trajectory ACK publish failed for traj_id=%u: %s", candidate_traj_id, e.what());
+    }
+  }
 }
 
 std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, rclcpp::Time &time_now, rclcpp::Time &time_last)
@@ -321,11 +395,29 @@ int main(int argc, char **argv)
   auto nh = std::make_shared<rclcpp::Node>("traj_server");//这个只是说节点的名字叫这个
   node_clock = nh->get_clock();
 
+  nh->declare_parameter<std::string>("traj_server/position_cmd_topic", "position_cmd");
+  nh->declare_parameter<std::string>("traj_server/ack_topic", "trajectory_ack");
+  nh->declare_parameter<std::string>("traj_server/source_node_name", "");
+  nh->get_parameter("traj_server/position_cmd_topic", position_cmd_topic);
+  nh->get_parameter("traj_server/ack_topic", trajectory_ack_topic);
+  std::string configured_source_node_name;
+  nh->get_parameter("traj_server/source_node_name", configured_source_node_name);
+  // The ACK source identity is always the actual graph FQN. A bare legacy
+  // parameter cannot safely describe a node's namespace, so it is ignored;
+  // deployments with hostile peers still require DDS Security beyond this
+  // trusted ROS graph boundary.
+  source_node_name = nh->get_fully_qualified_name();
+  if (!configured_source_node_name.empty() && configured_source_node_name.front() == '/') {
+    source_node_name = nh->get_fully_qualified_name();
+  }
+
   // ros::Subscriber bspline_sub = nh.subscribe("planning/bspline", 10, bsplineCallback);
   auto bspline_sub = nh->create_subscription<traj_utils::msg::Bspline>("planning/bspline",10,bsplineCallback);
 
-  // pos_cmd_pub = nh.advertise<quadrotor_msgs::msg::PositionCommand>("/position_cmd", 50);
-  pos_cmd_pub = nh->create_publisher<quadrotor_msgs::msg::PositionCommand>("/position_cmd", 50);
+  pos_cmd_pub = nh->create_publisher<quadrotor_msgs::msg::PositionCommand>(
+    position_cmd_topic, 50);
+  trajectory_ack_pub = nh->create_publisher<traj_utils::msg::TrajectoryAck>(
+    trajectory_ack_topic, rclcpp::QoS(1).reliable().transient_local());
 
   // ros::Timer cmd_timer = nh.createTimer(ros::Duration(0.01), cmdCallback);
   //TAG 这里是声明在类外的定时器，类内的如tare那个工程。    这里写代码过程中create_wall_timer下面画波浪线有可能是回调函数形参的问题，不一定是格式错误，做为写代码技巧记下了。

@@ -295,7 +295,8 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             get_package_share_directory("easyfly_global_planner") + "/launch/navigate.launch.py"))
     m42_nodes = TimerAction(period=24.0, actions=[navigate])
-    # M4.3: EGO-Planner 局部规划 (ego_planner_node + traj_server, 输出 /position_cmd)
+    # M4.3: EGO-Planner 局部规划 (ego_planner_node + traj_server)。
+    # position_cmd 是飞控指令流；急停恢复使用 traj_server 专用 trajectory_ack。
     local_planner = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             get_package_share_directory("easyfly_local_planner") + "/launch/local_planner.launch.py"))

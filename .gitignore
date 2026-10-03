@@ -42,3 +42,6 @@ evidence-v2-10/
 __pycache__/
 # G1-G4 验收过程归档, 仅本地留存不入库
 artifacts/
+
+# V2-19 复验证据 (日志/bag/测试产物, 登记簿见 question-v2.md; 原始证据本地留存)
+test-results-v219/

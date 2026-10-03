@@ -59,6 +59,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_grid_inflation test/test_grid_inflation.cpp)
   target_include_directories(test_grid_inflation PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_add_gtest(test_dynamic_obstacle_tracker test/test_dynamic_obstacle_tracker.cpp)
+  target_include_directories(test_dynamic_obstacle_tracker PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
 
 ament_package()

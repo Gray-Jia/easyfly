@@ -51,10 +51,17 @@ def generate_launch_description():
         # 重映射 position_cmd 话题
             ('position_cmd', "/drone_"+drone_id_+"_planning/pos_cmd"),
 
+            # 专用 traj_server validation/activation ACK
+            ('trajectory_ack', "/drone_"+drone_id_+"_planning/trajectory_ack"),
+
             # 重映射 planning/bspline 话题
             ('planning/bspline', "/drone_"+drone_id_+"_planning/bspline"),
             ],
-
+        parameters=[{
+            'traj_server/position_cmd_topic': 'position_cmd',
+            'traj_server/ack_topic': 'trajectory_ack',
+            'traj_server/source_node_name': 'drone_'+drone_id_+'_traj_server',
+        }],
     )
 
     advanced_param_launch = os.path.join(get_package_share_directory('ego_planner'), "launch",'advanced_param.launch.py')
@@ -104,6 +111,9 @@ def generate_launch_description():
                           'grid_map/depth': LaunchConfiguration('grid_map/depth', default='/drone_'+drone_id_+'_pcl_render_node/depth'),
                           'grid_map/occupancy_inflate': LaunchConfiguration('grid_map/occupancy_inflate', default='/drone_'+drone_id_+'_ego_planner_node/grid_map/occupancy_inflate'),
                           'optimal_list': LaunchConfiguration('optimal_list', default='/drone_'+drone_id_+'_ego_planner_node/optimal_list'),
+                          'traj_server_ack_topic': '/drone_'+drone_id_+'_planning/trajectory_ack',
+                          'traj_server_node_name': 'drone_'+drone_id_+'_traj_server',
+                          'traj_server_node_fqn': '/drone_'+drone_id_+'_traj_server',
 
 
                           

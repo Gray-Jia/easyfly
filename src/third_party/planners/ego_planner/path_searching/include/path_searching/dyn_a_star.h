@@ -88,7 +88,6 @@ public:
 	bool AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);
 
 	std::vector<Eigen::Vector3d> getPath();
-	rclcpp::Clock _clock;
 };
 
 inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)

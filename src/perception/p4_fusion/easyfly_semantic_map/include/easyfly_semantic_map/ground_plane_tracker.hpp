@@ -92,6 +92,11 @@ enum class GroundPlaneUpdate
   kPending,
   kInitialized,
   kAccepted,
+  // A trusted model is deliberately held while the aircraft is armed or the
+  // UAV-state bridge is disconnected/stale.  A RANSAC candidate is not
+  // evidence that the ground moved, and fusing it without a valid state can
+  // make the plane drift through the vehicle/obstacles.
+  kFrozen,
 };
 
 class GroundPlaneTracker
@@ -128,6 +133,7 @@ public:
   : params_(params)
   {
     params_.init_consecutive_frames = std::max(1, params_.init_consecutive_frames);
+    params_.init_state_timeout = std::max(0.0, params_.init_state_timeout);
     params_.smoothing_alpha = std::clamp(params_.smoothing_alpha, 0.0, 1.0);
   }
 
@@ -135,6 +141,16 @@ public:
     const GroundPlaneCandidate & candidate,
     const GroundVehiclePose & vehicle)
   {
+    if (model_valid_ && (!vehicleStateFresh(vehicle) || vehicle.armed)) {
+      // Keep the trusted model and discard any pending candidate while in
+      // flight or while the vehicle-state bridge is disconnected/stale.  A
+      // candidate is never allowed to update the model without a fresh,
+      // connected, valid pose.  Returning a distinct status prevents callers
+      // from reporting an expected fail-closed freeze as a rejected estimate.
+      clearPending();
+      return GroundPlaneUpdate::kFrozen;
+    }
+
     if (!candidateIsPhysicallyValid(candidate, vehicle)) {
       clearPending();
       return GroundPlaneUpdate::kRejected;
@@ -207,6 +223,13 @@ public:
   }
 
 private:
+  bool vehicleStateFresh(const GroundVehiclePose & vehicle) const
+  {
+    return vehicle.connected && vehicle.pose_valid &&
+           std::isfinite(vehicle.state_age_s) && vehicle.state_age_s >= 0.0 &&
+           vehicle.state_age_s <= params_.init_state_timeout;
+  }
+
   static GroundPlaneModel blend(
     const GroundPlaneModel & first, const GroundPlaneModel & second, const double alpha)
   {
@@ -255,10 +278,7 @@ private:
   bool candidateIsPhysicallyValid(
     const GroundPlaneCandidate & candidate, const GroundVehiclePose & vehicle) const
   {
-    if (!model_valid_ &&
-      (!vehicle.connected || !vehicle.pose_valid || vehicle.armed ||
-      !std::isfinite(vehicle.state_age_s) ||
-      vehicle.state_age_s > params_.init_state_timeout))
+    if (!model_valid_ && (!vehicleStateFresh(vehicle) || vehicle.armed))
     {
       return false;
     }

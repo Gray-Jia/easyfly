@@ -97,8 +97,28 @@ install(DIRECTORY launch config
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+
+  ament_add_gtest(test_emergency_stop_gate
+    test/test_emergency_stop_gate.cpp)
+  target_include_directories(test_emergency_stop_gate PRIVATE include)
+
+  ament_add_gtest(test_swarm_bspline_validator
+    test/test_swarm_bspline_validator.cpp)
+  target_include_directories(test_swarm_bspline_validator PRIVATE include)
+  ament_target_dependencies(test_swarm_bspline_validator bspline_opt)
+  target_link_libraries(test_swarm_bspline_validator ${bspline_opt_LIBRARIES})
+
+  ament_add_gtest(test_waypoint_admission
+    test/test_waypoint_admission.cpp)
+  target_include_directories(test_waypoint_admission PRIVATE include)
+
+  ament_add_gtest(test_trajectory_seed_safety
+    test/test_trajectory_seed_safety.cpp)
+  target_include_directories(test_trajectory_seed_safety PRIVATE include)
+  ament_target_dependencies(test_trajectory_seed_safety plan_env)
 endif()
 
 ament_package()

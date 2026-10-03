@@ -7,8 +7,8 @@ ego_acceptance.launch.py — M4.3 EGO-Planner 验收专用轻链启动 (test/ �
   t=10s  flight_control                                     /takeoff /land /goto_waypoint /follow_trajectory
   t=12s  camera_calib(calib_tf) + coord_transform           base_link→livox_frame, /odom
   t=14s  pointcloud_filter                                  /livox/lidar → /pointcloud_filtered (odom 系)
-  t=16s  local_planner (EGO)                                ego_planner_node + traj_server → /position_cmd
-  t=18s  semantic_map                                       /obstacles + /occupancy_grid (验收自锚定用)
+  t=16s  semantic_map                                       /obstacles + /occupancy_grid + /pointcloud_nonground
+  t=20s  local_planner (EGO)                                ego_planner_node + traj_server → /position_cmd
 
 不含 YOLO/SLAM/跟踪 (轻链); 这是 E1-E4 的编排目标。
 用法 (通常经 bash test/run_ego_acceptance.sh):
@@ -56,11 +56,15 @@ def generate_launch_description():
     pcf = TimerAction(period=14.0, actions=[
         _inc("easyfly_pointcloud_filter", "pcf.launch.py")])
 
-    ego = TimerAction(period=16.0, actions=[
-        _inc("easyfly_local_planner", "local_planner.launch.py")],
-        condition=IfCondition(use_ego))
-
-    semantic = TimerAction(period=18.0, actions=[
+    semantic = TimerAction(period=16.0, actions=[
         _inc("easyfly_semantic_map", "semantic_map.launch.py")])
+
+    ego = TimerAction(period=20.0, actions=[
+        # G8 E1 is a fixed-height horizontal-bypass contract.  Keep the
+        # reusable production local_planner default at 3.2m and scope the
+        # conservative 2.0m ceiling to this perception_demo wrapper only.
+        _inc("easyfly_local_planner", "local_planner.launch.py",
+             {"virtual_ceil_height": "2.0"})],
+        condition=IfCondition(use_ego))
 
     return LaunchDescription([declare_ego, sim, bridge, control, p1, pcf, ego, semantic])

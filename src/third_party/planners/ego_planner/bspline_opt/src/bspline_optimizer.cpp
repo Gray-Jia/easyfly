@@ -1,5 +1,7 @@
 #include "bspline_opt/bspline_optimizer.h"
+#include "bspline_opt/collision_sampling.h"
 #include "bspline_opt/gradient_descent_optimizer.h"
+#include <chrono>
 // using namespace std;
 
 namespace ego_planner
@@ -7,6 +9,7 @@ namespace ego_planner
 
   void BsplineOptimizer::setParam(std::shared_ptr<rclcpp::Node>& nh)
   {
+    clock_ = nh->get_clock();
     nh->declare_parameter<double>("optimization/lambda_smooth",-1.0);
     nh->declare_parameter<double>("optimization/lambda_collision",-1.0);
     nh->declare_parameter<double>("optimization/lambda_feasibility",-1.0);
@@ -475,7 +478,10 @@ namespace ego_planner
     int same_occ_state_times = ENOUGH_INTERVAL + 1;
     bool occ, last_occ = false;
     bool flag_got_start = false, flag_got_end = false, flag_got_end_maybe = false;
-    int i_end = (int)init_points.cols() - order_ - ((int)init_points.cols() - 2 * order_) / 3; // only check closed 2/3 points.
+    // Collision segmentation must cover the complete valid control-point
+    // span.  Leaving the terminal third unchecked lets a candidate enter an
+    // obstacle just before its endpoint and postpones detection to the FSM.
+    int i_end = (int)init_points.cols() - order_;
     for (int i = order_; i <= i_end; ++i)
     {
       //cout << " *" << i-1 << "*" ;
@@ -811,9 +817,12 @@ namespace ego_planner
     cost = 0.0;
     if (swarm_trajs_ == NULL || swarm_trajs_->empty()) return;
 
-    int end_idx = q.cols() - order_ - (double)(q.cols() - 2 * order_) * 1.0 / 3.0; // Only check the first 2/3 points
+    // Swarm separation must cover the complete candidate, including its
+    // terminal valid control point.  The old first-2/3 truncation could hide
+    // a multi-vehicle conflict near the hand-off point.
+    int end_idx = q.cols() - order_ + 1;
     const double CLEARANCE = swarm_clearance_ * 2;
-    double t_now = _clock.now().seconds();
+    const double t_now = clock_->now().seconds();
     constexpr double a = 2.0, b = 1.0, inv_a2 = 1 / a / a, inv_b2 = 1 / b / b;
 
     for (int i = order_; i < end_idx; i++)
@@ -866,7 +875,7 @@ namespace ego_planner
     cost = 0.0;
     int end_idx = q.cols() - order_;
     constexpr double CLEARANCE = 1.5;
-    double t_now = _clock.now().seconds();
+    const double t_now = clock_->now().seconds();
 
     for (int i = order_; i < end_idx; i++)
     {
@@ -1239,7 +1248,9 @@ namespace ego_planner
     int in_id, out_id;
     vector<std::pair<int, int>> segment_ids;
     bool flag_new_obs_valid = false;
-    int i_end = end_idx - (end_idx - order_) / 3;
+    // Rebound direction generation is also a safety check; do not leave the
+    // terminal third of the candidate outside the obstacle scan.
+    int i_end = end_idx;
     for (int i = order_ - 1; i <= i_end; ++i)
     {
 
@@ -1294,7 +1305,22 @@ namespace ego_planner
         if (j >= cps_.size) // fail to get the obs free point
         {
           // ROS_WARN("WARN! terminal point of the current trajectory is in obstacle, skip this planning.");
-          RCLCPP_WARN(rclcpp::get_logger("BsplineOptimizer"), "WARN! terminal point of the current trajectory is in obstacle, skip this planning.");
+          const int terminal_idx = cps_.size - 1;
+          const Eigen::Vector3d first_occ_point = cps_.points.col(i);
+          const Eigen::Vector3d terminal_point = cps_.points.col(terminal_idx);
+          const int first_occ_value = grid_map_->getInflateOccupancy(first_occ_point);
+          const int terminal_occ_value = grid_map_->getInflateOccupancy(terminal_point);
+          const bool terminal_in_map = grid_map_->isInMap(terminal_point);
+          const bool terminal_ceiling_block = plan_env::virtualCeilingBlocks(
+              terminal_point.z(), grid_map_->getVirtualCeilingHeight());
+          RCLCPP_WARN(
+              rclcpp::get_logger("BsplineOptimizer"),
+              "WARN! terminal point occupied; first_cp=%d pos=(%.3f,%.3f,%.3f) occ=%d, terminal_cp=%d pos=(%.3f,%.3f,%.3f) occ=%d in_map=%s ceiling_block=%s ceiling=%.3f",
+              i, first_occ_point.x(), first_occ_point.y(), first_occ_point.z(),
+              first_occ_value, terminal_idx, terminal_point.x(), terminal_point.y(),
+              terminal_point.z(), terminal_occ_value, terminal_in_map ? "true" : "false",
+              terminal_ceiling_block ? "true" : "false",
+              grid_map_->getVirtualCeilingHeight());
 
           force_stop_type_ = STOP_FOR_ERROR;
           return false;
@@ -1479,7 +1505,10 @@ namespace ego_planner
     int end_id = this->cps_.size; // Free end
     variable_num_ = 3 * (end_id - start_id);
 
-    rclcpp::Time t0 = _clock.now(), t1, t2;
+    const auto steady_now = std::chrono::steady_clock::now;
+    const auto t0 = steady_now();
+    auto t1 = t0;
+    auto t2 = t0;
     int restart_nums = 0, rebound_times = 0;
     ;
     bool flag_force_return, flag_occ, success;
@@ -1505,11 +1534,11 @@ namespace ego_planner
       lbfgs_params.g_epsilon = 0.01;
 
       /* ---------- optimize ---------- */
-      t1 = _clock.now();
+      t1 = steady_now();
       int result = lbfgs::lbfgs_optimize(variable_num_, q.data(), &final_cost, BsplineOptimizer::costFunctionRebound, NULL, BsplineOptimizer::earlyExit, this, &lbfgs_params);
-      t2 = _clock.now();
-      double time_ms = (t2 - t1).seconds() * 1000;
-      double total_time_ms = (t2 - t0).seconds() * 1000;
+      t2 = steady_now();
+      double time_ms = std::chrono::duration<double>(t2 - t1).count() * 1000.0;
+      double total_time_ms = std::chrono::duration<double>(t2 - t0).count() * 1000.0;
 
       /* ---------- success temporary, check collision again ---------- */
       if (result == lbfgs::LBFGS_CONVERGENCE ||
@@ -1537,8 +1566,18 @@ namespace ego_planner
         UniformBspline traj = UniformBspline(cps_.points, 3, bspline_interval_);
         double tm, tmp;
         traj.getTimeSpan(tm, tmp);
-        double t_step = (tmp - tm) / ((traj.evaluateDeBoorT(tmp) - traj.evaluateDeBoorT(tm)).norm() / grid_map_->getResolution());
-        for (double t = tm; t < tmp * 2 / 3; t += t_step) // Only check the closest 2/3 partition of the whole trajectory.
+        const double max_speed_bound = traj.getMaxVelocityBound();
+        const auto collision_samples = collision_sampling::fullTrajectorySampleTimes(
+            tm, tmp, max_speed_bound, grid_map_->getResolution());
+        if (collision_samples.empty())
+        {
+          // An invalid time/map configuration must fail closed rather than
+          // silently accepting a trajectory with no collision samples.
+          RCLCPP_ERROR(rclcpp::get_logger("BsplineOptimizer"),
+                       "Invalid full-trajectory collision sampling; rejecting candidate");
+          flag_occ = true;
+        }
+        for (const double t : collision_samples)
         {
           flag_occ = grid_map_->getInflateOccupancy(traj.evaluateDeBoorT(t));
           if (flag_occ)
@@ -1684,8 +1723,16 @@ namespace ego_planner
       UniformBspline traj = UniformBspline(cps_.points, 3, bspline_interval_);
       double tm, tmp;
       traj.getTimeSpan(tm, tmp);
-      double t_step = (tmp - tm) / ((traj.evaluateDeBoorT(tmp) - traj.evaluateDeBoorT(tm)).norm() / grid_map_->getResolution()); // Step size is defined as the maximum size that can passes throgth every gird.
-      for (double t = tm; t < tmp * 2 / 3; t += t_step)
+      const double max_speed_bound = traj.getMaxVelocityBound();
+      const auto collision_samples = collision_sampling::fullTrajectorySampleTimes(
+          tm, tmp, max_speed_bound, grid_map_->getResolution());
+      if (collision_samples.empty())
+      {
+        RCLCPP_ERROR(rclcpp::get_logger("BsplineOptimizer"),
+                     "Invalid full-trajectory refine sampling; rejecting candidate");
+        flag_safe = false;
+      }
+      for (const double t : collision_samples)
       {
         if (grid_map_->getInflateOccupancy(traj.evaluateDeBoorT(t)))
         {

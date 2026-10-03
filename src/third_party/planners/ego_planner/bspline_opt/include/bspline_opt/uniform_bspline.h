@@ -44,7 +44,7 @@ namespace ego_planner
     Eigen::VectorXd getKnot();
     Eigen::MatrixXd getControlPoint();
     double getInterval();
-    bool getTimeSpan(double &um, double &um_p);
+    bool getTimeSpan(double &um, double &um_p) const;
 
     // compute position / derivative
 
@@ -68,7 +68,11 @@ namespace ego_planner
 
     /* for performance evaluation */
 
-    double getTimeSum();
+    double getTimeSum() const;
+    // Conservative speed bound from the derivative control points.  Because
+    // a B-spline is a convex combination of its derivative control points,
+    // this bound remains valid for loops/zero-chord trajectories.
+    double getMaxVelocityBound() const;
     double getLength(const double &res = 0.01);
     double getJerk();
     void getMeanAndMaxVel(double &mean_v, double &max_v);
