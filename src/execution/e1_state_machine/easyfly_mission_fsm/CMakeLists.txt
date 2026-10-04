@@ -33,9 +33,16 @@ install(TARGETS mission_fsm_node
 install(DIRECTORY missions launch
   DESTINATION share/${PROJECT_NAME}
 )
+install(DIRECTORY include/ DESTINATION include)
+ament_export_include_directories(include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_legacy_mission test/test_legacy_mission.cpp)
+  target_include_directories(test_legacy_mission PRIVATE include)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_prevalidation test/test_prevalidation.py TIMEOUT 30
+    ENV ROS_DOMAIN_ID=96 ROS_LOG_DIR=/tmp/easyfly_d2_prevalidation)
 endif()
 
 ament_package()

@@ -3,13 +3,18 @@
 <package format="3">
   <name>easyfly_perception_srvs</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_perception_srvs</description>
+  <description>Read-only typed perception snapshots and capability health.</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>easyfly_msgs</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>

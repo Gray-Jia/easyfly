@@ -1,0 +1,177 @@
+#include <easyfly_core/client.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <gtest/gtest.h>
+#include <atomic>
+#include <thread>
+#include <chrono>
+using namespace std::chrono_literals;
+using easyfly_core::Status;
+using easyfly_core::Admission;
+class SdkTest : public ::testing::Test {
+ protected:
+  using Action = easyfly_msgs::action::NavigateTo;
+  std::shared_ptr<rclcpp::Context> context;
+  rclcpp::Node::SharedPtr node;
+  std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor;
+  std::thread thread;
+  rclcpp_action::Server<Action>::SharedPtr server;
+  std::vector<std::shared_ptr<void>> extra_servers;
+  std::vector<rclcpp::TimerBase::SharedPtr> timers;
+  std::atomic<int> mode{0}, accepted{0}, cancels{0};
+  rclcpp::Publisher<easyfly_msgs::msg::UAVState>::SharedPtr publisher;
+  void SetUp() override {
+    setenv("ROS_DOMAIN_ID", "91", 1);
+    context = std::make_shared<rclcpp::Context>(); context->init(0, nullptr);
+    rclcpp::NodeOptions o; o.context(context);
+    node = std::make_shared<rclcpp::Node>("sdk_mock_server", o);
+    publisher = node->create_publisher<easyfly_msgs::msg::UAVState>("/uav_state", 10);
+    server = rclcpp_action::create_server<Action>(node, "/navigate",
+      [this](const auto &, auto) {
+        if (mode == 4) std::this_thread::sleep_for(250ms);
+        return mode == 1 ? rclcpp_action::GoalResponse::REJECT : rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      }, [this](auto) { ++cancels; return rclcpp_action::CancelResponse::ACCEPT; },
+      [this](auto handle) {
+        ++accepted;
+        const auto start = std::chrono::steady_clock::now();
+        auto canceled_at = std::make_shared<std::chrono::steady_clock::time_point>();
+        auto timer = std::make_shared<rclcpp::TimerBase::SharedPtr>();
+        *timer = node->create_wall_timer(10ms, [this, handle, start, canceled_at, timer] {
+          auto feedback = std::make_shared<Action::Feedback>(); feedback->distance_remaining = 4.0;
+          handle->publish_feedback(feedback);
+          auto result = std::make_shared<Action::Result>();
+          if (handle->is_canceling()) {
+            if (*canceled_at == std::chrono::steady_clock::time_point{}) *canceled_at = std::chrono::steady_clock::now();
+            if (std::chrono::steady_clock::now() - *canceled_at < 120ms) return;
+            result->success = false; result->message = "mock_canceled"; handle->canceled(result);
+          } else if ((mode == 4 || mode == 5) || std::chrono::steady_clock::now() - start < 120ms) return;
+          else if (mode == 2) { result->success = false; result->message = "false_success"; handle->succeed(result); }
+          else if (mode == 3) { result->success = false; result->message = "mock_abort"; handle->abort(result); }
+          else { result->success = true; result->message = "arrived"; handle->succeed(result); }
+          (*timer)->cancel();
+          timer->reset();
+        });
+        timers.push_back(*timer);
+      });
+    rclcpp::ExecutorOptions eo; eo.context = context;
+    executor = std::make_unique<rclcpp::executors::SingleThreadedExecutor>(eo);
+    executor->add_node(node);
+    thread = std::thread([this] { executor->spin(); });
+  }
+  void TearDown() override {
+    executor->cancel(); if (thread.joinable()) thread.join();
+    timers.clear(); extra_servers.clear(); server.reset(); publisher.reset();
+    executor->remove_node(node); executor.reset(); node.reset(); context->shutdown("mock test completed");
+  }
+  void ready(easyfly_core::Client &client) {
+    for (int i = 0; i < 300 && !client.server_ready("navigate"); ++i) std::this_thread::sleep_for(10ms);
+    ASSERT_TRUE(client.server_ready("navigate"));
+  }
+  template<class A> void simple(const std::string &topic) {
+    extra_servers.push_back(rclcpp_action::create_server<A>(node, topic,
+      [](const auto &, auto) { return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE; },
+      [](auto) { return rclcpp_action::CancelResponse::ACCEPT; },
+      [](auto handle) { auto result = std::make_shared<typename A::Result>();
+        result->success = true; result->message = "typed_mock_success"; handle->succeed(result); }));
+  }
+};
+TEST_F(SdkTest, AllSevenTypedMethodsReachTheirRealActionEndpoints) {
+  simple<easyfly_msgs::action::Takeoff>("/takeoff");
+  simple<easyfly_msgs::action::Land>("/land");
+  simple<easyfly_msgs::action::GoToWaypoint>("/goto_waypoint");
+  simple<easyfly_msgs::action::FollowTrajectory>("/follow_trajectory");
+  simple<easyfly_msgs::action::TrackTarget>("/track_target");
+  simple<easyfly_msgs::action::ExecuteMission>("/execute_mission");
+  easyfly_core::Client client;
+  for (const auto *name : {"takeoff", "land", "goto", "navigate", "follow", "track", "execute_mission"}) {
+    for (int i=0; i<300 && !client.server_ready(name); ++i) std::this_thread::sleep_for(10ms);
+    ASSERT_TRUE(client.server_ready(name));
+  }
+  std::vector<std::shared_ptr<easyfly_core::Operation>> operations{
+    client.takeoff(easyfly_msgs::action::Takeoff::Goal{}), client.land(easyfly_msgs::action::Land::Goal{}),
+    client.go_to(easyfly_msgs::action::GoToWaypoint::Goal{}), client.navigate(Action::Goal{}),
+    client.follow(easyfly_msgs::action::FollowTrajectory::Goal{}), client.track(easyfly_msgs::action::TrackTarget::Goal{}),
+    client.execute_mission(easyfly_msgs::action::ExecuteMission::Goal{})};
+  for (const auto &op : operations) { ASSERT_TRUE(op->wait(3)); EXPECT_TRUE(op->snapshot().success); }
+  EXPECT_TRUE(client.close(3));
+}
+TEST_F(SdkTest, SuccessFalseSuccessRejectAbortAndWaitAreDistinct) {
+  easyfly_core::Client client; ready(client);
+  Action::Goal goal; goal.target_x = 1; goal.target_z = 1;
+  auto op = client.navigate(goal);
+  EXPECT_FALSE(op->wait(.001)); EXPECT_EQ(cancels.load(), 0);
+  ASSERT_TRUE(op->wait(3)); EXPECT_TRUE(op->snapshot().success);
+  EXPECT_EQ(op->snapshot().admission, Admission::Accepted);
+  EXPECT_DOUBLE_EQ(op->snapshot().feedback.numbers.at("distance_remaining"), 4.0);
+  mode = 2; op = client.navigate(goal); ASSERT_TRUE(op->wait(3));
+  EXPECT_EQ(op->snapshot().status, Status::Failed); EXPECT_FALSE(op->snapshot().success);
+  mode = 1; op = client.navigate(goal); ASSERT_TRUE(op->wait(3));
+  EXPECT_EQ(op->snapshot().status, Status::Rejected);
+  mode = 3; op = client.navigate(goal); ASSERT_TRUE(op->wait(3));
+  EXPECT_EQ(op->snapshot().status, Status::Failed);
+  EXPECT_EQ(client.unsupported("precision_landing")->snapshot().status, Status::Unsupported);
+  easyfly_msgs::action::Land::Goal land;
+  op = client.land(land); ASSERT_TRUE(op->wait(3)); EXPECT_EQ(op->snapshot().status, Status::Unavailable);
+  EXPECT_TRUE(client.close(3));
+}
+TEST_F(SdkTest, CancelAcknowledgmentIsNotTerminalAndCapacityIsBounded) {
+  easyfly_core::ClientOptions options; options.max_pending_operations = 1;
+  easyfly_core::Client client(options); ready(client); mode = 5;
+  auto op = client.navigate(Action::Goal{});
+  auto rejected = client.navigate(Action::Goal{});
+  EXPECT_EQ(rejected->snapshot().status, Status::CapacityExceeded);
+  for (int i=0; i<300 && op->snapshot().admission != Admission::Accepted; ++i) std::this_thread::sleep_for(10ms);
+  ASSERT_EQ(op->snapshot().admission, Admission::Accepted);
+  EXPECT_TRUE(op->cancel());
+  for (int i=0; i<100 && op->snapshot().cancel_status != easyfly_core::CancelStatus::Accepted; ++i) std::this_thread::sleep_for(2ms);
+  EXPECT_EQ(op->snapshot().cancel_status, easyfly_core::CancelStatus::Accepted);
+  EXPECT_TRUE(op->snapshot().remote_execution_pending); EXPECT_FALSE(op->snapshot().success);
+  ASSERT_TRUE(op->wait(3)); EXPECT_EQ(op->snapshot().status, Status::Canceled);
+  EXPECT_EQ(cancels.load(), 1); EXPECT_TRUE(client.close(3));
+}
+TEST_F(SdkTest, CloseAndDestructorRetainLateAcceptanceUntilExactCancellationCompletes) {
+  auto client = std::make_unique<easyfly_core::Client>(); ready(*client); mode = 4;
+  auto op = client->navigate(Action::Goal{});
+  std::this_thread::sleep_for(50ms);
+  EXPECT_FALSE(client->close(.001));
+  EXPECT_EQ(op->snapshot().local_status, easyfly_core::LocalStatus::Closed);
+  EXPECT_TRUE(op->snapshot().remote_execution_pending);
+  client.reset();  // detached self-owned drain contains no facade pointer
+  ASSERT_TRUE(op->wait(3)); EXPECT_EQ(op->snapshot().status, Status::Canceled);
+  EXPECT_EQ(accepted.load(), 1); EXPECT_EQ(cancels.load(), 1);
+}
+TEST_F(SdkTest, ClosedLastOperationWaitIncludesCleanupWithoutInventingTerminalStatus) {
+  easyfly_core::Client client; ready(client); mode = 4;
+  auto op = client.navigate(Action::Goal{});
+  std::this_thread::sleep_for(50ms);
+  EXPECT_FALSE(client.close(0));
+  EXPECT_FALSE(op->wait(0));
+  EXPECT_EQ(op->snapshot().status, Status::Pending);
+  EXPECT_TRUE(op->snapshot().remote_execution_pending);
+  ASSERT_TRUE(op->wait(3));
+  EXPECT_EQ(op->snapshot().status, Status::Canceled);
+  EXPECT_FALSE(op->snapshot().success);
+  EXPECT_FALSE(op->snapshot().remote_execution_pending);
+  // wait has synchronized final DDS cleanup, not merely cancel/result receipt.
+  EXPECT_TRUE(client.close(0));
+  EXPECT_TRUE(op->wait(0));
+}
+TEST_F(SdkTest, AdmissionTimeoutIsLocalAndStateFreezesAtClose) {
+  easyfly_core::ClientOptions options; options.admission_timeout_seconds = .02;
+  options.cancel_on_admission_timeout = true;
+  easyfly_core::Client client(options); ready(client);
+  easyfly_msgs::msg::UAVState state; state.connected = true; state.pose_valid = true; state.position_x = 7;
+  state.header.frame_id = "odom";
+  for (int i=0; i<100 && !client.state().received; ++i) {
+    state.header.stamp = node->now(); publisher->publish(state); std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_TRUE(client.state().received); EXPECT_TRUE(client.state().fresh);
+  mode = 4; auto op = client.navigate(Action::Goal{});
+  std::this_thread::sleep_for(80ms);
+  EXPECT_EQ(op->snapshot().local_status, easyfly_core::LocalStatus::AdmissionTimedOut);
+  EXPECT_TRUE(op->snapshot().remote_execution_pending);
+  ASSERT_TRUE(op->wait(3)); EXPECT_EQ(op->snapshot().status, Status::Canceled);
+  EXPECT_TRUE(client.close(3));
+  state.position_x = 9; publisher->publish(state); std::this_thread::sleep_for(50ms);
+  EXPECT_DOUBLE_EQ(client.state().value.position_x, 7); EXPECT_FALSE(client.state().fresh);
+}

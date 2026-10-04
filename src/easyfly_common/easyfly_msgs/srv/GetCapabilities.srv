@@ -1,0 +1,7 @@
+# Availability is a current observation, not a safety certification.
+---
+std_msgs/Header header
+string[] names
+bool[] implemented
+bool[] ready
+string[] details

@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 
 import rclpy
 from rclpy.action import ActionClient
@@ -26,7 +27,7 @@ from traj_utils.msg import TrajectoryAck
 
 
 class NavigationChainTest(unittest.TestCase):
-    def run_chain(self, dynamic):
+    def run_chain(self, dynamic, sdk_mode=False):
         rclpy.init()
         node = rclpy.create_node('navigation_software_plant')
         processes, logs = [], []
@@ -134,6 +135,8 @@ class NavigationChainTest(unittest.TestCase):
                 '--ros-args', '-p', 'strategy:=combined', '-p', 'goal_timeout:=60.0'])
         takeoff = ActionClient(node, Takeoff, '/takeoff')
         navigate = ActionClient(node, NavigateTo, '/navigate')
+        sdk_client = None
+        scenario_finished = False
 
         def spin(seconds):
             until = time.monotonic() + seconds
@@ -148,15 +151,42 @@ class NavigationChainTest(unittest.TestCase):
             self.assertTrue(future.done(), 'future deadline expired')
             return future.result()
 
+        def send(goal):
+            if not sdk_mode:
+                return wait(navigate.send_goal_async(goal))
+            op = sdk_client.navigate(goal.target_x, goal.target_y, goal.target_z, goal.max_speed)
+            until = time.monotonic() + 10
+            while op.snapshot().admission == sdk.Admission.PENDING and time.monotonic() < until:
+                rclpy.spin_once(node, timeout_sec=0.01)
+            return SimpleNamespace(accepted=op.snapshot().admission == sdk.Admission.ACCEPTED, operation=op)
+
+        def result(handle, seconds=10):
+            if not sdk_mode:
+                return wait(handle.get_result_async(), seconds)
+            until = time.monotonic() + seconds
+            while handle.operation.snapshot().remote_execution_pending and time.monotonic() < until:
+                rclpy.spin_once(node, timeout_sec=0.01)
+            state = handle.operation.snapshot()
+            self.assertFalse(state.remote_execution_pending, state.local_message)
+            status = {sdk.Status.SUCCEEDED: 4, sdk.Status.CANCELED: 5, sdk.Status.FAILED: 6}.get(state.status)
+            return SimpleNamespace(status=status, result=SimpleNamespace(success=state.success, message=state.message))
+
         try:
             self.assertTrue(takeoff.wait_for_server(timeout_sec=15))
             self.assertTrue(navigate.wait_for_server(timeout_sec=10))
+            if sdk_mode:
+                import easyfly_pybind as sdk
+                sdk_client = sdk.Client()
+                until = time.monotonic() + 5
+                while not sdk_client.server_ready('navigate') and time.monotonic() < until:
+                    rclpy.spin_once(node, timeout_sec=0.01)
+                self.assertTrue(sdk_client.server_ready('navigate'))
             spin(2.0)
             th = wait(takeoff.send_goal_async(Takeoff.Goal(target_altitude=1.5, climb_speed=1.0)))
             self.assertTrue(th.accepted)
             self.assertTrue(wait(th.get_result_async(), 15).result.success)
             goal = NavigateTo.Goal(target_x=5.0, target_z=1.5, max_speed=1.0)
-            handle = wait(navigate.send_goal_async(goal))
+            handle = send(goal)
             self.assertTrue(handle.accepted)
             if dynamic:
                 until = time.monotonic() + 10
@@ -171,9 +201,9 @@ class NavigationChainTest(unittest.TestCase):
                 while not any(s.active and s.session_id != previous for s in sessions) and time.monotonic() < until:
                     rclpy.spin_once(node, timeout_sec=0.01)
                 self.assertTrue(any(s.active and s.session_id != previous for s in sessions))
-            result = wait(handle.get_result_async(), 65)
-            self.assertEqual(result.status, 4, result.result.message)
-            self.assertTrue(result.result.success)
+            completed = result(handle, 65)
+            self.assertEqual(completed.status, 4, completed.result.message)
+            self.assertTrue(completed.result.success)
             self.assertLess(math.hypot(position[0] - 5, position[1]), 0.15)
             self.assertGreater(max(abs(p[1]) for p in history), 0.8)
             self.assertGreater(min(math.hypot(p[0] - 2.5, p[1]) - 0.25 for p in history), 0.8)
@@ -186,20 +216,21 @@ class NavigationChainTest(unittest.TestCase):
                                      for c in trajectories), 1.001)
             spin(0.4)
             # Cancel a real new goal and verify no further trajectory output.
-            h2 = wait(navigate.send_goal_async(NavigateTo.Goal(target_x=5.0, target_y=2.0,
-                                                              target_z=1.5, max_speed=1.0)))
+            h2 = send(NavigateTo.Goal(target_x=5.0, target_y=2.0, target_z=1.5, max_speed=1.0))
             self.assertTrue(h2.accepted)
             spin(0.5)
-            wait(h2.cancel_goal_async())
-            canceled = wait(h2.get_result_async())
+            if sdk_mode:
+                self.assertTrue(h2.operation.cancel())
+            else:
+                wait(h2.cancel_goal_async())
+            canceled = result(h2)
             self.assertEqual(canceled.status, 5)
             spin(0.4)
             tail_start = time.monotonic()
             spin(0.4)
             self.assertFalse(any(t > tail_start and mode == UAVCommand.TRAJECTORY for t, mode in commands))
             spin(0.4)
-            h3 = wait(navigate.send_goal_async(NavigateTo.Goal(target_x=5.0, target_y=-2.0,
-                                                              target_z=1.5, max_speed=1.0)))
+            h3 = send(NavigateTo.Goal(target_x=5.0, target_y=-2.0, target_z=1.5, max_speed=1.0))
             self.assertTrue(h3.accepted)
             started_at = len(trajectories)
             until = time.monotonic() + 5
@@ -207,15 +238,17 @@ class NavigationChainTest(unittest.TestCase):
                 rclpy.spin_once(node, timeout_sec=0.01)
             self.assertGreater(len(trajectories), started_at)
             cloud_enabled = False  # EGO's production freshness/empty-cloud safety path.
-            emergency = wait(h3.get_result_async(), 5)
+            emergency = result(h3, 5)
             self.assertEqual(emergency.status, 6)
             self.assertEqual(emergency.result.message, 'planner_emergency_stop')
+            scenario_finished = True
         except Exception:
             for log in logs:
                 log.seek(0)
                 print(log.read()[-14000:])
             raise
         finally:
+            sdk_drained = sdk_client.close(2) if sdk_client else True
             for process in processes:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGINT)
@@ -233,12 +266,17 @@ class NavigationChainTest(unittest.TestCase):
             navigate.destroy()
             node.destroy_node()
             rclpy.shutdown()
+            if scenario_finished:
+                self.assertTrue(sdk_drained, 'SDK drain did not complete after observed real terminals')
 
     def test_static_obstacle_real_chain(self):
         self.run_chain(False)
 
     def test_dynamic_obstacle_real_chain(self):
         self.run_chain(True)
+
+    def test_cpp_sdk_python_real_chain(self):
+        self.run_chain(False, sdk_mode=True)
 
 
 if __name__ == '__main__':

@@ -319,87 +319,12 @@ double MissionFSM::safe_stod(const std::string & val, const std::string & line)
 
 std::vector<MissionStep> MissionFSM::parse_mission(const std::string & path)
 {
-  std::vector<MissionStep> steps;
-  std::ifstream file(path);
-  if (!file.is_open()) {
-    RCLCPP_ERROR(get_logger(), "Cannot open mission file: %s", path.c_str());
-    return steps;
+  auto validation = validateLegacyMissionFile(path);
+  if (!validation.valid()) {
+    RCLCPP_ERROR(get_logger(), "Mission validation failed: %s", validation.error.c_str());
   }
-
-  MissionStep s;
-  bool parse_ok = true;
-  std::string line;
-  int line_no = 0;
-  while (std::getline(file, line)) {
-    ++line_no;
-    // skip comments and empty lines
-    if (line.empty() || line[0] == '#') continue;
-
-    // step separator
-    std::string trimmed = line;
-    trimmed.erase(0, trimmed.find_first_not_of(" \t"));
-    trimmed.erase(trimmed.find_last_not_of(" \t") + 1);
-    if (trimmed == "---") {
-      if (!s.type.empty()) steps.push_back(s);
-      s = MissionStep{};
-      continue;
-    }
-
-    // parse key=value or key:value
-    auto eq = line.find('=');
-    if (eq == std::string::npos) eq = line.find(':');
-    if (eq == std::string::npos) continue;
-
-    std::string key = line.substr(0, eq);
-    std::string val = line.substr(eq + 1);
-
-    // trim
-    key.erase(0, key.find_first_not_of(" \t"));
-    key.erase(key.find_last_not_of(" \t") + 1);
-    val.erase(0, val.find_first_not_of(" \t"));
-    val.erase(val.find_last_not_of(" \t") + 1);
-
-    if (key == "type") {
-      s.type = val;
-    } else if (key == "altitude") {
-      s.altitude = safe_stod(val, line);
-    } else if (key == "climb_speed") {
-      s.climb_speed = safe_stod(val, line);
-    } else if (key == "x") {
-      s.x = safe_stod(val, line);
-    } else if (key == "y") {
-      s.y = safe_stod(val, line);
-    } else if (key == "z") {
-      s.z = safe_stod(val, line);
-    } else if (key == "yaw") {
-      s.yaw = safe_stod(val, line);
-    } else if (key == "max_speed") {
-      s.max_speed = safe_stod(val, line);
-    } else if (key == "wait") {
-      s.wait = safe_stod(val, line);
-    }
-    // Q8: 数值字段有 NaN → 文件无效, 丢弃全部 (防半截任务上天)
-    if (!std::isfinite(s.altitude) || !std::isfinite(s.climb_speed) ||
-        !std::isfinite(s.x) || !std::isfinite(s.y) || !std::isfinite(s.z) ||
-        !std::isfinite(s.yaw) || !std::isfinite(s.max_speed) ||
-        !std::isfinite(s.wait))
-    {
-      parse_ok = false;
-      break;
-    }
-  }
-  if (parse_ok && !s.type.empty()) steps.push_back(s);
-
-  if (!parse_ok) {
-    RCLCPP_ERROR(get_logger(), "Mission file %s 含非法数值 (第 %d 行附近), 拒绝执行", path.c_str(), line_no);
-    steps.clear();
-    return steps;
-  }
-  RCLCPP_INFO(get_logger(), "Parsed %d steps from %s", (int)steps.size(), path.c_str());
-  return steps;
+  return validation.steps;
 }
-
-// ================================================================
 // Mission execution (runs in separate thread)
 // ================================================================
 

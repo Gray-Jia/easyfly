@@ -22,12 +22,17 @@ def _launch_profile(context):
         PythonLaunchDescriptionSource(str(source)),
         launch_arguments=profile["launch_arguments"].items(),
     )
-    message = f"D0 profile={profile['name']} readiness={profile['readiness']}"
+    platform = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(str(Path(get_package_share_directory('easyfly_mission_srvs')) /
+                                          'launch/platform.launch.py')),
+        launch_arguments={'profile': profile['name'], 'use_sim_time': 'true',
+                          'start_mission_executor': 'false'}.items())
+    message = f"D0-D2 profile={profile['name']} readiness={profile['readiness']}"
     if profile.get("note"):
         message += ": " + profile["note"]
     # Parent generic config_file/use_sim_time overrides must not pollute child defaults.
     return [LogInfo(msg=message), GroupAction(
-        scoped=True, forwarding=False, actions=[include])]
+        scoped=True, forwarding=False, actions=[include, platform])]
 
 
 def generate_launch_description():

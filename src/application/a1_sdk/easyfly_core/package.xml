@@ -3,13 +3,17 @@
 <package format="3">
   <name>easyfly_core</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_core</description>
+  <description>Owned asynchronous EasyFly C++ action and state SDK</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>easyfly_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>

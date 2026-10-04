@@ -3,9 +3,10 @@
 > 开始时间：2026-10-04 07:33（Asia/Shanghai）
 > D0完成时间：2026-10-04 07:51（Asia/Shanghai）
 > D1完成时间：2026-10-04 14:09（Asia/Shanghai）
-> 计划依据：`plan-v3.md` D0、D1；起点 HEAD：`1860690`。
-> 状态：D0、D1均已完成本批开发验收并通过最终只读评审（D1见第7节）；G9-G11复验继续暂停。
-> 分工：主 agent 负责范围、协调器、监督、配置、契约、集成检查与记录；easyfly_coder 负责构建脚本及EGO/轨迹会话链限定实现；easyfly_reviewer 负责最终只读评审。
+> D2完成时间：2026-10-04 15:20（Asia/Shanghai）
+> 计划依据：`plan-v3.md` D0、D1、D2；起点 HEAD：`1860690`。
+> 状态：D0、D1、D2本批开发范围完成；D2尚未提交；G9-G11复验继续暂停。
+> 分工：主 agent 负责范围、协调器、监督、配置/服务、契约、集成检查与记录；easyfly_coder 负责构建脚本、EGO/轨迹会话链及SDK限定实现；easyfly_reviewer 负责最终只读评审。
 
 ## 1. 目标与验收标准
 
@@ -203,7 +204,7 @@ D0已提交：`847dfbf feat(D0): establish development profiles and close baseli
 
 - 没有重新开展G9长稳/冷启动或G10/G11；软件plant不是PX4/Gazebo SITL，不验证真实感知、动力学、外部定位注入或实机安全阈值。动态场景为新障碍出现后的重规划，不是完整动态运动预测避障。
 - 不宣称全量67包重新构建、全量lint清零或全部外部DDS故障场景已验证。受管消息类型已变化，部署时必须同步重编工作区，不能混用旧接口库；独立自动监督默认关闭。
-- D1修改当前留在工作树，尚未git提交或push；D0提交仍为847dfbf。预存用户agent配置修改保持原样。
+- D1于随后用户授权提交为`dfd6859 feat(D1): unify navigation ownership and managed trajectory sessions`，未push；D0提交为847dfbf。预存用户agent配置修改保持原样。
 - 后续可按计划进入D2 SDK/参数与平台接口；本轮未开始D2，也未把后续统一悬停、完整SDK/任务引擎计为已交付。
 
 ### 7.6 D1 独立验收（2026-10-04，ZCode 受权执行）
@@ -231,3 +232,112 @@ D0已提交：`847dfbf feat(D0): establish development profiles and close baseli
 3. 接口安装就位：NavigateTo/NavigationSession/SetNavigationSession/StopNavigation 均在 install 的 action/msg/srv ✅。
 
 验收结论：**D1-01~D1-05 按本批开发范围验收通过**。证据与开发记录（§7.2-7.5）一致，未发现声明与实际的偏差。边界确认：本验收为组件/软件闭环级（与 D1 声明范围一致），不含 G9+ 长稳与实机；D1 改动截至本次验收**尚未提交**。
+
+## 8. D2：SDK、参数与平台接口
+
+项目所有者于2026-10-04授权提交D1并开始D2。D1已提交为`dfd6859`，未push；上述独立验收是提交前的历史记录，保留原文。主agent负责参数与A2服务、公共接口、集成检查及记录；easyfly_coder负责C++SDK及Python绑定；easyfly_reviewer只读复核。不恢复G9+。
+
+### 8.1 目标、用户决策与验收标准
+
+用户确认两项边界：任务服务仅管理现有格式的目录校验、列表、执行、查询和取消，正式版本化YAML/搜索/复杂编排留到D3；参数只开放新增服务明确支持的动态白名单，飞行边界、坐标、设备和其他节点参数只读或重启生效。
+
+| ID | 目标 | 当前进度 | 验收标准 |
+|---|---|---|---|
+| D2-01 | C++异步SDK | 完成：6项组件回归、退出竞态修复与评审通过 | 状态与7类已实现Action客户端；准入、反馈、真实结果和取消分开；executor/析构所有权明确；无setpoint旁路 |
+| D2-02 | 类型化参数服务 | 完成：ROS参数及QueryParams回归通过 | 复用D0配置版本/启动加载/导出；明确动态白名单；非法更新不改变原值；QueryParams空值歧义明确 |
+| D2-03 | 感知查询与能力 | 完成：真实ROS查询与负向回归通过 | 含源时间和有效性；区分有效空、未就绪、过期、无效和unsupported |
+| D2-04 | 任务服务 | 完成：7类后端场景、预校验与安装入口通过 | 目录列表/完整预校验/执行/UUID查询取消；只调用既有执行器，不增加飞行状态机或任意Python执行 |
+| D2-05 | Python最小绑定 | 完成：7项回归及3次重复通过，同一C++实现连接真实导航链 | 状态/起降/导航/任务/取消；GIL与对象寿命安全；可运行示例 |
+| D2-06 | 开发验证及评审 | 完成：相关构建、组件、最终3场景软件闭环及补充只读评审通过 | 成功/拒绝/失败/取消与迟到响应回归；相关构建；最终独立只读评审；实际结果如实记录 |
+
+### 8.2 实际交付
+
+1. `easyfly_core`由骨架变为C++17共享库，导出`easyfly_core::easyfly_core`；自有独立Context/Node/executor，不接管调用者节点。7个异步动作客户端与状态订阅；Operation分离准入、反馈、真实终态、本地超时和取消响应，SUCCEEDED但success=false也为失败。默认32个未决槽，close不按超时释放远端所有权；仅精确取消所属Goal，包括迟到准入。
+2. `easyfly_pybind`绑定同一SDK，不另写飞行状态机；Python只轮询/等待，wait/close释放GIL。C++和Python安装示例默认只查询，运动必须显式选择；SDK的running不等于后端ready。状态分别暴露源时钟/steady接收新鲜度和原始有效位，支持显式use_sim_time。
+3. `easyfly_params`增加标准ROS类型化参数服务、受约束QueryParams兼容入口与有效配置JSON导出。动态参数仅operator_note（UTF-8≤512字节）和export_pretty（bool）；空param_value读，JSON编码`""`写实际空字符串。非法/未知/只读/类型错配与原子更新失败不改变原值。
+4. `easyfly_perception_srvs`实现目标/障碍查询、源时间与能力列表，VALID空数组保留header；未收到、旧数据、几何/坐标/时间非法和unsupported明确区分。动态max_age限0.05–10s；range>0要求新鲜有效UAV位姿，按中心距离过滤，不混称监督AABB净距。标签/精准降落仍unsupported。
+5. `easyfly_mission_srvs`提供list/validate/start/query/cancel；basename/canonical目录边界、名称和真实文件后缀校验、256个目录项及64KiB文件上限。服务与原mission_fsm共享完整旧格式校验，非法后续步骤不先执行前面步骤。执行只发送0600私有不可变快照给既有`/execute_mission`，使用门面ID绑定真实Goal UUID，取消ACK不等于终态，未确认时拒绝新执行；保存最近32项终态记录。正式YAML/search明确unsupported。
+6. 三项新增srv类型GetPerception/GetCapabilities/ManageMission；不改D1已有Action/轨迹布局。平台服务launch默认不启动任务执行器、不发运动请求；仿真profile接入3服务且不重复FSM。hardware_unverified在可选执行器Include之前拒绝启动。成熟度表更新：总包数67不变，明确骨架从28降为24，不据包数推算整个平台完成百分比。
+
+接口、示例、白名单及限制见[docs/development/d2-platform.md](docs/development/d2-platform.md)。
+
+### 8.3 过程与失败记录
+
+- 14:38起：主agent新增3服务类型并成功构建，SDK实现与服务实现按限定文件分工推进。
+- SDK首轮Python绑定缺少Python Development配置，测试mock的Context.shutdown调用不兼容Humble；修正后相关构建通过。Python反馈首轮因单帧volatile发现窗口失败，mock改为执行期间持续反馈，未删除断言。被中断/失败的构建不记作成功。
+- 参数、感知、任务门面和共享旧格式预校验通过组件检查；配置/嵌套launch38项保持通过。任务目录原文在准入后修改，后端仍读取原快照；非法后续步骤拒绝时mock起飞Goal计数为0。
+- 安装入口冒烟首次list为空，原因是`--symlink-install`任务文件真实父目录不在安装目录。默认目录改由可信包内示例的canonical父目录定位；显式目录的越界symlink仍拒绝，修正后安装入口通过。
+- SDK与真实coordinator/EGO/traj_server/flight_control软件plant首次连接通过；原静态/动态与新SDK场景最终3用例通过（80.62s）。输入仍为合成状态/点云/栅格及简化响应，不是PX4/Gazebo。
+- 安装只查询示例暴露空闲SDK快速退出的DDS清理异常；修复SDK析构及Python上下文管理器，加入with/del/隐式退出3种独立进程回归，C++5/Python6及两个安装示例随后通过。
+- 两次coder最后构建在TimerEvent处挂起并中断（退出130），不记成功；主agent全权限串行重编SDK两包于15:08完成rc0。
+- reviewer发现目录上限只累计可选任务、垃圾文件仍可无限遍历；改为累计所有目录项，在257项立即失败；实际257垃圾项回归通过。另补alias.txt→valid.mission名称后缀拒绝，任务组件与安装入口再次通过。
+- reviewer首轮最终复核无阻塞，但建议独立进程覆盖迟到准入销毁；新增第7个Python用例实际发现“close(0)→del client→收到真实取消终态→立即退出”的崩溃。coder复现SIGSEGV；主agent全权限重跑复现SIGABRT和DDS析构错误，确认非权限问题，D2暂不签收，正在修复真实终态通知与运行时清理屏障之间的窗口。
+- 15:18：修复完成，Context实际释放后才发布stopped；已关闭且无其他未决任务时，最后Operation.wait在同一原预算内等待DDS清理，超时不改真实结果、不额外取消。主agent串行SDK重编rc0，C++6项通过2.56s、Python7项通过5.18s；随后Python全组连续3次通过（4.31/4.36/4.47s）。coder第三次挂起构建中断130仍不记成功。
+- 15:20：补充reviewer只读确认清理屏障/锁顺序/超时语义无阻塞；修复后的3场景导航链再次通过80.02s，两个已安装只查询示例退出0；定向进程检查无所属ROS/build/test遗留。D2本批开发验收完成。
+
+### 8.4 已执行验证
+
+ROS命令均先source Humble及工作区安装环境；测试按独立domain隔离并清理所属进程。以下是针对性开发检查，未执行全量lint或全量67包重建。
+
+| 检查 | 命令/范围 | 实际结果 |
+|---|---|---|
+| C++ SDK | `ctest --test-dir build/easyfly_core --output-on-failure -R '^test_sdk$'` | 最终6项通过2.56s；含7实际mock动作入口、成功/假成功/拒绝/失败/unavailable/unsupported、wait非取消、取消ACK非终态、容量、迟到准入、状态冻结和清理屏障 |
+| Python SDK | `ctest --test-dir build/easyfly_pybind --output-on-failure -R '^test_sdk_python$'` | 最终7项通过5.18s；3种空闲subprocess及迟到取消终态后立即退出均通过；同命令追加`--repeat until-fail:3`连续3次通过13.14s |
+| SDK安装示例 | `ROS_DOMAIN_ID=98 ros2 run {easyfly_core,easyfly_pybind} sdk_state_example`（分别运行） | C++/Python默认只查询均退出0，后端不在时明确not received/ready=false；没有发运动请求 |
+| 参数 | `ctest --test-dir build/easyfly_params --output-on-failure -R '^test_(configuration\|runtime)$'` | 2个CTest通过0.72s；真实类型化/兼容服务及原子拒绝保值、配置导出 |
+| 感知 | `ctest --test-dir build/easyfly_perception_srvs --output-on-failure -R '^test_services$'` | 通过1.03s；有效空/缺失/旧源时间/非法条目/范围原点/能力与参数拒绝 |
+| 旧任务完整预校验 | `ctest --test-dir build/easyfly_mission_fsm --output-on-failure -R '^test_(legacy_mission\|prevalidation)$'` | 2个CTest通过1.32s；3项纯校验与13类负输入、超文件/步数；真实FSM非法后步骤无提前起飞、合法hover成功 |
+| 任务门面 | `ctest --test-dir build/easyfly_mission_srvs --output-on-failure -R '^test_services$'` | 7场景通过6.69s；成功/失败/拒绝/取消/迟到准入/无后端/取消ACK延迟终态；目录上限、遍历/软链接、非YAML、快照、所属ID与busy保锁 |
+| 平台启动 | 同包`-R '^test_(launch\|platform_smoke)$'` | 离线launch通过0.29s；实际安装入口3服务冒烟通过1.09s；无执行器/感知数据时正确not_ready；目录与导出可读，无自动运动 |
+| 配置/嵌套入口 | D0相同两文件pytest | 38项通过0.19s；已有profile安全默认值及平台接入 |
+| 真实软件导航链 | `ctest --test-dir build/easyfly_global_planner --output-on-failure -R '^test_navigation_chain$'` | 修复后最终3用例通过80.02s（此前80.62s）：原静态/动态与Python绑定→同一C++SDK→真实统一导航链；到达/绕障/速度/取消停流/点云失效急停均断言 |
+| 差异与进程 | `git diff --check`及定向进程检查 | 通过；无本次所属测试/服务/导航/构建进程遗留，用户预存agent配置未还原 |
+
+成功构建证据：
+
+- 公共接口：`log/build_2026-10-04_14-38-46/`，easyfly_msgs rc0，15.06s。
+- 参数/感知/FSM/任务服务：`14-45-23`及`14-49-55`四包rc0；共享最终校验与任务门面同步构建`14-59-53`两包rc0。
+- 平台接入/仿真入口：`log/build_2026-10-04_14-54-06/`，mission_srvs及sim_launcher两包rc0；默认目录修复`15-05-12`任务包rc0。
+- SDK：`CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --base-paths src --packages-select easyfly_core easyfly_pybind --parallel-workers 1 --symlink-install --cmake-args -DBUILD_TESTING=ON --event-handlers console_cohesion+`，`log/build_2026-10-04_15-08-02/`两包rc0，4.33s；退出竞态最终修复同命令`log/build_2026-10-04_15-17-50/`两包rc0，16.6s，随后6/7项及重复回归通过。
+- 目录上限修复`log/build_2026-10-04_15-10-00/`任务包rc0；名称后缀最终修复`log/build_2026-10-04_15-13-29/`单包串行构建rc0（4.34s），任务测试与入口再次通过。
+
+生成日志受Git忽略；本文件保存命令/范围/结果，不把中断、失败或旧版本结果当成最终通过。
+
+### 8.5 评审、验收与剩余边界
+
+easyfly_reviewer只读核对SDK所有权/迟到取消/GIL/状态时间、参数原子拒绝、感知状态、共享校验/快照/终态保锁/32项历史以及无自动运动launch；独立git diff --check通过。目录遍历发现已关闭；补充迟到终态subprocess实际发现SDK退出清理问题，修复后新增回归通过，reviewer再次核对锁顺序、强引用寿命、Context清理屏障和同预算等待，未发现阻塞；直接核对最终C++6/Python7日志，未修改文件或自行启动ROS。
+
+验收结论：按plan-v3第7节及用户确认边界，D2-01至D2-06本批开发范围完成。C++/Python示例可运行，异步请求/真实终态/取消区分明确，非法参数保值，感知查询有效性明确，旧任务完整预校验与精确管理通过，SDK真实导航链联调通过。D2修改留在工作树，未自动开始D3。
+
+本批新增SDK/服务均不发布setpoint或绕过执行层。进程退出不能保证外部服务器停止；丢失后端且永远无响应时仍保留未决SDK运行时。任务服务与执行器须共享可读取的文件系统，当前无跨主机快照传输。未确认终态的快照可能留在/tmp，不能据删除文件推断任务已停。
+
+D3正式YAML/搜索/复杂任务引擎及后续标签/精准降落、平台UI尚未开始。未重新开展G9–G11、PX4/Gazebo SITL或实机验证，不宣称自动监督阈值已实机验证。D2目前未提交；用户预存`.codex`和`codex_cli.sh`修改保留，未push。
+
+### 8.6 D2 独立验收（2026-10-04，ZCode 受权执行）
+
+验收基线：工作树未提交的 D2 改动（HEAD=dfd6859/D1 + D2 工作树 52 项）；独立 domain 测试。
+
+**新鲜度异常与处置**：验收时发现 `easyfly_core/include/client.hpp`（15:18:34）比最后构建（15:18:03）新 31 秒。按"源码晚于构建必须重编复测"纪律，串行重编 `easyfly_core + easyfly_pybind`（rc0，16.8s）后全部 SDK 测试在重编产物上通过——当前源码状态确认。
+
+按 §8.4 清单逐项独立复跑，全部通过：
+
+| 检查 | 结果 |
+|---|---|
+| C++ SDK（test_sdk，内部 6 场景） | ✅ Passed 2.54s（重编后） |
+| Python SDK（test_sdk_python，内部 7 用例） | ✅ Passed 4.53s + `--repeat until-fail:3` 连续 3 次通过（稳定性声明复验） |
+| SDK 安装示例（domain 98，无后端） | ✅ C++/Python 均 exit 0，只查询无运动请求，输出明确 `received=0/ready=false/navigate_server=0` |
+| 参数（configuration+runtime） | ✅ 2 CTest |
+| 感知（services） | ✅ Passed |
+| 旧任务预校验（legacy_mission+prevalidation） | ✅ 2 CTest |
+| 任务门面（services，7 场景） | ✅ Passed |
+| 平台入口（launch+platform_smoke） | ✅ 2 CTest |
+| 配置 pytest | ✅ 38/38 |
+| 真实软件导航链（含 SDK 场景 3 用例） | ✅ Passed 89.9s |
+| git diff --check / 进程残留 | ✅ / 0 |
+
+独立抽检（超出文档清单）：
+1. **五包零 setpoint 旁路**（D2 安全声明"均不发布setpoint"）：`easyfly_core/pybind/mission_srvs/perception_srvs`（+params）源码 grep 无任何 setpoint 引用 ✅；
+2. **动态白名单仅 2 参数**：`runtime.py` 仅声明 `operator_note`（UTF-8≤512 校验在案）与 `export_pretty` ✅；
+3. **hardware_unverified 拒绝启动**：configuration.py `load_profile` 对该 profile 抛 `ValueError`（"unverified hardware cannot advertise active capabilities"），mission_srvs 的 `service_nodes` 经 `ensure_launchable` 走同一拒绝路径，`test_launch.py:36-38` 有负向回归在案 ✅；executor Include 默认 `start_mission_executor=false` ✅。
+
+验收结论：**D2-01~D2-06 按本批开发范围验收通过**。开发记录（§8.3-8.5）与实测一致；退出竞态修复后的稳定性声明（repeat×3）经独立复验成立。边界确认：本验收为组件/软件闭环级；D2 改动截至验收**尚未提交**。

@@ -23,6 +23,9 @@ set(msg_files
 )
 
 set(srv_files
+  "srv/GetPerception.srv"
+  "srv/GetCapabilities.srv"
+  "srv/ManageMission.srv"
   "srv/SetNavigationSession.srv"
   "srv/StopNavigation.srv"
   "srv/ArmMotors.srv"

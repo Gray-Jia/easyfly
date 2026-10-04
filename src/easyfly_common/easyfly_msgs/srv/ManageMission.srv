@@ -1,0 +1,14 @@
+# operation: list, validate, start, query, cancel.
+# mission_name is a basename within the configured read-only catalog.
+# execution_id is required for query/cancel; never cancel another client's goal.
+string operation
+string mission_name
+string execution_id
+---
+bool success
+string status
+string message
+string[] missions
+string execution_id
+MissionStatus current_status
+bool feedback_valid

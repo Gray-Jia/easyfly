@@ -51,6 +51,10 @@ def test_profile_expansion(name, entry):
     include = next(action for action in group.get_sub_entities() if isinstance(action, IncludeLaunchDescription))
     arguments = dict(include.launch_arguments)
     assert arguments["headless"] == "true"
+    platform = [action for action in group.get_sub_entities()
+                if isinstance(action, IncludeLaunchDescription)][1]
+    assert dict(platform.launch_arguments) == {
+        'profile': name, 'use_sim_time': 'true', 'start_mission_executor': 'false'}
     if name != "base_sim":
         assert arguments["local_planner_virtual_ceil_height"] == "3.2"
         assert arguments["navigation_strategy"] == ("combined" if name == "navigation_dev" else "astar")

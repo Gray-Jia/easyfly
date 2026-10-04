@@ -2,10 +2,27 @@ cmake_minimum_required(VERSION 3.8)
 project(easyfly_core)
 
 find_package(ament_cmake REQUIRED)
-
-# TODO: add library/executable targets
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(easyfly_msgs REQUIRED)
+set(CMAKE_CXX_STANDARD 17)
+add_library(easyfly_core SHARED src/client.cpp)
+target_include_directories(easyfly_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(easyfly_core rclcpp rclcpp_action easyfly_msgs)
+add_executable(sdk_state_example examples/state.cpp)
+target_link_libraries(sdk_state_example easyfly_core)
+install(TARGETS easyfly_core EXPORT easyfly_coreTargets LIBRARY DESTINATION lib)
+install(TARGETS sdk_state_example DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include)
+ament_export_targets(easyfly_coreTargets HAS_LIBRARY_TARGET)
+ament_export_dependencies(rclcpp rclcpp_action easyfly_msgs)
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_sdk test/test_sdk.cpp TIMEOUT 40)
+  target_link_libraries(test_sdk easyfly_core)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
 endif()

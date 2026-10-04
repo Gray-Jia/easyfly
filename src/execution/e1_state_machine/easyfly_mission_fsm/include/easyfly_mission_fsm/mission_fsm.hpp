@@ -17,20 +17,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "easyfly_mission_fsm/legacy_mission.hpp"
 
 namespace easyfly_mission_fsm
 {
-
-struct MissionStep
-{
-  std::string type;        // "takeoff", "waypoint", "land", "hover"
-  double altitude{0.0};    // for takeoff target_altitude
-  double climb_speed{1.0};
-  double x{0.0}, y{0.0}, z{0.0};  // for waypoint
-  double yaw{0.0};
-  double max_speed{2.0};
-  double wait{0.0};        // hover wait time (s)
-};
 
 class MissionFSM : public rclcpp::Node
 {

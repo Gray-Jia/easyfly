@@ -3,13 +3,25 @@
 <package format="3">
   <name>easyfly_mission_srvs</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_mission_srvs</description>
+  <description>Validated mission catalog and ownership-scoped execution management.</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>easyfly_msgs</depend>
+  <depend>easyfly_mission_fsm</depend>
+  <depend>ament_index_cpp</depend>
+  <exec_depend>easyfly_params</exec_depend>
+  <exec_depend>easyfly_perception_srvs</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>rclpy</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>

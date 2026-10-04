@@ -33,6 +33,7 @@
   <test_depend>traj_utils</test_depend>
   <test_depend>easyfly_flight_control</test_depend>
   <test_depend>easyfly_local_planner</test_depend>
+  <test_depend>easyfly_pybind</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
