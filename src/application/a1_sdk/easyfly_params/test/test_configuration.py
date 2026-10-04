@@ -29,6 +29,8 @@ def test_simulation_profiles(name):
     ensure_launchable(profile)
     assert profile["launch_arguments"]["headless"] == "true"
     assert not profile["capabilities"]["precision_landing"]
+    if name == "navigation_dev":
+        assert profile["launch_arguments"]["navigation_strategy"] == "combined"
     if name == "landing_dev":
         assert profile["readiness"] == "preparation_only"
 

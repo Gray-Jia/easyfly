@@ -1,0 +1,17 @@
+navigation_coordinator:
+  ros__parameters:
+    strategy: astar
+    astar_action: /navigate_astar
+    stop_service: /navigate/_stop
+    response_timeout: 5.0
+    cancel_timeout: 5.0
+    follow_action: /follow_trajectory
+    session_service: /planning/navigation_session
+    goal_timeout: 120.0
+    input_timeout: 5.0
+    input_freshness: 1.0
+    local_goal_distance: 3.0
+    max_replans: 3
+    default_speed: 2.0
+    z_min: 0.5
+    z_max: 2.5

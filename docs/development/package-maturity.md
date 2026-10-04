@@ -4,7 +4,7 @@
 
 “测试源码存在”只表示文件存在，不代表本轮运行。历史动态列来自schedule-v3/question-v2最终记录；本轮仅做离线/组件/相关构建，不做全链动态复验。各项实际结果以schedule-v4为准。
 
-当前类别中仍有29个CMake明确TODO骨架；easyfly_params本轮从配置占位推进到可解析/导出的开发profile工具，不代表D2参数SDK已完成。
+D0登记时有29个CMake明确TODO骨架；D1将obstacle_avoidance推进到查询/监督实现后为28个。easyfly_params从配置占位推进到可解析/导出的开发profile工具，不代表D2参数SDK已完成。下表保留D0范围列，仅新增监督包的D1事实；其他D1验证见schedule-v4。
 
 | 包 | 当前实现类别 | 组件验证依据 | 历史集成/动态依据 | D0本轮范围 |
 |---|---|---|---|---|
@@ -37,7 +37,7 @@
 | [easyfly_msgs](../../src/easyfly_common/easyfly_msgs) | 消息/服务/动作接口 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
 | [easyfly_multi_object_tracking](../../src/perception/p3_tracking/easyfly_multi_object_tracking) | 已有功能实现（按现有边界） | 测试源码存在；是否通过另查执行记录 | G6.4 | 未重新执行该包测试/构建 |
 | [easyfly_object_detection](../../src/perception/p2_detection/easyfly_object_detection) | 已有功能实现（按现有边界） | 测试源码存在；是否通过另查执行记录 | G6.2 | 未重新执行该包测试/构建 |
-| [easyfly_obstacle_avoidance](../../src/execution/e3_control/easyfly_obstacle_avoidance) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
+| [easyfly_obstacle_avoidance](../../src/execution/e3_control/easyfly_obstacle_avoidance) | D1查询/Goal关联停止监督；不生成轨迹或setpoint | D1真实ROS查询/停止测试通过 | 无实机安全签收；自动监督默认关闭 | D0为骨架；D1构建和组件测试见schedule-v4 |
 | [easyfly_params](../../src/application/a1_sdk/easyfly_params) | D0配置与离线工具 | 测试源码存在；是否通过另查执行记录 | 未逐包签收；无独立动态完成结论 | D0配置行为测试/构建 |
 | [easyfly_perception_srvs](../../src/application/a2_services/easyfly_perception_srvs) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
 | [easyfly_pixel_to_3d](../../src/perception/p4_fusion/easyfly_pixel_to_3d) | 已有功能实现（按现有边界） | 测试源码存在；是否通过另查执行记录 | G6.4 | 未重新执行该包测试/构建 |

@@ -128,6 +128,9 @@ void FlightController::cb_position_cmd(
   // goal response 到 accepted callback 之间仍处于 HOVER；这段窗口内的
   // 消息不能改变基线，否则同一条 N+1 会在真正进入 WAIT 后被当作旧帧。
   if (traj_goal_pending_) return;
+  // Isolate sessions before any ID watermark can be advanced.
+  if (msg->navigation_session_id.size() > 128 ||
+      msg->navigation_session_id != traj_session_id_) return;
 
   // 只有通过 active/time/ID 检查的候选才允许推进 seen 水位。没有 active
   // trajectory 时则是有意观测（用于下一次 goal 的 baseline），但不能把
@@ -251,6 +254,7 @@ void FlightController::control_loop()
     r->success = false; r->message = "canceled";
     gh->canceled(r);
     gh_traj_.reset();
+    traj_session_id_.clear();
     return;
   }
   if (active_ == LAND_CANCELING) {
@@ -471,7 +475,7 @@ void FlightController::control_loop()
         r->success = false;
         r->message = action_deadline_elapsed ?
           "trajectory_timeout_before_start" : "trajectory_start_timeout";
-        gh_traj_->abort(r); gh_traj_.reset();
+        gh_traj_->abort(r); gh_traj_.reset(); traj_session_id_.clear();
       }
       action_reserved_ = false;
       active_ = HOVER;
@@ -503,7 +507,7 @@ void FlightController::control_loop()
       if (gh_traj_) {
         auto r = std::make_shared<FollowTrajectory::Result>();
         r->success = false; r->message = "timeout";
-        gh_traj_->abort(r); gh_traj_.reset();
+        gh_traj_->abort(r); gh_traj_.reset(); traj_session_id_.clear();
       }
       if (have_cmd) {
         enter_hover_at(
@@ -528,7 +532,7 @@ void FlightController::control_loop()
       if (gh_traj_) {
         auto r = std::make_shared<FollowTrajectory::Result>();
         r->success = false; r->message = "stream_lost";
-        gh_traj_->abort(r); gh_traj_.reset();
+        gh_traj_->abort(r); gh_traj_.reset(); traj_session_id_.clear();
       }
       if (have_cmd) {
         // 悬停于最后指令点 (反馈毛刺守卫)
@@ -573,7 +577,7 @@ void FlightController::control_loop()
           "FollowTrajectory 超时 (dist=%.2f), abort + 就地悬停", dist);
         auto r = std::make_shared<FollowTrajectory::Result>();
         r->success = false; r->message = "timeout";
-        gh_traj_->abort(r); gh_traj_.reset();
+        gh_traj_->abort(r); gh_traj_.reset(); traj_session_id_.clear();
         enter_hover_at(
           safe_axis(uav.position_x, c.position.x),
           safe_axis(uav.position_y, c.position.y),
@@ -589,7 +593,7 @@ void FlightController::control_loop()
         RCLCPP_INFO(get_logger(), "FollowTrajectory 到达终点 (dist=%.2f)", dist);
         auto r = std::make_shared<FollowTrajectory::Result>();
         r->success = true; r->message = "arrived";
-        gh_traj_->succeed(r); gh_traj_.reset();
+        gh_traj_->succeed(r); gh_traj_.reset(); traj_session_id_.clear();
         hover_x_ = traj_target_x_; hover_y_ = traj_target_y_;
         hover_z_ = traj_target_z_; hover_yaw_ = c.yaw;
         x_ramp_ = traj_target_x_; y_ramp_ = traj_target_y_; z_ramp_ = traj_target_z_;
@@ -918,7 +922,8 @@ void FlightController::handle_waypoint_accepted(
 rclcpp_action::GoalResponse FlightController::handle_traj_goal(
   const rclcpp_action::GoalUUID &, std::shared_ptr<const FollowTrajectory::Goal> g)
 {
-  if (!std::isfinite(g->target_x) || !std::isfinite(g->target_y) ||
+  if (g->navigation_session_id.size() > 128 ||
+      !std::isfinite(g->target_x) || !std::isfinite(g->target_y) ||
       !std::isfinite(g->target_z) || !std::isfinite(g->acceptance_radius) ||
       !std::isfinite(g->timeout) || g->target_z < 0.0 ||
       g->target_z > max_altitude_ || g->acceptance_radius < 0.0 || g->timeout < 0.0) {
@@ -942,6 +947,7 @@ rclcpp_action::GoalResponse FlightController::handle_traj_goal(
   // 与单动作槽 reservation 在同一把锁下锁存，确保 goal 之后到达的
   // PositionCommand 必须使用更高的 trajectory_id 才能启动新轨迹。
   traj_baseline_id_ = traj_seen_max_id_;
+  traj_session_id_ = g->navigation_session_id;
   traj_goal_pending_ = true;
   action_reserved_=true;
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
@@ -992,6 +998,7 @@ void FlightController::handle_traj_accepted(
       // 避免后续 goal 永久被 action_reserved_ 卡住。
       if (traj_goal_pending_) {
         traj_goal_pending_ = false;
+        traj_session_id_.clear();
         action_reserved_ = false;
       }
     }
@@ -1102,6 +1109,7 @@ void FlightController::finish_traj_goal(
     if (gh_traj_ == gh ||
         (!gh_traj_ && (active_ == TRAJECTORY_WAIT || active_ == TRAJECTORY))) {
       gh_traj_.reset();
+      traj_session_id_.clear();
       active_ = HOVER;
       action_reserved_ = false;
     }

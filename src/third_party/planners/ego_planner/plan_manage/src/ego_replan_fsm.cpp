@@ -143,6 +143,24 @@ namespace ego_planner
     planner_manager_->initPlanModules(nh, visualization_);
     planner_manager_->deliverTrajToOptimizer(); // store trajectories
     planner_manager_->setDroneIdtoOpt();
+    navigation_managed_ = nh->declare_parameter<bool>("navigation_managed", false);
+    if (navigation_managed_ && target_type_ != TARGET_TYPE::MANUAL_TARGET) {
+      RCLCPP_WARN(nh->get_logger(), "managed navigation overrides legacy flight_type=%d to MANUAL_TARGET", target_type_);
+      target_type_ = TARGET_TYPE::MANUAL_TARGET;
+    }
+    navigation_max_velocity_ = planner_manager_->pp_.max_vel_;
+    double optimizer_max_velocity = navigation_max_velocity_;
+    nh->get_parameter("optimization/max_vel", optimizer_max_velocity);
+    navigation_max_velocity_ = std::min(navigation_max_velocity_, optimizer_max_velocity);
+    original_manager_velocity_ = planner_manager_->pp_.max_vel_;
+    original_optimizer_velocity_ = optimizer_max_velocity;
+    navigation_session_pub_ = nh->create_publisher<easyfly_msgs::msg::NavigationSession>(
+      "/planning/navigation_session_state", rclcpp::QoS(1).reliable().transient_local());
+    navigation_fault_pub_ = nh->create_publisher<easyfly_msgs::msg::NavigationSession>(
+      "/planning/navigation_fault", rclcpp::QoS(1).reliable().transient_local());
+    navigation_service_ = nh->create_service<easyfly_msgs::srv::SetNavigationSession>(
+      "/planning/navigation_session", std::bind(&EGOReplanFSM::navigationSessionCallback,
+      this, std::placeholders::_1, std::placeholders::_2));
 
     /* callback */
     // exec_timer_ = nh.createTimer(ros::Duration(0.01), &EGOReplanFSM::execFSMCallback, this);
@@ -190,12 +208,12 @@ namespace ego_planner
     // data_disp_pub_ = nh.advertise<traj_utils::msg::DataDisp>("planning/data_display", 100);
     data_disp_pub_ = nh->create_publisher<traj_utils::msg::DataDisp>("planning/data_display", 100);
 
-    if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
+    if (!navigation_managed_ && target_type_ == TARGET_TYPE::MANUAL_TARGET)
     {
       // waypoint_sub_ = nh.subscribe("/move_base_simple/goal", 1, &EGOReplanFSM::waypointCallback, this);
       waypoint_sub_ = nh->create_subscription<geometry_msgs::msg::PoseStamped>("/move_base_simple/goal",1,std::bind(&EGOReplanFSM::waypointCallback, this, std::placeholders::_1));
     }
-    else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
+    else if (!navigation_managed_ && target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
       // trigger_sub_ = nh.subscribe("/traj_start_trigger", 1, &EGOReplanFSM::triggerCallback, this);
       trigger_sub_ = nh->create_subscription<geometry_msgs::msg::PoseStamped>("/traj_start_trigger",1,std::bind(&EGOReplanFSM::triggerCallback, this, std::placeholders::_1));
@@ -223,7 +241,7 @@ namespace ego_planner
 
       readGivenWps();
     }
-    else
+    else if (!navigation_managed_)
       cout << "Wrong target_type_ value! target_type_=" << target_type_ << endl;
   }
 
@@ -375,6 +393,78 @@ namespace ego_planner
     }
   }
 
+  void EGOReplanFSM::navigationSessionCallback(
+    const std::shared_ptr<easyfly_msgs::srv::SetNavigationSession::Request> request,
+    std::shared_ptr<easyfly_msgs::srv::SetNavigationSession::Response> response)
+  {
+    response->success = false;
+    if (!navigation_managed_ || request->session_id.empty() || request->session_id.size() > 128) {
+      response->message = "invalid_session_or_unmanaged";
+      return;
+    }
+    if (!request->active) {
+      if (!navigation_session_id_.empty() && navigation_session_id_ != request->session_id) {
+        response->message = "session_mismatch";
+        return;
+      }
+      have_target_ = have_new_target_ = have_trigger_ = false;
+      if (exec_state_ != EMERGENCY_STOP) changeFSMExecState(WAIT_TARGET, "SESSION_STOP");
+      navigation_session_id_.clear();
+      planner_manager_->setNavigationVelocityLimits(
+        original_manager_velocity_, original_optimizer_velocity_);
+      planner_manager_->setNavigationFixedEndpoint(false);
+      easyfly_msgs::msg::NavigationSession state;
+      state.session_id = request->session_id;
+      state.active = false;
+      navigation_session_pub_->publish(state);
+      response->success = true;
+      response->message = "stopped";
+      return;
+    }
+    if (!navigation_session_id_.empty()) {
+      response->message = "session_busy";
+      return;
+    }
+    const Eigen::Vector3d target(request->target_x, request->target_y, request->target_z);
+    const double axis_limit = navigationAxisVelocityLimit(
+      request->max_speed, planner_manager_->pp_.feasibility_tolerance_);
+    if (!hasFreshOdom() || !hasFreshTrustedCloud() || !target.allFinite() ||
+        target.cwiseAbs().maxCoeff() > 1000.0 ||
+        !planner_manager_->grid_map_->isInMap(target) ||
+        target.z() < planner_manager_->grid_map_->getGroundHeight() ||
+        target.z() >= planner_manager_->grid_map_->getVirtualCeilingHeight() ||
+        !std::isfinite(navigation_max_velocity_) || navigation_max_velocity_ <= 0.0 ||
+        !std::isfinite(request->max_speed) || request->max_speed <= 0.0 ||
+        request->max_speed > navigation_max_velocity_ || !std::isfinite(axis_limit)) {
+      response->message = "invalid_target_speed_or_stale_sensors";
+      return;
+    }
+    planner_manager_->setNavigationVelocityLimits(axis_limit, axis_limit);
+    planner_manager_->setNavigationFixedEndpoint(true);
+    have_target_ = false;
+    planNextWaypoint(target);
+    if (!have_target_) {
+      planner_manager_->setNavigationVelocityLimits(
+        original_manager_velocity_, original_optimizer_velocity_);
+      planner_manager_->setNavigationFixedEndpoint(false);
+      response->message = "global_plan_failed";
+      return;
+    }
+    navigation_session_id_ = request->session_id;
+    navigation_requested_speed_ = request->max_speed;
+    have_trigger_ = true;
+    if (exec_state_ == EMERGENCY_STOP) {
+      emergency_recovery_gate_.beginStop(emergency_target_generation_);
+      emergency_stop_gate_.retry();
+    }
+    easyfly_msgs::msg::NavigationSession state;
+    state.session_id = navigation_session_id_;
+    state.active = true;
+    navigation_session_pub_->publish(state);
+    response->success = true;
+    response->message = "started";
+  }
+
   void EGOReplanFSM::triggerCallback(const geometry_msgs::msg::PoseStamped::SharedPtr  msg)
   {
     have_trigger_ = true;
@@ -384,6 +474,7 @@ namespace ego_planner
 
   void EGOReplanFSM::waypointCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
   {
+    if (navigation_managed_) return;
     // A manual goal is accepted only in the planner's odom frame and only
     // while both the goal timestamp and the odometry sample are current.  In
     // particular, do these checks before reading odom_pos_ or entering the
@@ -562,7 +653,8 @@ namespace ego_planner
       return;
     }
 
-    if (!msg || msg->status != traj_utils::msg::TrajectoryAck::STATUS_ACCEPTED ||
+    if (!msg || !matchesNavigationSession(msg->navigation_session_id, navigation_session_id_) ||
+      msg->status != traj_utils::msg::TrajectoryAck::STATUS_ACCEPTED ||
       msg->activation_sequence == 0)
     {
       return;
@@ -962,6 +1054,7 @@ namespace ego_planner
 
   void EGOReplanFSM::execFSMCallback()
   {
+    if (navigation_managed_ && navigation_session_id_.empty()) return;
     exec_timer_->cancel(); // To avoid blockage
 
     static int fsm_num = 0;
@@ -1357,6 +1450,7 @@ namespace ego_planner
 
   void EGOReplanFSM::checkCollisionCallback()
   {
+    if (navigation_managed_ && navigation_session_id_.empty()) return;
 
     LocalTrajData *info = &planner_manager_->local_data_;
     auto map = planner_manager_->grid_map_;
@@ -1615,10 +1709,24 @@ namespace ego_planner
 
     if (plan_and_refine_success)
     {
+      if (navigation_managed_) {
+        // Refine can replace the spline after its first feasibility check.
+        // Bound every derivative control point: the cubic derivative lies in
+        // their convex hull, so this protects the complete curve, not samples.
+        const auto velocity_points = planner_manager_->local_data_.position_traj_.getDerivative().getControlPoint();
+        if (!velocity_points.allFinite() || velocity_points.cols() == 0) return false;
+        for (Eigen::Index i = 0; i < velocity_points.cols(); ++i) {
+          if (velocity_points.col(i).norm() > navigation_requested_speed_ + 1e-9) {
+            RCLCPP_WARN(node_->get_logger(), "managed trajectory exceeds requested speed; reject publication");
+            return false;
+          }
+        }
+      }
 
       auto info = &planner_manager_->local_data_;
 
       traj_utils::msg::Bspline bspline;
+      bspline.navigation_session_id = navigation_session_id_;
       bspline.order = 3;
       bspline.start_time = info->start_time_;
       bspline.traj_id = info->traj_id_;
@@ -1722,6 +1830,7 @@ namespace ego_planner
     auto info = &planner_manager_->local_data_;
 
     traj_utils::msg::Bspline bspline;
+    bspline.navigation_session_id = navigation_session_id_;
     bspline.order = 3;
     bspline.start_time = info->start_time_;
     bspline.drone_id = planner_manager_->pp_.drone_id;
@@ -1828,6 +1937,7 @@ namespace ego_planner
 
     /* publish traj */
     traj_utils::msg::Bspline bspline;
+    bspline.navigation_session_id = navigation_session_id_;
     bspline.order = 3;
     bspline.start_time = info->start_time_;
     bspline.traj_id = info->traj_id_;
@@ -1896,6 +2006,12 @@ namespace ego_planner
     // trajectory.  All safety entry points use this helper so a later branch
     // cannot accidentally return to EXEC_TRAJ or plan again in this callback.
     changeFSMExecState(EMERGENCY_STOP, reason);
+    if (navigation_managed_ && !navigation_session_id_.empty()) {
+      easyfly_msgs::msg::NavigationSession fault;
+      fault.session_id = navigation_session_id_;
+      fault.active = false;
+      navigation_fault_pub_->publish(fault);
+    }
   }
 
   void EGOReplanFSM::getLocalTarget()

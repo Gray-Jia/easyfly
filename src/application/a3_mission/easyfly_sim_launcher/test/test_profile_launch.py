@@ -53,6 +53,7 @@ def test_profile_expansion(name, entry):
     assert arguments["headless"] == "true"
     if name != "base_sim":
         assert arguments["local_planner_virtual_ceil_height"] == "3.2"
+        assert arguments["navigation_strategy"] == ("combined" if name == "navigation_dev" else "astar")
     # Execute only context push/reset/set actions; never execute the include.
     for action in group.get_sub_entities():
         if action is include:

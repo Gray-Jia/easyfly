@@ -21,11 +21,13 @@ local_planner.launch.py — easyfly_local_planner: EGO-Planner 适配启动 (M4.
   use_depth_filter True->False (否则点云被 depth_filter_maxdist=5.0 裁到 5m)
 
 注意 (任务书侦察勘误): ego_replan_fsm.h 中 MANUAL_TARGET=1, PRESET_TARGET=2
-  (任务书写的 "2=MANUAL_TARGET" 有误)。默认 flight_type=1 → 订 /move_base_simple/goal。
+  (任务书写的 "2=MANUAL_TARGET" 有误)。正常平台 navigation_managed=True，
+  flight_type=1 的旧 /move_base_simple/goal 入口被禁用；RViz 由统一导航协调器转发。
 
 用法:
   ros2 launch easyfly_local_planner local_planner.launch.py
-  # 之后 RViz 用 "2D Goal Pose" 发 /move_base_simple/goal; z=0 会回退到当前安全高度
+  ros2 launch easyfly_global_planner navigate.launch.py strategy:=ego
+  # RViz "2D Goal Pose" 经协调器 /navigate 准入；EGO 不直接接受 RViz 目标。
 
 The ``virtual_ceil_height`` launch argument is an absolute ``odom`` height.
 The reusable production default remains 3.2m; the G8
@@ -36,6 +38,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -43,11 +46,15 @@ def generate_launch_description():
     # flight_type: 1=MANUAL_TARGET(/move_base_simple/goal) 2=PRESET_TARGET(waypoint 列表)
     flight_type = LaunchConfiguration('flight_type')
     virtual_ceil_height = LaunchConfiguration('virtual_ceil_height')
+    managed = ParameterValue(LaunchConfiguration('navigation_managed'), value_type=bool)
+    declare_managed = DeclareLaunchArgument(
+        'navigation_managed', default_value='true',
+        description='Normal platform: true. False is explicitly isolated legacy debugging only.')
 
     declare_sim = DeclareLaunchArgument('use_sim_time', default_value='true')
     declare_ft = DeclareLaunchArgument(
         'flight_type', default_value='1',
-        description='1=MANUAL_TARGET(默认, 订 /move_base_simple/goal) 2=PRESET_TARGET')
+        description='Legacy unmanaged only: 1=MANUAL_TARGET 2=PRESET_TARGET')
     declare_virtual_ceil = DeclareLaunchArgument(
         'virtual_ceil_height', default_value='3.2',
         description=(
@@ -59,6 +66,7 @@ def generate_launch_description():
         'use_sim_time': use_sim_time,
         # ---- FSM ----
         'fsm/flight_type': flight_type,
+        'navigation_managed': managed,
         'fsm/thresh_replan_time': 1.0,
         'fsm/thresh_no_replan_meter': 1.0,
         'fsm/planning_horizon': 7.5,
@@ -204,6 +212,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'traj_server/output_frame': 'odom',
+            'navigation_managed': managed,
             'traj_server/position_cmd_topic': 'position_cmd',
             'traj_server/ack_topic': 'trajectory_ack',
             'traj_server/source_node_name': 'traj_server',
@@ -216,4 +225,4 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        declare_sim, declare_ft, declare_virtual_ceil, ego_node, traj_node])
+        declare_sim, declare_ft, declare_virtual_ceil, declare_managed, ego_node, traj_node])

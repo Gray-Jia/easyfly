@@ -87,6 +87,8 @@ def load_profile(name, directory=None):
     if profile["entrypoint"] == "perception":
         effective["launch_arguments"]["local_planner_virtual_ceil_height"] = str(
             contracts["planning_ceiling"])
+        effective["launch_arguments"]["navigation_strategy"] = (
+            "combined" if profile["name"] == "navigation_dev" else "astar")
     return effective
 
 

@@ -620,8 +620,8 @@ private:
                     gh = goal_fut.get();
                 } catch (const std::exception & e) {
                     // This pending future is permanently exceptional.  Clear
-                    // it and leave pending state so recovery can escalate to
-                    // async_cancel_all_goals without rereading it.
+                    // it, leave pending state and retain fault ownership;
+                    // recovery must not cancel another client's goal.
                     goal_fut = std::shared_future<typename GoalHandleWp::SharedPtr>();
                     wp_pending = false;
                     wp_has = false;
@@ -774,15 +774,11 @@ private:
                 if ((!wp_has && !wp_pending && !goal_fut.valid() &&
                     (recovery_attempts == 1 || recovery_attempts % 10 == 0)) ||
                     recovery_attempts % 10 == 0) {
-                    // A send response may have failed before exposing a
-                    // handle.  Escalate to the action server only after a
-                    // prolonged per-goal recovery attempt; this request is
-                    // not treated as terminal confirmation.
-                    try {
-                        cli_wp_->async_cancel_all_goals();
-                    } catch (...) {
-                        RCLCPP_WARN(get_logger(), "全量取消升级请求失败，继续 recovery");
-                    }
+                    // A lost send response does not grant ownership of other
+                    // clients' goals. Keep our recovery slot and wait for the
+                    // exact child; cancel-all could stop unified navigation.
+                    RCLCPP_WARN(get_logger(),
+                                "子航点终态仍未确认，仅重试所属目标取消；保持 recovery");
                 }
                 std::this_thread::sleep_for(1s);
             }

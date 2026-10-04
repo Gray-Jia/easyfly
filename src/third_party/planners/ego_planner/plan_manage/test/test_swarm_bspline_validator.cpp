@@ -7,9 +7,54 @@
 #include <bspline_opt/uniform_bspline.h>
 #include <plan_manage/bspline_runtime_validator.h>
 #include <plan_manage/swarm_bspline_validator.h>
+#include <plan_manage/navigation_session_contract.h>
+#include <plan_manage/fixed_endpoint.h>
 
 namespace
 {
+
+TEST(ManagedFixedEndpoint, ActualCubicEndpointHasExactPositionVelocityAndZeroAcceleration) {
+  const Eigen::Vector3d target(1.1, -1.1, 1.5);
+  for (const double interval : {0.1, 0.5, 1.0}) {
+    for (const auto &velocity : {Eigen::Vector3d::Zero().eval(), Eigen::Vector3d(0.2, -0.1, 0.0)}) {
+      Eigen::MatrixXd points = Eigen::MatrixXd::Zero(3, 8);
+      ASSERT_TRUE(ego_planner::setFixedCubicEndpoint(points, interval, target, velocity));
+      ego_planner::UniformBspline trajectory(points, 3, interval);
+      auto derivative = trajectory.getDerivative();
+      auto acceleration = derivative.getDerivative();
+      const double end = trajectory.getTimeSum();
+      EXPECT_LT((trajectory.evaluateDeBoorT(end) - target).norm(), 1e-12);
+      EXPECT_LT((derivative.evaluateDeBoorT(end) - velocity).norm(), 1e-12);
+      EXPECT_LT(acceleration.evaluateDeBoorT(end).norm(), 1e-10);
+    }
+  }
+  Eigen::MatrixXd overlapping = Eigen::MatrixXd::Zero(3, 6);
+  EXPECT_FALSE(ego_planner::setFixedCubicEndpoint(overlapping, 0.1, target, Eigen::Vector3d::Zero()));
+  Eigen::MatrixXd points = Eigen::MatrixXd::Zero(3, 8);
+  EXPECT_FALSE(ego_planner::setFixedCubicEndpoint(points, 0.0, target, Eigen::Vector3d::Zero()));
+}
+
+TEST(NavigationVelocityLimit, ConservativeAxesBoundActualDiagonalSplineSpeed) {
+  for (const double speed : {0.01, 0.5, 2.0}) {
+    for (const double tolerance : {0.0, 0.05, 1.0}) {
+      const double axis = ego_planner::navigationAxisVelocityLimit(speed, tolerance);
+      ASSERT_TRUE(std::isfinite(axis));
+      EXPECT_LE(std::sqrt(3.0) * (axis * (1.0 + tolerance) + 1e-4), speed + 1e-12);
+      Eigen::MatrixXd points(3, 4);
+      for (int i = 0; i < 4; ++i) points.col(i).setConstant(i * axis);
+      ego_planner::UniformBspline spline(points, 3, 1.0);
+      auto velocity = spline.getDerivative();
+      for (int i = 0; i <= 100; ++i)
+        EXPECT_LE(velocity.evaluateDeBoorT(i / 100.0).norm(), speed + 1e-12);
+    }
+  }
+  EXPECT_FALSE(std::isfinite(ego_planner::navigationAxisVelocityLimit(0.0, 0.05)));
+  EXPECT_FALSE(std::isfinite(ego_planner::navigationAxisVelocityLimit(1.0, -0.01)));
+  EXPECT_FALSE(std::isfinite(ego_planner::navigationAxisVelocityLimit(1.0, 1.01)));
+  EXPECT_FALSE(std::isfinite(ego_planner::navigationAxisVelocityLimit(1e-5, 0.0)));
+  EXPECT_FALSE(std::isfinite(ego_planner::navigationAxisVelocityLimit(
+    1.0, std::numeric_limits<double>::quiet_NaN())));
+}
 
 struct FakePoint
 {

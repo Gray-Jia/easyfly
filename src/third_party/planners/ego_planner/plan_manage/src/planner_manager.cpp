@@ -1,5 +1,6 @@
 // #include <fstream>
 #include <plan_manage/planner_manager.h>
+#include <plan_manage/fixed_endpoint.h>
 #include <plan_manage/trajectory_seed_safety.h>
 #include <bspline_opt/collision_sampling.h>
 #include <chrono>
@@ -442,6 +443,11 @@ namespace ego_planner
       return false;
     }
     UniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
+    if (navigation_fixed_endpoint_) {
+      navigation_endpoint_ = local_target_pt;
+      navigation_endpoint_velocity_ = local_target_vel;
+      if (!setFixedCubicEndpoint(ctrl_pts, ts, local_target_pt, local_target_vel)) return false;
+    }
     if (ctrl_pts.cols() < 6 || !ctrl_pts.allFinite()) {
       RCLCPP_ERROR(rclcpp::get_logger("EGOPlannerManager"),
                    "B-spline 控制点矩阵无效");
@@ -810,6 +816,8 @@ namespace ego_planner
 
     // std::cout << "ratio: " << ratio << std::endl;
     reparamBspline(traj, start_end_derivative, ratio, ctrl_pts, ts, t_inc);
+    if (navigation_fixed_endpoint_ && !setFixedCubicEndpoint(
+        ctrl_pts, ts, navigation_endpoint_, navigation_endpoint_velocity_)) return false;
 
     traj = UniformBspline(ctrl_pts, 3, ts);
 

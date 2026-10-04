@@ -6,6 +6,7 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
 set(msg_files
+  "msg/NavigationSession.msg"
   "msg/UAVState.msg"
   "msg/UAVCommand.msg"
   "msg/DetectionInfo.msg"
@@ -22,6 +23,8 @@ set(msg_files
 )
 
 set(srv_files
+  "srv/SetNavigationSession.srv"
+  "srv/StopNavigation.srv"
   "srv/ArmMotors.srv"
   "srv/SetFlightMode.srv"
   "srv/GetObstacles.srv"

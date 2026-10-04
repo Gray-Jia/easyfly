@@ -1,6 +1,6 @@
-# EasyFly 核心接口契约（D0）
+# EasyFly 核心接口契约（D0 / D1）
 
-基线：`1860690` / 功能 `0724742`。本文说明现有生产者、消费者与调用边界；D0 不改变消息布局或导航架构。任何新增接口另写迁移说明。
+基线：`1860690` / 功能 `0724742`；D0提交`847dfbf`。本文说明当前生产者、消费者与调用边界；D1导航及轨迹链接口迁移见`d1-navigation.md`，公开NavigateTo字段保持不变。
 
 ## 数据与控制流
 
@@ -37,11 +37,13 @@
 | Takeoff / Land / GoToWaypoint / FollowTrajectory | flight_control | 单动作槽、准入状态/数值校验；取消确认后 CANCELED；失败 ABORTED；到达才 SUCCEEDED |
 | ExecuteMission | mission_fsm → 飞控子 Action | takeoff/waypoint/hover/land；任务线程受生命周期管理；取消传播子 Goal；当前任务文件并非完整 YAML/JSON |
 | TrackTarget | target_tracking → GoToWaypoint | 需已悬停；目标首次等待、丢失、跳变与边界约束；持续操作由调用者定义结束条件 |
-| NavigateTo（/navigate） | global_planner → 逐段 GoToWaypoint | 2D A*、视线剪枝、有效栅格与状态；D0 尚不自动切换 EGO |
+| NavigateTo（/navigate） | navigation_coordinator → 内部A*或受管EGO→飞行动作 | D1配置选择astar/ego/combined；无失败降级；详情见d1-navigation.md |
 
 FollowTrajectory 新 Goal 准入时锁存 ID 水位，只消费其后的新有效轨迹；旧预热、旧 Goal 与逆序消息不能激活。首帧宽限约8s，受总 deadline 约束；进入轨迹后0.5s断流阈值独立。ACK只确认 traj_server 准入，飞控 `stream_active` 和动作终态仍需分别观察。
 
-RTL/LAND 外部接管高于业务动作；对应操作终止并让出控制，不能报告 arrived 或抢回 OFFBOARD。取消、超时、急停、下游失活、析构都必须为已接受 Goal 收尾。导航协调器、统一悬停操作和完整 SDK 是 D1/D2 计划项，不是 D0 已实现接口。
+D1受管链进一步以navigation_session_id关联FollowTrajectory/Bspline/ACK/CMD，检查先于飞控ID水位更新。生命周期消息只由受信EGO写入，新START是权威状态并停用旧流（允许depth1队列漏STOP）；STOP只匹配所属ID。该信任边界不替代DDS Security。接口同步重编译和故障锁规则见 [D1说明](d1-navigation.md)。
+
+RTL/LAND 外部接管高于业务动作；对应操作终止并让出控制，不能报告 arrived 或抢回 OFFBOARD。取消、超时、急停、下游失活、析构都必须为已接受 Goal 收尾。导航协调器在D1实现；统一悬停操作和完整SDK仍属于后续开发项。
 
 ## 修改时需要同步的范围
 

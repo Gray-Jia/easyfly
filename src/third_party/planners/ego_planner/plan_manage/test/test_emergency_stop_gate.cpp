@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <plan_manage/navigation_session_contract.h>
 
 #include <limits>
 
@@ -6,6 +7,22 @@
 
 namespace ego_planner
 {
+
+TEST(EmergencyRecoveryGate, PreviousSessionAckCannotRecoverNewSession) {
+  EmergencyRecoveryGate gate;
+  gate.beginStop(7);
+  ASSERT_TRUE(gate.markStopPublished(true, 1.0, 42));
+  const auto deliver = [&](const std::string &session) {
+    return matchesNavigationSession(session, "new-session") &&
+      gate.acknowledgeStop(42, 11, true, 1.0, 1.0);
+  };
+  EXPECT_FALSE(deliver("old-session"));
+  EXPECT_FALSE(deliver(""));
+  EXPECT_FALSE(gate.downstreamAcknowledged());
+  EXPECT_FALSE(gate.observe(1.1, true, true, 0.0));
+  EXPECT_TRUE(deliver("new-session"));
+  EXPECT_TRUE(gate.downstreamAcknowledged());
+}
 
 TEST(EmergencyStopGate, ArmsAndPublishesExactlyOnce)
 {

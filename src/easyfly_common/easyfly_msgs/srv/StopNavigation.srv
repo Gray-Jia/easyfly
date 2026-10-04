@@ -1,0 +1,5 @@
+# Stop only this public NavigateTo goal; stale requests cannot stop its successor.
+string navigation_goal_id
+---
+bool success
+string message

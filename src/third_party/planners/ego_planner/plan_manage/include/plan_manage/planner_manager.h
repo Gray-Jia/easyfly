@@ -41,6 +41,14 @@ namespace ego_planner
     void deliverTrajToOptimizer(void) { bspline_optimizer_->setSwarmTrajs(&swarm_trajs_buf_); };
 
     void setDroneIdtoOpt(void) { bspline_optimizer_->setDroneId(pp_.drone_id); }
+    void setNavigationVelocityLimits(double planner_velocity, double optimizer_velocity) {
+      pp_.max_vel_ = planner_velocity;
+      bspline_optimizer_->setNavigationMaxVelocity(optimizer_velocity);
+    }
+    void setNavigationFixedEndpoint(bool enabled) {
+      navigation_fixed_endpoint_ = enabled;
+      bspline_optimizer_->setNavigationFixedEndpoint(enabled);
+    }
 
     double getSwarmClearance(void) { return bspline_optimizer_->getSwarmClearance(); }
 
@@ -64,6 +72,8 @@ namespace ego_planner
     // ros::Publisher obj_pub_; //zx-todo 
 
     BsplineOptimizer::Ptr bspline_optimizer_;
+    bool navigation_fixed_endpoint_{false};
+    Eigen::Vector3d navigation_endpoint_, navigation_endpoint_velocity_;
 
     int continous_failures_count_{0};
 

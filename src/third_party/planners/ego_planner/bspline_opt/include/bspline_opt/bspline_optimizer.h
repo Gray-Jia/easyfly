@@ -95,6 +95,8 @@ namespace ego_planner
     void setEnvironment(const GridMap::Ptr &map);
     void setEnvironment(const GridMap::Ptr &map, const fast_planner::ObjPredictor::Ptr mov_obj);
     void setParam(std::shared_ptr<rclcpp::Node>& nh);
+    void setNavigationMaxVelocity(double velocity) { max_vel_ = velocity; }
+    void setNavigationFixedEndpoint(bool enabled) { navigation_fixed_endpoint_ = enabled; }
     Eigen::MatrixXd BsplineOptimizeTraj(const Eigen::MatrixXd &points, const double &ts,
                                         const int &cost_function, int max_num_id, int max_time_id);
 
@@ -168,6 +170,7 @@ namespace ego_planner
     //
     double dist0_, swarm_clearance_; // safe distance
     double max_vel_, max_acc_;       // dynamic limits
+    bool navigation_fixed_endpoint_{false};
 
     int variable_num_;              // optimization variables
     int iter_num_;                  // iteration of the solver

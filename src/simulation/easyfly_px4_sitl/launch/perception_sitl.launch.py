@@ -294,9 +294,13 @@ def generate_launch_description():
             get_package_share_directory("easyfly_target_tracking") + "/launch/follow.launch.py"))
     m41_nodes = TimerAction(period=22.0, actions=[follow])
     # M4.2: 全局规划节点 (常驻 idle 无副作用, 经 /navigate action 发起)
+    navigation_strategy_arg = DeclareLaunchArgument(
+        "navigation_strategy", default_value="astar", choices=["astar", "ego", "combined"])
     navigate = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            get_package_share_directory("easyfly_global_planner") + "/launch/navigate.launch.py"))
+            get_package_share_directory("easyfly_global_planner") + "/launch/navigate.launch.py"),
+        launch_arguments={"use_sim_time": "true",
+                          "strategy": LaunchConfiguration("navigation_strategy")}.items())
     m42_nodes = TimerAction(period=24.0, actions=[navigate])
     # M4.3: EGO-Planner 局部规划 (ego_planner_node + traj_server)。
     # position_cmd 是飞控指令流；急停恢复使用 traj_server 专用 trajectory_ack。
@@ -322,6 +326,7 @@ def generate_launch_description():
         detection_qos_reliability_arg,
         detection_qos_depth_arg,
         local_planner_ceiling_arg,
+        navigation_strategy_arg,
         gzserver,
         spawn_delayed,
         px4_delayed,

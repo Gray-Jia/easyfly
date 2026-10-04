@@ -28,6 +28,7 @@ namespace easyfly_flight_control
 
 class FlightController : public rclcpp::Node
 {
+  friend class NavigationSessionTestPeer;
 public:
   using Takeoff      = easyfly_msgs::action::Takeoff;
   using Land         = easyfly_msgs::action::Land;
@@ -204,6 +205,7 @@ private:
   // goal response 已返回但 accepted callback 尚未完成时，阻止消息把
   // response/accepted 窗口内的 ID 提前提交到 seen 水位。
   bool traj_goal_pending_{false};
+  std::string traj_session_id_;
   uint32_t traj_active_id_{0};
 
   // params

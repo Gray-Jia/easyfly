@@ -21,6 +21,8 @@
 #include <plan_env/grid_map.h>
 #include <traj_utils/msg/bspline.hpp>
 #include <traj_utils/msg/trajectory_ack.hpp>
+#include <easyfly_msgs/srv/set_navigation_session.hpp>
+#include <easyfly_msgs/msg/navigation_session.hpp>
 
 #include <traj_utils/msg/multi_bsplines.hpp>
 
@@ -30,6 +32,7 @@
 
 #include <plan_manage/planner_manager.h>
 #include <plan_manage/emergency_stop_gate.h>
+#include <plan_manage/navigation_session_contract.h>
 #include <traj_utils/planning_visualization.h>
 
 using std::vector;
@@ -82,6 +85,17 @@ namespace ego_planner
     bool enable_fail_safe_;
     bool odom_depth_timeout_latched_{false};
     std::string trajectory_ack_topic_{"trajectory_ack"};
+    bool navigation_managed_{false};
+    std::string navigation_session_id_;
+    double navigation_max_velocity_{0.0};
+    double original_manager_velocity_{0.0}, original_optimizer_velocity_{0.0};
+    double navigation_requested_speed_{0.0};
+    rclcpp::Service<easyfly_msgs::srv::SetNavigationSession>::SharedPtr navigation_service_;
+    rclcpp::Publisher<easyfly_msgs::msg::NavigationSession>::SharedPtr navigation_session_pub_;
+    rclcpp::Publisher<easyfly_msgs::msg::NavigationSession>::SharedPtr navigation_fault_pub_;
+    void navigationSessionCallback(
+      const std::shared_ptr<easyfly_msgs::srv::SetNavigationSession::Request> request,
+      std::shared_ptr<easyfly_msgs::srv::SetNavigationSession::Response> response);
     std::string traj_server_node_name_{"traj_server"};
     // Full ROS graph identity (name + namespace), e.g. /drone_0_traj_server.
     // The graph endpoint namespace is checked separately from node_name.

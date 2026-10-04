@@ -3,11 +3,17 @@
 <package format="3">
   <name>easyfly_obstacle_avoidance</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_obstacle_avoidance</description>
+  <description>Obstacle constraints and ownership-scoped navigation stop supervision.</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>easyfly_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>rclpy</test_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

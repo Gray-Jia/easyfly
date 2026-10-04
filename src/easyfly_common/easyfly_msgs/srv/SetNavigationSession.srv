@@ -1,0 +1,9 @@
+string session_id
+bool active
+float64 target_x
+float64 target_y
+float64 target_z
+float64 max_speed
+---
+bool success
+string message

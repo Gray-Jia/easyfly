@@ -4,6 +4,7 @@
 
 #include "traj_utils/msg/bspline.hpp"
 #include "traj_utils/msg/trajectory_ack.hpp"
+#include "easyfly_msgs/msg/navigation_session.hpp"
 #include "quadrotor_msgs/msg/position_command.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/logging.hpp"
@@ -22,6 +23,9 @@ double vel_gain[3] = {0, 0, 0};
 using ego_planner::UniformBspline;
 
 bool receive_traj_ = false;
+bool navigation_managed = false;
+std::string navigation_session_id;
+std::string trajectory_session_id;
 vector<UniformBspline> traj_;
 double traj_duration_;
 rclcpp::Time start_time_;
@@ -39,6 +43,10 @@ std::uint64_t activation_sequence = 0;
 
 void bsplineCallback(const std::shared_ptr<traj_utils::msg::Bspline> msg)
 {
+  // Foreign/late session traffic must not invalidate the current session.
+  if (msg && (msg->navigation_session_id.size() > 128 ||
+      (navigation_managed && (navigation_session_id.empty() ||
+       msg->navigation_session_id != navigation_session_id)))) return;
   if (!msg)
   {
     if (node_clock)
@@ -166,6 +174,7 @@ void bsplineCallback(const std::shared_ptr<traj_utils::msg::Bspline> msg)
   traj_ = std::move(candidate_traj);
 
   receive_traj_ = true;
+  trajectory_session_id = msg->navigation_session_id;
 
   // This is the only recovery ACK.  It is emitted after the complete
   // position/velocity/acceleration candidate has passed validation and has
@@ -176,6 +185,7 @@ void bsplineCallback(const std::shared_ptr<traj_utils::msg::Bspline> msg)
     ack.header.stamp = node_clock->now();
     ack.header.frame_id = output_frame;
     ack.trajectory_id = candidate_traj_id;
+    ack.navigation_session_id = trajectory_session_id;
     ack.status = traj_utils::msg::TrajectoryAck::STATUS_ACCEPTED;
     ++activation_sequence;
     ack.activation_sequence = activation_sequence;
@@ -289,10 +299,15 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, rclc
 
 void cmdCallback()
 {
-  /* no publishing before receive traj_ */
-  if (!receive_traj_)
-    return;
   rclcpp::Time time_now = node_clock->now();
+  static rclcpp::Time time_last = time_now;
+  /* no publishing before receive traj_ */
+  if (!receive_traj_) {
+    // Idle/STOP is not a clock jump. Keep the timer baseline current so a
+    // later session is not discarded merely because it starts after 0.5s.
+    time_last = time_now;
+    return;
+  }
   double TEM_A=time_now.seconds();
   double TEM_B=start_time_.seconds();
   double t_cur = TEM_A - TEM_B;
@@ -300,7 +315,6 @@ void cmdCallback()
   Eigen::Vector3d pos(Eigen::Vector3d::Zero()), vel(Eigen::Vector3d::Zero()), acc(Eigen::Vector3d::Zero()), pos_f;
   std::pair<double, double> yaw_yawdot(0, 0);
 
-  static rclcpp::Time time_last = node_clock->now();
   const double clock_step = (time_now - time_last).seconds();
   if (clock_step < -0.001)
   {
@@ -367,6 +381,7 @@ void cmdCallback()
   cmd.header.frame_id = output_frame;
   cmd.trajectory_flag = quadrotor_msgs::msg::PositionCommand::TRAJECTORY_STATUS_READY;
   cmd.trajectory_id = traj_id_;
+  cmd.navigation_session_id = trajectory_session_id;
 
   cmd.position.x = pos(0);
   cmd.position.y = pos(1);
@@ -394,6 +409,22 @@ int main(int argc, char **argv)
   rclcpp::init(argc, argv);
   auto nh = std::make_shared<rclcpp::Node>("traj_server");//这个只是说节点的名字叫这个
   node_clock = nh->get_clock();
+  navigation_managed = nh->declare_parameter<bool>("navigation_managed", false);
+  auto session_sub = nh->create_subscription<easyfly_msgs::msg::NavigationSession>(
+    "/planning/navigation_session_state", rclcpp::QoS(1).reliable().transient_local(),
+    [](const easyfly_msgs::msg::NavigationSession::SharedPtr state) {
+      if (!navigation_managed || state->session_id.empty() || state->session_id.size() > 128) return;
+      if (state->active) {
+        // EGO is the sole trusted lifecycle writer. Depth-one QoS may coalesce
+        // STOP/START: a newer START must supersede the old session regardless.
+        navigation_session_id = state->session_id;
+        if (trajectory_session_id != navigation_session_id) receive_traj_ = false;
+      } else if (navigation_session_id == state->session_id) {
+        receive_traj_ = false;
+        navigation_session_id.clear();
+        trajectory_session_id.clear();
+      }
+    });
 
   nh->declare_parameter<std::string>("traj_server/position_cmd_topic", "position_cmd");
   nh->declare_parameter<std::string>("traj_server/ack_topic", "trajectory_ack");

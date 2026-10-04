@@ -10,6 +10,7 @@ list(APPEND CMAKE_PREFIX_PATH ${PROJECT_ROOT_DIR}/install)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(easyfly_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(quadrotor_msgs REQUIRED)
@@ -63,6 +64,7 @@ add_executable(ego_planner_node
 )
 
 ament_target_dependencies(ego_planner_node ${dependencies})
+ament_target_dependencies(ego_planner_node easyfly_msgs)
 
 target_link_libraries(ego_planner_node
   ${traj_utils_so_LIBRARIES}
@@ -76,6 +78,7 @@ add_executable(traj_server src/traj_server.cpp)
 # traj_server 只做 B-spline 采样和 PositionCommand 发布。不要继承完整规划器的
 # PCL/cv_bridge/plan_env 依赖，否则 ROS interface 的传递库会被重复展开数千次。
 ament_target_dependencies(traj_server
+  easyfly_msgs
   rclcpp
   traj_utils
   quadrotor_msgs
@@ -100,6 +103,12 @@ if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(NAME test_initial_sampling
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_initial_sampling.py)
+  add_test(NAME test_navigation_session_ros
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_navigation_session.py)
+  set_tests_properties(test_navigation_session_ros PROPERTIES TIMEOUT 20 LABELS "ros_network")
+  add_test(NAME test_managed_navigation_fault_ros
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_managed_navigation_fault.py)
+  set_tests_properties(test_managed_navigation_fault_ros PROPERTIES TIMEOUT 50 LABELS "ros_network")
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()

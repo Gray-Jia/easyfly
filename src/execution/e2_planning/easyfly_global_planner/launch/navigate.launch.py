@@ -26,10 +26,27 @@ def generate_launch_description():
         output="screen",
         parameters=[{
             "use_sim_time": LaunchConfiguration("use_sim_time"),
+            "action_name": "/navigate_astar",
             "config_file": os.path.join(
                 get_package_share_directory("easyfly_global_planner"),
                 "config", "navigate.yaml"),
         }],
     )
 
-    return LaunchDescription([use_sim_time_arg, node])
+    coordinator = Node(
+        package="easyfly_global_planner",
+        executable="navigation_coordinator_node",
+        name="navigation_coordinator",
+        output="screen",
+        parameters=[os.path.join(get_package_share_directory("easyfly_global_planner"),
+                                 "config", "coordinator.yaml"),
+                    {"use_sim_time": LaunchConfiguration("use_sim_time"),
+                     "strategy": LaunchConfiguration("strategy")}],
+    )
+    supervisor = Node(
+        package="easyfly_obstacle_avoidance", executable="obstacle_supervisor_node",
+        name="obstacle_supervisor", output="screen",
+        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}])
+    strategy_arg = DeclareLaunchArgument("strategy", default_value="astar",
+                                         choices=["astar", "ego", "combined"])
+    return LaunchDescription([use_sim_time_arg, strategy_arg, node, coordinator, supervisor])

@@ -1,11 +1,11 @@
-# 第三方来源与本地补丁登记（D0）
+# 第三方来源与本地补丁登记（D0 / D1）
 
 本轮只使用本地源码、Git 与交接记录核对，不联网下载，不升级依赖。未知来源如实标记。README 链接表示线索，不等于已确认导入 commit。
 
 | 目录/组件 | 可确认来源与版本 | 来源缺口 | 许可证证据 | 本地补丁入口 |
 |---|---|---|---|---|
 | src/third_party/slam/fast_lio（含 ikd-Tree） | README 指向 Ericsii/FAST_LIO ROS2 fork、hku-mars/ikd-Tree；包版本0.0.0 | 精确导入 branch/commit、ikd-Tree 来源基点未知；无独立 .git | 根 LICENSE 为 GPL v2；嵌入组件需按各自文件进一步清点 | `git log -- .../fast_lio`：7455e06 入库、b52a4fd 外参/启动保护；集成 launch 位于 easyfly_fast_lio_integration |
-| src/third_party/planners/ego_planner（8包） | 当前工作树绑定 EasyFly commit；历史参考来自 EGO ROS2 移植 | 精确上游仓库、fork、branch、commit未知 | 多数 package.xml 为 TODO，未发现统一根许可证；ego_to_mavros 为MIT、quadrotor_msgs 为BSD元数据；不能据此认定整个源码许可 | 7455e06 导入；04d99d4、51d0375、0724742 安全/控制修复；本轮 planner_manager.cpp 初始化修复 |
+| src/third_party/planners/ego_planner（8包） | 当前工作树绑定 EasyFly commit；历史参考来自 EGO ROS2 移植 | 精确上游仓库、fork、branch、commit未知 | 多数 package.xml 为 TODO，未发现统一根许可证；ego_to_mavros 为MIT、quadrotor_msgs 为BSD元数据；不能据此认定整个源码许可 | 7455e06 导入；04d99d4、51d0375、0724742 安全/控制修复；D0 planner_manager.cpp初始化修复；D1会话service/消息字段、managed速度/固定终点约束、预设模式隔离、会话急停事件、FSM及traj_server停流/闲置时钟修复，详见schedule-v4及d1-navigation |
 | src/third_party/livox_sdk2 | README 指向 Livox-SDK/Livox-SDK2；交接约1.2.5 | 无独立版本commit/tag，精确基点未知 | LICENSE.txt 列示部分为MIT及文件范围，按原文保留 | c707cd3；以当前源码和Git历史为准 |
 | src/communication/c1_drivers/livox_ros_driver2 | README 上游 Livox ROS Driver2；package版本1.0.0 | 精确上游commit、设备固件/配置未冻结 | LICENSE.txt 明确部分代码范围为MIT | c707cd3及当前集成修改；仿真插件是另一包 |
 | src/communication/c1_drivers/realsense_ros | 本地origin为IntelRealSense/realsense-ros；gitlink及实际HEAD均d69f05c1b4a3f0d5740e25d6429d4417c7f3d75d | 本地适配提交不保证存在于上游；根 .gitmodules 缺映射，不能自动复原 | 嵌套仓库 LICENSE / package.xml 为Apache-2.0，实际分发按仓库各组件文件 | d69f05c1 `adapt realsense packages for workspace build`；本次嵌套状态无修改 |

@@ -1,4 +1,5 @@
 std_msgs/Header header
+string navigation_session_id
 geometry_msgs/Point position
 geometry_msgs/Vector3 velocity
 geometry_msgs/Vector3 acceleration

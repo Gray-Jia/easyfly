@@ -10,22 +10,29 @@ find_package(rclcpp_components REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(easyfly_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 add_library(${PROJECT_NAME}_nodes SHARED
   src/global_planner_node.cpp
+  src/navigation_coordinator_node.cpp
 )
 target_compile_options(${PROJECT_NAME}_nodes PRIVATE -Wall -Wextra)
 target_include_directories(${PROJECT_NAME}_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 ament_target_dependencies(${PROJECT_NAME}_nodes
-  rclcpp rclcpp_components rclcpp_action ament_index_cpp nav_msgs easyfly_msgs)
+  rclcpp rclcpp_components rclcpp_action ament_index_cpp nav_msgs geometry_msgs std_msgs std_srvs easyfly_msgs)
 target_link_libraries(${PROJECT_NAME}_nodes yaml-cpp)
 
 rclcpp_components_register_node(${PROJECT_NAME}_nodes
   PLUGIN "easyfly_global_planner::GlobalPlannerNode"
   EXECUTABLE global_planner_node)
+rclcpp_components_register_node(${PROJECT_NAME}_nodes
+  PLUGIN "easyfly_global_planner::NavigationCoordinatorNode"
+  EXECUTABLE navigation_coordinator_node)
 
 install(TARGETS ${PROJECT_NAME}_nodes
   ARCHIVE DESTINATION lib
@@ -41,6 +48,17 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_coordinator test/test_coordinator.py
+    TIMEOUT 45 ENV ROS_LOG_DIR=/tmp/easyfly_d1_coordinator_test ROS_DOMAIN_ID=83)
+  ament_add_pytest_test(test_local_coordinator test/test_local_coordinator.py
+    TIMEOUT 90 ENV ROS_LOG_DIR=/tmp/easyfly_d1_local_coordinator_test ROS_DOMAIN_ID=84)
+  ament_add_pytest_test(test_late_session test/test_late_session.py
+    TIMEOUT 45 ENV ROS_LOG_DIR=/tmp/easyfly_d1_late_session_test ROS_DOMAIN_ID=86)
+  ament_add_pytest_test(test_navigation_chain test/test_navigation_chain.py
+    TIMEOUT 180 ENV ROS_LOG_DIR=/tmp/easyfly_d1_navigation_chain_test ROS_DOMAIN_ID=87)
+  ament_add_pytest_test(test_astar_deadline test/test_astar_deadline.py
+    TIMEOUT 30 ENV ROS_LOG_DIR=/tmp/easyfly_d1_astar_deadline_test ROS_DOMAIN_ID=88)
   ament_add_gtest(test_astar test/test_astar.cpp)
   target_include_directories(test_astar PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)

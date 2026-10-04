@@ -17,12 +17,22 @@
   <depend>rclcpp_action</depend>
   <depend>ament_index_cpp</depend>
   <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>easyfly_msgs</depend>
   <depend>yaml-cpp</depend>
+  <exec_depend>easyfly_obstacle_avoidance</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>rclpy</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>sensor_msgs_py</test_depend>
+  <test_depend>traj_utils</test_depend>
+  <test_depend>easyfly_flight_control</test_depend>
+  <test_depend>easyfly_local_planner</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

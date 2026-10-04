@@ -92,15 +92,22 @@ public:
         cli_wp_ = rclcpp_action::create_client<GoToWaypoint>(this, "/goto_waypoint");
 
         as_nav_ = rclcpp_action::create_server<NavigateTo>(
-            this, "/navigate",
+            this, declare_parameter<std::string>("action_name", "/navigate_astar"),
             std::bind(&GlobalPlannerNode::handle_goal, this, _1, _2),
             std::bind(&GlobalPlannerNode::handle_cancel, this, _1),
             std::bind(&GlobalPlannerNode::handle_accepted, this, _1));
 
         RCLCPP_INFO(get_logger(),
-                    "GlobalPlanner 启动: %s → /navigate (栅格超时 %.0fs, 段到位半径 %.2fm)",
-                    params_.grid_topic.c_str(), params_.grid_stale_timeout,
+                    "GlobalPlanner 启动: %s → %s (栅格超时 %.0fs, 段到位半径 %.2fm)",
+                    params_.grid_topic.c_str(), get_parameter("action_name").as_string().c_str(), params_.grid_stale_timeout,
                     params_.segment_acceptance);
+    }
+
+    ~GlobalPlannerNode() override
+    {
+        stopping_ = true;
+        cancel_req_ = true;
+        if (worker_.joinable()) worker_.join();
     }
 
 private:
@@ -171,7 +178,7 @@ private:
     {
         const auto deadline = std::chrono::steady_clock::now() +
             std::chrono::duration<double>(std::max(0.1, params_.grid_stale_timeout));
-        while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
+        while ((!stopping_ && rclcpp::ok()) && std::chrono::steady_clock::now() < deadline) {
             {
                 std::lock_guard<std::mutex> lk(snap_mtx_);
                 if (grid_received_) return true;
@@ -281,7 +288,8 @@ private:
             cancel_req_ = false;
             child_fault_ = false;
         }
-        std::thread([this, gh]() {
+        if (worker_.joinable()) worker_.join();
+        worker_ = std::thread([this, gh]() {
             try {
                 navigateLoop(gh);
             } catch (const std::exception & e) {
@@ -301,7 +309,7 @@ private:
                 // child is unresolved it deliberately keeps the parent slot
                 // occupied rather than creating an orphan race.
             }
-        }).detach();
+        });
     }
 
     // ------------------------------------------------ 执行线程
@@ -314,7 +322,7 @@ private:
         if (!fut.valid()) return 1;
         const auto t0 = std::chrono::steady_clock::now();
         while (true) {
-            if (cancel_req_) return 2;
+            if (stopping_ || cancel_req_) return 2;
             if (safety_check && !safety_check()) return 3;
             if (fut.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready)
                 return 0;
@@ -345,7 +353,7 @@ private:
         if (!lifecycle.beginSend()) return false;
         const auto server_deadline = std::chrono::steady_clock::now() + 3s;
         while (!cli_wp_->wait_for_action_server(100ms)) {
-            if (cancel_req_ || (safety_check && !safety_check())) {
+            if (stopping_ || cancel_req_ || (safety_check && !safety_check())) {
                 lifecycle.resolveSend(false);
                 return false;
             }
@@ -382,9 +390,8 @@ private:
             gh = goal_fut.get();
         } catch (const std::exception & e) {
             // An exceptional send future cannot produce a handle on a later
-            // read.  Clear it and keep the parent in unknown-handle recovery
-            // so the next pass can use async_cancel_all_goals without
-            // dropping the parent/child ownership context.
+            // read. Clear it and keep the parent in unknown-handle recovery
+            // without dropping ownership or cancelling other owners' goals.
             goal_fut = std::shared_future<GoalHandleWp::SharedPtr>();
             lifecycle.markFault();
             RCLCPP_ERROR(get_logger(), "解析子航点 future 异常: %s", e.what());
@@ -420,7 +427,7 @@ private:
                 (lifecycle.state() == WaypointLifecycleState::kRecovering && !gh)) {
                 if (!goal_fut.valid()) return false;
                 while (goal_fut.wait_for(100ms) != std::future_status::ready) {
-                    if (!rclcpp::ok() || std::chrono::steady_clock::now() >= deadline) {
+                    if ((stopping_ || !rclcpp::ok()) || std::chrono::steady_clock::now() >= deadline) {
                         return false;
                     }
                 }
@@ -480,7 +487,7 @@ private:
                 return false;
             }
             while (res_fut.wait_for(100ms) != std::future_status::ready) {
-                if (!rclcpp::ok() || std::chrono::steady_clock::now() >= deadline) {
+                if ((stopping_ || !rclcpp::ok()) || std::chrono::steady_clock::now() >= deadline) {
                     return false;
                 }
             }
@@ -517,13 +524,12 @@ private:
             lifecycle.state() == WaypointLifecycleState::kFault;
         if (unknown_handle) {
             // A send future that threw cannot be resolved into a handle.  Do
-            // not read it again; retain the parent and enter action-server-
-            // wide recovery instead.
+            // not read it again; retain the parent and enter fault recovery.
             lifecycle.enterRecovery();
         }
         const auto deadline = std::chrono::steady_clock::now() +
             std::chrono::duration<double>(std::max(1.0, params_.child_cancel_max_wait));
-        while (!unknown_handle && rclcpp::ok() &&
+        while (!unknown_handle && (!stopping_ && rclcpp::ok()) &&
             lifecycle.state() != WaypointLifecycleState::kRecovering &&
             lifecycle.state() != WaypointLifecycleState::kIdle) {
             const double remaining = std::chrono::duration<double>(
@@ -544,14 +550,14 @@ private:
                                  "等待子航点取消终态，父 goal 暂不结束");
             std::this_thread::sleep_for(100ms);
         }
-        if (!rclcpp::ok()) return false;
+        if ((stopping_ || !rclcpp::ok())) return false;
         if (lifecycle.state() != WaypointLifecycleState::kIdle) {
             lifecycle.enterRecovery();
             RCLCPP_ERROR(get_logger(),
                          "子航点取消超过 %.1fs，进入持续 recovery；保持 child 所有权",
                          params_.child_cancel_max_wait);
             int recovery_attempts = 0;
-            while (rclcpp::ok() && lifecycle.state() != WaypointLifecycleState::kIdle) {
+            while ((!stopping_ && rclcpp::ok()) && lifecycle.state() != WaypointLifecycleState::kIdle) {
                 if (cancelWaypoint(
                         gh, goal_fut, res_fut, lifecycle, cancel_sent, 1.0) &&
                     lifecycle.state() == WaypointLifecycleState::kIdle) {
@@ -564,14 +570,8 @@ private:
                 if ((!gh && !goal_fut.valid() &&
                     (recovery_attempts == 1 || recovery_attempts % 10 == 0)) ||
                     recovery_attempts % 10 == 0) {
-                    // If the send response failed before yielding a handle,
-                    // use the action-server-wide cancel only as a late
-                    // escalation.  Its response is never treated as terminal.
-                    try {
-                        cli_wp_->async_cancel_all_goals();
-                    } catch (...) {
-                        RCLCPP_WARN(get_logger(), "全量取消升级请求失败，继续 recovery");
-                    }
+                    // Unknown ownership must never cancel another caller's goal.
+                    RCLCPP_ERROR(get_logger(), "子航点所有权未确认，保持故障锁；不取消其他所有者");
                 }
                 std::this_thread::sleep_for(1s);
             }
@@ -813,7 +813,7 @@ private:
             // 段结果轮询
             bool seg_done = false;
             int seg_fail_code = 0;  // 0=ok, 1=takeover, 2=timeout
-            while (!seg_done) {
+            while (!stopping_ && !seg_done) {
                 if (cancel_req_) {
                     if (!cancelWaypointUntilTerminal(
                             wp_gh, wp_goal_fut, wp_res_fut,
@@ -935,6 +935,8 @@ private:
     bool state_received_{false};
     std::chrono::steady_clock::time_point state_arrival_{};
 
+    std::atomic<bool> stopping_{false};
+    std::thread worker_;
     std::atomic<bool> active_{false};
     std::atomic<bool> cancel_req_{false};
     std::atomic<bool> child_fault_{false};

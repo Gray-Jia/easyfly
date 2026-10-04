@@ -42,6 +42,10 @@ if(BUILD_TESTING)
     test/test_trajectory_startup_timeout.cpp)
   target_include_directories(test_trajectory_startup_timeout PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_add_gtest(test_navigation_session test/test_navigation_session.cpp
+    src/flight_controller.cpp)
+  target_include_directories(test_navigation_session PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(test_navigation_session rclcpp rclcpp_action easyfly_msgs quadrotor_msgs)
 endif()
 
 ament_package()
