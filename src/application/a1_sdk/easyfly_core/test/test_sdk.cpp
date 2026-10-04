@@ -5,6 +5,7 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <easyfly_msgs/srv/get_action_ownership.hpp>
 using namespace std::chrono_literals;
 using easyfly_core::Status;
 using easyfly_core::Admission;
@@ -93,6 +94,80 @@ TEST_F(SdkTest, AllSevenTypedMethodsReachTheirRealActionEndpoints) {
     client.follow(easyfly_msgs::action::FollowTrajectory::Goal{}), client.track(easyfly_msgs::action::TrackTarget::Goal{}),
     client.execute_mission(easyfly_msgs::action::ExecuteMission::Goal{})};
   for (const auto &op : operations) { ASSERT_TRUE(op->wait(3)); EXPECT_TRUE(op->snapshot().success); }
+  EXPECT_TRUE(client.close(3));
+}
+TEST_F(SdkTest, SearchUsesRealEndpointAndReportsTruthfulResult) {
+  using Search = easyfly_msgs::action::SearchArea;
+  extra_servers.push_back(rclcpp_action::create_server<Search>(node, "/search_area",
+    [](const auto &, auto) {return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;},
+    [](auto) {return rclcpp_action::CancelResponse::ACCEPT;},
+    [this](auto handle) {
+      auto ticks=std::make_shared<int>(0);
+      auto timer=std::make_shared<rclcpp::TimerBase::SharedPtr>();
+      *timer=node->create_wall_timer(20ms,[handle,ticks,timer] {
+        auto feedback=std::make_shared<Search::Feedback>();
+        feedback->area_covered=2; feedback->progress=.5; feedback->targets_found=3;
+        handle->publish_feedback(feedback);
+        if(++*ticks<10) return;
+        auto result=std::make_shared<Search::Result>(); result->success=true; result->message="searched";
+        handle->succeed(result); (*timer)->cancel(); timer->reset();
+      });
+      timers.push_back(*timer);
+    }));
+  easyfly_core::Client client;
+  for (int i=0; i<300 && !client.server_ready("search"); ++i) std::this_thread::sleep_for(10ms);
+  ASSERT_TRUE(client.server_ready("search"));
+  easyfly_msgs::action::SearchArea::Goal goal;
+  goal.area_width = goal.area_height = 2; goal.search_altitude = 1;
+  auto operation = client.search(goal);
+  ASSERT_TRUE(operation->wait(3));
+  EXPECT_EQ(operation->snapshot().admission, Admission::Accepted);
+  EXPECT_EQ(operation->snapshot().status, Status::Succeeded);
+  EXPECT_DOUBLE_EQ(operation->snapshot().feedback.numbers.at("area_covered"),2);
+  EXPECT_DOUBLE_EQ(operation->snapshot().feedback.numbers.at("progress"),.5);
+  EXPECT_DOUBLE_EQ(operation->snapshot().feedback.numbers.at("targets_found"),3);
+  EXPECT_TRUE(client.close(3));
+}
+TEST_F(SdkTest, ManagedOwnershipRequiresExactReleaseAfterRealActionTerminal) {
+  using Ownership=easyfly_msgs::srv::GetActionOwnership;
+  std::atomic<bool> released{false}, wrong_echo{true};
+  auto service=node->create_service<Ownership>("/navigation/ownership",
+    [&released,&wrong_echo](Ownership::Request::SharedPtr request, Ownership::Response::SharedPtr response) {
+      response->goal_id=wrong_echo ? std::string(32,'f') : request->goal_id;
+      response->state=released ? 2 : 1;
+    });
+  easyfly_core::ClientOptions options; options.require_managed_ownership=true;
+  options.max_pending_operations=1;
+  easyfly_core::Client client(options);ready(client);
+  auto operation=client.navigate(Action::Goal{});
+  for(int i=0;i<300 && !operation->snapshot().action_terminal_received;++i)
+    std::this_thread::sleep_for(10ms);
+  ASSERT_TRUE(operation->snapshot().action_terminal_received);
+  EXPECT_EQ(operation->snapshot().status,Status::Succeeded);
+  EXPECT_TRUE(operation->snapshot().success);
+  EXPECT_TRUE(operation->snapshot().remote_execution_pending);
+  EXPECT_EQ(operation->snapshot().goal_id.size(),32u);
+  EXPECT_GT(operation->snapshot().result_received_seconds,0);
+  EXPECT_FALSE(operation->wait(.01));
+  EXPECT_EQ(client.navigate(Action::Goal{})->snapshot().status,Status::CapacityExceeded);
+  released=true;
+  EXPECT_FALSE(operation->wait(.4)); // RELEASED for another UUID is not ours
+  wrong_echo=false;
+  EXPECT_FALSE(client.close(0)); // retains operation while managed drain still owns DDS clients
+  ASSERT_TRUE(operation->wait(3));
+  EXPECT_FALSE(operation->snapshot().remote_execution_pending);
+  EXPECT_TRUE(client.close(0)); // cleanup barrier includes the ownership client
+  EXPECT_TRUE(operation->wait(0));
+}
+TEST_F(SdkTest, RequiredOwnershipMissingMeansNotReadyAndNoGoalSent) {
+  easyfly_core::ClientOptions options;options.require_managed_ownership=true;
+  easyfly_core::Client client(options);
+  std::this_thread::sleep_for(100ms);
+  EXPECT_FALSE(client.server_ready("navigate"));
+  auto operation=client.navigate(Action::Goal{});
+  ASSERT_TRUE(operation->wait(3));
+  EXPECT_EQ(operation->snapshot().status,Status::Unavailable);
+  EXPECT_EQ(accepted.load(),0);
   EXPECT_TRUE(client.close(3));
 }
 TEST_F(SdkTest, SuccessFalseSuccessRejectAbortAndWaitAreDistinct) {

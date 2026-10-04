@@ -4,8 +4,9 @@
 > D0完成时间：2026-10-04 07:51（Asia/Shanghai）
 > D1完成时间：2026-10-04 14:09（Asia/Shanghai）
 > D2完成时间：2026-10-04 15:20（Asia/Shanghai）
-> 计划依据：`plan-v3.md` D0、D1、D2；起点 HEAD：`1860690`。
-> 状态：D0、D1、D2本批开发范围完成；D2尚未提交；G9-G11复验继续暂停。
+> D3本批功能验收完成时间：2026-10-04 20:15（Asia/Shanghai）；lint欠账另列。
+> 计划依据：`plan-v3.md` D0–D3；起点 HEAD：`1860690`。
+> 状态：D0–D3本批功能开发范围完成；D2已提交00d12b8，D3尚未提交；任务服务4项lint欠账保留，非全部注册检查通过；G9-G11复验继续暂停。
 > 分工：主 agent 负责范围、协调器、监督、配置/服务、契约、集成检查与记录；easyfly_coder 负责构建脚本、EGO/轨迹会话链及SDK限定实现；easyfly_reviewer 负责最终只读评审。
 
 ## 1. 目标与验收标准
@@ -313,6 +314,65 @@ easyfly_reviewer只读核对SDK所有权/迟到取消/GIL/状态时间、参数�
 
 D3正式YAML/搜索/复杂任务引擎及后续标签/精准降落、平台UI尚未开始。未重新开展G9–G11、PX4/Gazebo SITL或实机验证，不宣称自动监督阈值已实机验证。D2目前未提交；用户预存`.codex`和`codex_cli.sh`修改保留，未push。
 
+## 9. D3：任务引擎、搜索与示例（本批功能验收完成）
+
+D2按项目所有者授权提交为`00d12b8 feat(D2): add asynchronous SDK and constrained platform services`，未push；预存agent配置及用户删除codex_cli.sh未纳入提交。D2上节未提交/未开始D3是其验收时点状态，本节为后续更新。
+
+用户确认：第一版严格顺序、失败即终止，不自动追加返航/降落，分支与重试后续加入；搜索条带间距由启动参数提供，面积为已完成扫描条带几何覆盖估计、不是传感器实际探测覆盖；限时跟随到时后精确取消，真CANCELED作为该步骤正常完成，取消失败/终态未决保锁。
+
+| ID | 目标 | 当前进度 | 验收标准 |
+|---|---|---|---|
+| D3-01 | 正式schema_version=1 YAML与旧格式兼容 | 完成：共享解析库、离线CLI、旧格式兼容与负向检查 | 全文离线校验；单位/frame/字段/范围/预算/能力可校验；未知及非法后步骤整份拒绝 |
+| D3-02 | 七类顺序任务及子动作所有权 | 完成：同一SDK、13任务场景、跨层精确UUID排空 | takeoff/hover/waypoint/navigate/track/search/land；反馈真实步骤；取消/超时/失败/接管等待真实子终态；未决保锁 |
+| D3-03 | SearchArea弓字覆盖 | 完成：几何检查与8真实ROS搜索场景 | 统一navigate；可飞范围/间距/条带面积明确；取消传播；未支持模式拒绝；新鲜有效稳定ID去重 |
+| D3-04 | 模板与SDK示例/任务门面接入 | 完成：4模板、安装C++/Python示例与3真实任务链场景 | 四类模板与C++/Python取消示例可通过正式平台接口；默认只校验、不自动运动 |
+| D3-05 | 开发构建、组件/短联调、只读评审 | 本批功能验收通过；4项任务服务lint欠账明确保留 | 正负向校验与动作回归、示例和实际接口联调；如实记录失败及验收边界；G9+仍暂停 |
+
+### 9.1 实现与接口结果
+
+1. 正式格式使用现有 yaml-cpp 依赖，单文档、schema_version=1、odom/m/rad/s、abort策略；1–256步、64KiB、每步有界预算且正式YAML总预算≤7200s。未知/重复字段、单位/frame/范围错误、非有限值和非法后续步骤整份拒绝。旧扁平任务按内容兼容，私有无后缀快照也兼容；不宣称JSON支持。mission_validate默认不初始化ROS、不发送Goal。
+2. mission_fsm重构为受管线程＋同一C++ SDK，支持7类严格顺序步骤。全文准入校验及所有所需后端有界发现先于首个运动请求；运行时定位/电池数值、新鲜度、接管与期限失败关闭。限时跟随按用户确认的真实CANCELED语义完成，取消拒绝/迟到终态保锁。hover仍为等待并沿用已有保持，不发布新setpoint；保留原低电量保护。
+3. /search_area复用统一导航；只读启动间距、矩形完整边界、最多256条带。真实到达/低速后计整条带面积，进场/转移不计；取消返回已完成部分。对新鲜有效区域内稳定非负ID去重，有界4096身份/每帧10000条。面积为几何估计，不是传感器实际探测覆盖。
+4. 为解决公开失败早于内层停止的问题，新增GetActionOwnership、/navigation/ownership、/search/ownership、/mission/ownership。每层精确UUID绑定，只有匹配RELEASED解锁；UNKNOWN/失联/错误回显保锁，最近128已释放历史有界保存。SDK新增Search客户端、goal_id、action_terminal_received与受管查询选项；生产任务链强制require_managed_ownership=true。weak ownership client引用避免DDS清理后资源残留。公开Action终态、递归排空与SDK清理分别表达，不能相互替代。
+5. 任务门面接入共享正式/旧解析器与受管排空；ManageMission新增execution_pending。公开结果收到但下层未排空时，保留活动槽及0600私有快照，拒绝新任务。迟到cancel拒绝不覆盖真实结果。目录安全策略保持，打开文件使用有界非阻塞常规文件校验，拒绝FIFO等非任务文件。
+6. mission_scripts安装4份版本化模板，不创建第二执行器；demos安装C++/Python只校验默认示例，显式执行可精确取消并等排空，SDK本地清理未确认也返回失败。默认任务门面目录不悄悄改为新模板目录，需显式配置规范父目录。新接口/SDK须同步重编译相关包与消费者；Python直接动作最小集合不扩张，track/search通过execute_mission调用。
+
+实现范围、字段/默认值、迁移与操作说明见[docs/development/d3-missions.md](docs/development/d3-missions.md)。
+
+### 9.2 开发过程、失败与修复
+
+- 主agent负责格式、搜索、接口/门面、模板与真实任务链；coder负责SDK/绑定及FSM限定实现，reviewer只读复核。未修改用户agent配置或恢复用户删除文件。
+- 初轮格式单测字符串拼接类型错误、Humble service callback泛型参数无法匹配function_traits导致构建失败，均修为明确类型后重编；失败构建不计成功。
+- 首轮只读评审发现公开Action终态不能证明递归子执行已停，已增加上述UUID所有权协议及真实嵌套失败保锁测试；同时补齐定位非法值、电池非法值和迟到成功越过预算的保护。二轮评审补充Search预算先于消费结果、失败及时传播，以及任务服务迟到取消拒绝覆盖真实状态问题，修复均有负向回归。
+- 第一次安装示例/四模板任务链因仅等待门面发现、未等全链能力就绪而失败；改为查询实际能力ready后执行，不删掉失败断言，不用固定延时掩盖准入。最终3场景覆盖4模板、安装C++/Python默认/显式取消，以及真实门面→FSM→统一导航→迟到私有子动作的递归取消保锁。
+- 额外运行完整mission_srvs注册CTest：行为3项通过，cppcheck/lint_cmake/pep257/xmllint通过，但copyright、cpplint、flake8、uncrustify四项失败（版权声明/代码风格问题）。如实保留质量欠账，不关闭/删除检查，不把全部注册检查写为通过。本轮功能验收不等于风格及许可证声明已全部收口。
+- 最终只读源码/契约评审无阻塞；评审建议统一Python示例本地清理超时退出码，已改为失败并再次运行安装任务链。尚未另行实施独立SITL/硬件签收。
+
+### 9.3 验证记录（2026-10-04，本批软件范围）
+
+以下命令先source /opt/ros/humble/setup.bash与install/setup.bash。隔离domain，使用合成遥测/动作mock或软件plant，不接硬件；没有开展G9长稳/冷启动循环。
+
+| 检查 | 实际命令 / 日志 | 最终结果 |
+|---|---|---|
+| 接口构建 | colcon build --base-paths src --packages-select easyfly_msgs --symlink-install | 新srv及ManageMission字段构建通过 |
+| 7相关包构建 | colcon build --base-paths src --packages-select easyfly_core easyfly_pybind easyfly_mission_fsm easyfly_global_planner easyfly_mission_srvs easyfly_mission_scripts easyfly_demos --symlink-install | 全部rc0；log/build_2026-10-04_19-54-22/events.log记录34.78s；随后FSM/demos及服务修复重编分别见19-57-01/19-59-45日志 |
+| SDK C++ | ctest --test-dir build/easyfly_core --output-on-failure -R '^test_sdk$' | 9场景通过3.63s；含Search、真实终态早于UUID释放、未知/失联保锁及清理屏障 |
+| SDK Python | ctest --test-dir build/easyfly_pybind --output-on-failure -R '^test_sdk_python$' | 7场景通过4.41s |
+| 格式/任务/搜索 | ctest --test-dir build/easyfly_mission_fsm --output-on-failure | 6个行为CTest通过19.39s；旧格式3单测、正式格式3组、几何2组、全文真实预校验、任务13场景、搜索8场景 |
+| 门面/入口 | ctest --test-dir build/easyfly_mission_srvs --output-on-failure -R '^test_(services\|launch\|platform_smoke)$' | 最终行为3项通过11.90s（10.78/0.29/0.83s）；服务9场景含真实结果后保锁和迟到取消拒绝；完整11项注册检查另有4lint失败 |
+| 参数/配置 | ctest --test-dir build/easyfly_params --output-on-failure -R '^test_(configuration\|runtime)$' | 2项通过0.73s |
+| profile配置 | python3 -m pytest -q src/application/a1_sdk/easyfly_params/test/test_configuration.py src/application/a3_mission/easyfly_sim_launcher/test/test_profile_launch.py | 38项通过0.20s |
+| 协调器回归 | ctest --test-dir build/easyfly_global_planner --output-on-failure -R '^test_(coordinator\|local_coordinator\|late_session\|astar_deadline)$' | 4项通过18.14s；实际UUID未停OWNED、排空RELEASED有断言 |
+| 完整任务链/安装示例 | ctest --test-dir build/easyfly_demos --output-on-failure -R '^test_task_chain$' | 3场景通过17.44s；Python退出码收口后再次通过15.30s，安装脚本为源码symlink，确认测到新实现 |
+| 真实导航软件链 | ctest --test-dir build/easyfly_global_planner --output-on-failure -R '^test_navigation_chain$' | 静态/动态及Python SDK三场景通过87.31s；不是实际PX4/Gazebo动力学 |
+| 最终工作树检查 | git diff --check；ps按任务/搜索/门面/导航/示例进程匹配检查 | diff检查通过，相关测试进程残留0；用户预存修改未恢复/未提交 |
+
+### 9.4 交付边界
+
+D3-01至D3-05按本批顺序任务开发范围功能验收通过，任务服务四项lint欠账未清零。G9–G11保持暂停；未进行PX4/Gazebo SITL、实机、真实相机搜索覆盖或跟随安全签收。分支/重试、额外搜索模式、通用悬停控制出口、更多Python直接动作及D4以后能力不冒称完成。
+
+源码与文档在工作树，D3未提交；D2提交00d12b8未push。用户预存.codex三项修改与codex_cli.sh删除保持原状且排除于D2提交。未通过进程退出、删除快照或公开失败推断飞行已停；未知所有权不自动解锁。后续若清理lint，需单独保持测试与版权归属明确，不以批量删检查处理。
+
 ### 8.6 D2 独立验收（2026-10-04，ZCode 受权执行）
 
 验收基线：工作树未提交的 D2 改动（HEAD=dfd6859/D1 + D2 工作树 52 项）；独立 domain 测试。
@@ -341,3 +401,31 @@ D3正式YAML/搜索/复杂任务引擎及后续标签/精准降落、平台UI尚
 3. **hardware_unverified 拒绝启动**：configuration.py `load_profile` 对该 profile 抛 `ValueError`（"unverified hardware cannot advertise active capabilities"），mission_srvs 的 `service_nodes` 经 `ensure_launchable` 走同一拒绝路径，`test_launch.py:36-38` 有负向回归在案 ✅；executor Include 默认 `start_mission_executor=false` ✅。
 
 验收结论：**D2-01~D2-06 按本批开发范围验收通过**。开发记录（§8.3-8.5）与实测一致；退出竞态修复后的稳定性声明（repeat×3）经独立复验成立。边界确认：本验收为组件/软件闭环级；D2 改动截至验收**尚未提交**。
+
+### 9.5 D3 独立验收（2026-10-04，ZCode 受权执行）
+
+验收基线：工作树未提交的 D3 改动（HEAD=00d12b8/D2 + D3 工作树 52 项）；独立 domain 62。
+
+**新鲜度异常与处置**：`easyfly_demos/scripts/sdk_mission_demo.py`（20:11:45）比最后构建（19:57:44）新 14 分钟。重编 demos 包（rc0 0.83s）后所有任务链测试在重编产物上通过——当前源码状态确认。其余 7 个 D3 相关包全部 FRESH。
+
+按 §9.3 清单逐项独立复跑，全部通过：
+
+| 检查 | 结果 |
+|---|---|
+| SDK C++（9 场景） | ✅ Passed 3.73s |
+| SDK Python（7 场景） | ✅ Passed 4.43s |
+| FSM 全量 6 行为 CTest | ✅ 6/6（legacy_mission/mission_format/search_geometry/prevalidation/mission_executor 11.53s/search_action 6.30s） |
+| 门面行为 3 项 | ✅ 3/3（services 10.14s/launch/platform_smoke） |
+| 参数（configuration+runtime） | ✅ 2/2 |
+| 配置 pytest | ✅ 38/38 |
+| 协调器回归 4 项 | ✅ 4/4（coordinator/local_coordinator/late_session/astar_deadline） |
+| 完整任务链/安装示例 3 场景 | ✅ Passed 15.51s（重编后） |
+| 真实导航软件链 3 用例 | ✅ Passed 86.68s |
+| git diff --check / 进程残留 | ✅ / 0 |
+
+独立抽检（超出文档清单）：
+1. **lint 欠账确认**：`test_(copyright|cpplint|flake8|uncrustify)` 恰好 4 项失败，与 §9.2"4 lint 欠账"声明精确一致 ✅；行为 3 项在环境正确 source 后通过（无 source 时 ctest 包装器会假失败，与 V2-16 验收时同类环境现象）；
+2. **所有权协议**：`ownership_registry.hpp` 实现 OWNED/RELEASED 状态机，"Active IDs never expire. Evicted released IDs become UNKNOWN, never a false"——主动 ID 永不自动释放 ✅；
+3. **模板 4 份就位**：navigation_return_v1 / search_land_v1 / takeoff_hold_land_v1 / timed_track_land_v1，内容为 schema_version:1 正式格式（含 frame_id/units/failure_policy/有界 timeout）✅。
+
+验收结论：**D3-01~D3-05 按本批顺序任务开发范围验收通过**。开发记录（§9.2-9.4）与实测一致；4 项 lint 欠账如实在册（非阻塞）。边界确认：组件/软件闭环级；D3 改动截至验收**尚未提交**。

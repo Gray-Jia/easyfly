@@ -12,3 +12,5 @@ string[] missions
 string execution_id
 MissionStatus current_status
 bool feedback_valid
+# Public status may be terminal while nested action ownership is still draining.
+bool execution_pending

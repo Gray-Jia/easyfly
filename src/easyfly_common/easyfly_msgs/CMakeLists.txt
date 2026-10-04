@@ -26,6 +26,7 @@ set(srv_files
   "srv/GetPerception.srv"
   "srv/GetCapabilities.srv"
   "srv/ManageMission.srv"
+  "srv/GetActionOwnership.srv"
   "srv/SetNavigationSession.srv"
   "srv/StopNavigation.srv"
   "srv/ArmMotors.srv"

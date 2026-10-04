@@ -20,6 +20,8 @@
 #include <easyfly_msgs/srv/stop_navigation.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <easyfly_core/ownership_registry.hpp>
+#include <easyfly_msgs/srv/get_action_ownership.hpp>
 #include "easyfly_global_planner/astar.hpp"
 #include "easyfly_global_planner/map_validity.hpp"
 
@@ -103,6 +105,7 @@ public:
         return rclcpp_action::CancelResponse::ACCEPT;
       }, [this](std::shared_ptr<Parent> parent) {
         ctx_ = std::make_shared<Context>(); ctx_->parent = parent;
+        ownership_.own(goalId(ctx_));
         if (strategy_ == "astar") sendAstar(ctx_);
       });
     stop_service_ = create_service<std_srvs::srv::Trigger>(
@@ -119,6 +122,11 @@ public:
           request->navigation_goal_id == goalId(ctx_);
         reply->message = reply->success ? "stop requested, awaiting terminal" : "navigation goal no longer active";
         if (reply->success) {ctx_->supervisor = true; drain(ctx_, "supervisor_stop");}
+      });
+    ownership_service_ = create_service<easyfly_msgs::srv::GetActionOwnership>("/navigation/ownership",
+      [this](easyfly_msgs::srv::GetActionOwnership::Request::SharedPtr request,
+             easyfly_msgs::srv::GetActionOwnership::Response::SharedPtr response) {
+        response->goal_id = request->goal_id; response->state = ownership_.state(request->goal_id);
       });
     goal_id_pub_ = create_publisher<std_msgs::msg::String>("/navigation/goal_id", 1);
     rviz_client_ = rclcpp_action::create_client<Nav>(this, "/navigate");
@@ -237,7 +245,7 @@ private:
     c->reason = reason; c->replan = replan && !c->user_cancel && !c->supervisor;
   }
   void release(const std::shared_ptr<Context> & c) {
-    if (ctx_ == c) {ctx_.reset(); reserved_ = false;}
+    if (ctx_ == c) {ownership_.release(goalId(c)); ctx_.reset(); reserved_ = false;}
   }
   void sendAstar(const std::shared_ptr<Context> & c) {
     c->sent = true; c->terminal = false; c->phase = Clock::now();
@@ -395,6 +403,8 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
   rclcpp::Service<easyfly_msgs::srv::StopNavigation>::SharedPtr owned_stop_service_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr goal_id_pub_;
+  easyfly_core::OwnershipRegistry ownership_;
+  rclcpp::Service<easyfly_msgs::srv::GetActionOwnership>::SharedPtr ownership_service_;
 };
 } // namespace easyfly_global_planner
 RCLCPP_COMPONENTS_REGISTER_NODE(easyfly_global_planner::NavigationCoordinatorNode)

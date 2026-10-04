@@ -1,559 +1,282 @@
 #include "easyfly_mission_fsm/mission_fsm.hpp"
-
-#include <cctype>
+#include "easyfly_mission_fsm/mission_format.hpp"
+#include <algorithm>
 #include <cmath>
-#include <fstream>
-#include <limits>
-#include <sstream>
-#include <thread>
-#include <chrono>
-
-namespace easyfly_mission_fsm
-{
-
-using namespace std::placeholders;
+#include <set>
 using namespace std::chrono_literals;
-
-// ================================================================
-// Constructor
-// ================================================================
-
-MissionFSM::MissionFSM(const rclcpp::NodeOptions & options)
-  : Node("mission_fsm", options)
-{
-  // ---- state sub ----
-  sub_uav_state_ = create_subscription<easyfly_msgs::msg::UAVState>(
-    "/uav_state", rclcpp::SensorDataQoS(),
-    std::bind(&MissionFSM::cb_uav_state, this, _1));
-
-  // ---- status pub ----
-  pub_status_ = create_publisher<easyfly_msgs::msg::MissionStatus>("/mission_status", 10);
-
-  // ---- action clients ----
-  cli_takeoff_   = rclcpp_action::create_client<Takeoff>(this, "/takeoff");
-  cli_land_      = rclcpp_action::create_client<Land>(this, "/land");
-  cli_waypoint_  = rclcpp_action::create_client<GoToWaypoint>(this, "/goto_waypoint");
-
-  // ---- Q2: 低电量 RTL 模式切换客户端 (mavlink_bridge 提供) ----
-  cli_set_mode_  = create_client<easyfly_msgs::srv::SetFlightMode>("/set_flight_mode");
-
-  // ---- action server ----
-  as_mission_ = rclcpp_action::create_server<ExecuteMission>(
-    this, "/execute_mission",
-    std::bind(&MissionFSM::handle_mission_goal,   this, _1, _2),
-    std::bind(&MissionFSM::handle_mission_cancel, this, _1),
-    std::bind(&MissionFSM::handle_mission_accepted, this, _1));
-
-  // ---- safety timer 1Hz ----
-  timer_safety_ = create_wall_timer(1s, std::bind(&MissionFSM::safety_check, this));
-  battery_invalid_grace_s_ = declare_parameter("battery_invalid_grace_s", 5.0);
-  if (!std::isfinite(battery_invalid_grace_s_) || battery_invalid_grace_s_ < 0.0) {
-    RCLCPP_WARN(get_logger(), "battery_invalid_grace_s 非法，使用 5s");
-    battery_invalid_grace_s_ = 5.0;
+namespace easyfly_mission_fsm {
+using Clock = std::chrono::steady_clock;
+using Status = easyfly_core::Status;
+using MS = easyfly_msgs::msg::MissionStatus;
+static std::string backend(const std::string &type) {
+  return type == "waypoint" ? "goto" : type == "hover" ? "" : type;
+}
+static uint8_t phase(const std::string &type) {
+  if(type=="takeoff") return MS::TAKEOFF;
+  if(type=="hover") return MS::HOVER;
+  if(type=="track") return MS::TRACK;
+  if(type=="search") return MS::SEARCH;
+  if(type=="land") return MS::LAND;
+  return MS::WAYPOINT;
+}
+MissionFSM::MissionFSM(const rclcpp::NodeOptions &options):Node("mission_fsm",options) {
+  easyfly_core::ClientOptions sdk_options;
+  sdk_options.use_sim_time = get_parameter("use_sim_time").as_bool();
+  sdk_options.require_managed_ownership = true;
+  rcl_interfaces::msg::ParameterDescriptor read_only;
+  read_only.read_only=true;
+  sdk_options.state_freshness_seconds = declare_parameter("state_freshness_s",1.0,read_only);
+  sdk_ = std::make_unique<easyfly_core::Client>(sdk_options);
+  cancel_budget_s_ = declare_parameter("cancel_budget_s",3.0,read_only);
+  battery_invalid_grace_s_ = declare_parameter("battery_invalid_grace_s",5.0,read_only);
+  backend_discovery_s_ = declare_parameter("backend_discovery_s",3.0,read_only);
+  if(sdk_options.state_freshness_seconds<.05 || sdk_options.state_freshness_seconds>10 ||
+     !std::isfinite(cancel_budget_s_) || cancel_budget_s_<.05 || cancel_budget_s_>30 ||
+     !std::isfinite(battery_invalid_grace_s_) || battery_invalid_grace_s_<0 || battery_invalid_grace_s_>60 ||
+     !std::isfinite(backend_discovery_s_) || backend_discovery_s_<0 || backend_discovery_s_>30)
+    throw std::invalid_argument("invalid mission timing parameters");
+  pub_status_=create_publisher<MS>("/mission_status",10);
+  cli_set_mode_=create_client<easyfly_msgs::srv::SetFlightMode>("/set_flight_mode");
+  as_mission_=rclcpp_action::create_server<ExecuteMission>(this,"/execute_mission",
+    std::bind(&MissionFSM::handle_mission_goal,this,std::placeholders::_1,std::placeholders::_2),
+    std::bind(&MissionFSM::handle_mission_cancel,this,std::placeholders::_1),
+    std::bind(&MissionFSM::handle_mission_accepted,this,std::placeholders::_1));
+  ownership_service_=create_service<easyfly_msgs::srv::GetActionOwnership>("/mission/ownership",
+    [this](easyfly_msgs::srv::GetActionOwnership::Request::SharedPtr request,
+           easyfly_msgs::srv::GetActionOwnership::Response::SharedPtr response) {
+      response->goal_id=request->goal_id;
+      response->state=ownership_registry_.state(request->goal_id);
+    });
+  timer_safety_=create_wall_timer(100ms,std::bind(&MissionFSM::safety_check,this));
+  publish_status(MS::IDLE,"idle",-1,0,0);
+}
+MissionFSM::~MissionFSM() {
+  shutdown_=true; stop("shutdown"); cancel_current_step();
+  std::lock_guard<std::mutex> lock(worker_mtx_);
+  if(worker_.joinable()) worker_.join();
+  sdk_->close(0); // unresolved remote ownership remains in SDK's self-owned drain
+}
+bool MissionFSM::state_ready() const {
+  const auto s=sdk_->state(); const auto &u=s.value;
+  return s.fresh && u.connected && u.pose_valid && u.battery_valid &&
+    u.flight_mode!=6 && u.flight_mode!=7 &&
+    std::isfinite(u.position_x) && std::isfinite(u.position_y) && std::isfinite(u.position_z) &&
+    std::isfinite(u.battery_remaining) && u.battery_remaining>=0 && u.battery_remaining<=1;
+}
+void MissionFSM::stop(const std::string &why) {
+  std::lock_guard<std::mutex> lock(mission_mtx_);
+  if(stop_reason_.empty()) stop_reason_=why;
+}
+std::string MissionFSM::reason() const {
+  std::lock_guard<std::mutex> lock(mission_mtx_); return stop_reason_;
+}
+void MissionFSM::cancel_current_step() {
+  std::lock_guard<std::mutex> lock(step_mtx_);
+  if(current_) current_->cancel();
+}
+void MissionFSM::trigger_rtl() {
+  if(cli_set_mode_->service_is_ready()) {
+    auto request=std::make_shared<easyfly_msgs::srv::SetFlightMode::Request>();
+    request->flight_mode=6; cli_set_mode_->async_send_request(request);
+  } else RCLCPP_ERROR(get_logger(),"low-battery RTL service unavailable");
+}
+void MissionFSM::safety_check() {
+  if(!mission_active_) {battery_invalid_since_={}; return;}
+  const auto snapshot=sdk_->state(); const auto &u=snapshot.value;
+  if(!snapshot.fresh || !u.connected || !u.pose_valid ||
+     !std::isfinite(u.position_x) || !std::isfinite(u.position_y) || !std::isfinite(u.position_z)) {
+    stop("state_invalid_or_stale"); cancel_current_step(); return;
   }
-  battery_invalid_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
-
-  publish_status(easyfly_msgs::msg::MissionStatus::IDLE, "idle", -1, 0, 0.0f);
-
-  RCLCPP_INFO(get_logger(), "MissionFSM started — /execute_mission ready");
-}
-
-MissionFSM::~MissionFSM()
-{
-  cancel_requested_ = true;
-  emergency_ = true;
-  cancel_current_step();
-  std::lock_guard<std::mutex> lk(worker_mtx_);
-  if (worker_.joinable()) worker_.join();
-}
-
-// ================================================================
-// State callback
-// ================================================================
-
-void MissionFSM::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
-{
-  {
-    std::lock_guard<std::mutex> lk(state_mtx_);
-    uav_ = *msg;
-  }
-  state_received_ = true;
-}
-
-easyfly_msgs::msg::UAVState MissionFSM::get_uav_snapshot() const
-{
-  std::lock_guard<std::mutex> lk(state_mtx_);
-  return uav_;
-}
-
-// ================================================================
-// Safety — 1Hz
-// ================================================================
-
-void MissionFSM::safety_check()
-{
-  if (!mission_active_) {
-    std::lock_guard<std::mutex> lk(mission_mtx_);
-    battery_invalid_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
-    publish_status(easyfly_msgs::msg::MissionStatus::IDLE, "idle", -1, 0, 0.0f);
-    return;
-  }
-  if (!state_received_) return;
-
-  const auto uav = get_uav_snapshot();
-  if (!uav.battery_valid) {
-    bool grace_expired = false;
-    const auto t_now = now();
-    {
-      std::lock_guard<std::mutex> lk(mission_mtx_);
-      if (battery_invalid_since_.nanoseconds() == 0) {
-        battery_invalid_since_ = t_now;
-      }
-      grace_expired = (t_now - battery_invalid_since_).seconds() >= battery_invalid_grace_s_;
-    }
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 5000,
-      "任务运行中电池遥测无效或过期 (grace=%.1fs)", battery_invalid_grace_s_);
-    if (grace_expired && !rtl_triggered_.exchange(true)) {
-      // 电池数据持续缺失不能无限期停留在告警态：空中使用 PX4 RTL，
-      // 同时中止任务；地面只中止任务，不凭无效高度触发模式切换。
-      emergency_ = true;
-      const bool airborne = uav.armed && std::isfinite(uav.position_z) && uav.position_z > 0.3;
-      RCLCPP_ERROR(get_logger(),
-        "Battery telemetry invalid beyond %.1fs -> abort mission%s",
-        battery_invalid_grace_s_, airborne ? " + RTL" : "");
-      if (airborne) trigger_rtl();
+  // LAND is expected only while executing our own land action.
+  bool owned_land=false;
+  { std::lock_guard<std::mutex> lock(step_mtx_); owned_land=current_type_=="land"; }
+  if(u.flight_mode==6) {stop("external_rtl_takeover"); cancel_current_step();}
+  if(u.flight_mode==7 && !owned_land) {stop("external_land_takeover"); cancel_current_step();}
+  if(!u.battery_valid || !std::isfinite(u.battery_remaining) || u.battery_remaining<0 || u.battery_remaining>1) {
+    if(battery_invalid_since_==Clock::time_point{}) battery_invalid_since_=Clock::now();
+    if(std::chrono::duration<double>(Clock::now()-battery_invalid_since_).count()>=battery_invalid_grace_s_ &&
+       !rtl_triggered_.exchange(true)) {
+      stop("battery_invalid_timeout");
+      if(u.armed && u.position_z>.3) trigger_rtl();
       cancel_current_step();
-      publish_status(easyfly_msgs::msg::MissionStatus::EMERGENCY,
-        airborne ? "emergency_battery_timeout_rtl" : "emergency_battery_timeout",
-        -1, 0, 0.0f);
     }
-    return;
-  }
-  {
-    std::lock_guard<std::mutex> lk(mission_mtx_);
-    battery_invalid_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
-  }
-
-  if (uav.battery_remaining < 0.15 && !rtl_triggered_.exchange(true)) {
-    emergency_     = true;             // 任务线程在步骤边界/轮询点退出
-    RCLCPP_ERROR(get_logger(),
-      "Battery low (%.0f%%) → 中止任务%s",
-      uav.battery_remaining * 100,
-      (uav.armed && uav.position_z > 0.3) ? " + 触发 PX4 RTL" : " (在地面, 不需 RTL)");
-
-    // 空中: 交给 PX4 的 RTL (最高可靠路径, 不依赖自家软件链)
-    if (uav.armed && uav.position_z > 0.3) {
-      trigger_rtl();
+  } else {
+    battery_invalid_since_={};
+    if(u.battery_remaining<.15 && !rtl_triggered_.exchange(true)) {
+      stop("low_battery");
+      if(u.armed && u.position_z>.3) trigger_rtl();
+      cancel_current_step();
     }
-    // 取消正在执行的子 action (起飞/航点/降落), 让任务线程尽快退出
-    cancel_current_step();
-
-    publish_status(easyfly_msgs::msg::MissionStatus::EMERGENCY,
-      "emergency_rtl", -1, 0, 0.0f);
   }
 }
-
-// ================================================================
-// Q2: 请求 mavlink_bridge 将 PX4 切到 RTL (模式 6)
-// 异步发送, 不阻塞 1Hz safety timer
-// ================================================================
-
-void MissionFSM::trigger_rtl()
-{
-  if (!cli_set_mode_->wait_for_service(2s)) {
-    RCLCPP_ERROR(get_logger(), "/set_flight_mode 服务不可用, RTL 请求失败!");
-    return;
-  }
-  auto req = std::make_shared<easyfly_msgs::srv::SetFlightMode::Request>();
-  req->flight_mode = 6;  // RTL
-  cli_set_mode_->async_send_request(req);
-  RCLCPP_WARN(get_logger(), "已请求 PX4 进入 RTL");
-}
-
-// ================================================================
-// Q10: 取消当前正在执行的子 action
-// ================================================================
-
-void MissionFSM::cancel_current_step()
-{
-  std::lock_guard<std::mutex> lk(step_mtx_);
-  try {
-    if (cur_takeoff_gh_) cli_takeoff_->async_cancel_goal(cur_takeoff_gh_);
-    if (cur_land_gh_)    cli_land_->async_cancel_goal(cur_land_gh_);
-    if (cur_wp_gh_)      cli_waypoint_->async_cancel_goal(cur_wp_gh_);
-  } catch (const std::exception & e) {
-    RCLCPP_WARN(get_logger(), "取消子 action 异常: %s", e.what());
-  }
-  cur_takeoff_gh_.reset();
-  cur_land_gh_.reset();
-  cur_wp_gh_.reset();
-}
-
-// ================================================================
-// Publish mission status
-// ================================================================
-
-void MissionFSM::publish_status(uint8_t phase, const std::string & name,
-  int wp, int total, float prog)
-{
-  easyfly_msgs::msg::MissionStatus ms;
-  ms.header.stamp = now();
-  ms.mission_phase  = phase;
-  ms.phase_name     = name;
-  ms.current_waypoint = wp;
-  ms.total_waypoints  = total;
-  ms.progress       = prog;
-  ms.mission_success = false;
-  pub_status_->publish(ms);
-}
-
-// ================================================================
-// Action server callbacks
-// ================================================================
-
 rclcpp_action::GoalResponse MissionFSM::handle_mission_goal(
-  const rclcpp_action::GoalUUID &, std::shared_ptr<const ExecuteMission::Goal> goal)
-{
-  if (goal->mission_file.empty()) {
-    return rclcpp_action::GoalResponse::REJECT;
-  }
-  if (!state_received_) {
-    RCLCPP_WARN(get_logger(), "拒绝任务: 尚未收到 UAVState");
-    return rclcpp_action::GoalResponse::REJECT;
-  }
-  const auto uav = get_uav_snapshot();
-  if (!uav.connected || !uav.pose_valid || !uav.battery_valid) {
-    RCLCPP_WARN(get_logger(),
-      "拒绝任务: 遥测未就绪 (connected=%d pose=%d battery=%d)",
-      uav.connected, uav.pose_valid, uav.battery_valid);
-    return rclcpp_action::GoalResponse::REJECT;
-  }
-  bool expected = false;
-  {
-    std::lock_guard<std::mutex> lk(mission_mtx_);
-    if (!mission_active_.compare_exchange_strong(expected, true)) {
-      return rclcpp_action::GoalResponse::REJECT;
-    }
-    // Initialize before returning ACCEPT. Any cancel/emergency arriving after
-    // this point remains set; execute_mission must not reset these flags.
-    cancel_requested_ = false;
-    emergency_ = false;
-    rtl_triggered_ = false;
-    steps_completed_ = 0;
-    battery_invalid_since_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
-  }
+  const rclcpp_action::GoalUUID &,std::shared_ptr<const ExecuteMission::Goal> goal) {
+  if(mission_active_ || shutdown_ || !state_ready()) return rclcpp_action::GoalResponse::REJECT;
+  const auto validation=validateMissionFile(goal->mission_file);
+  if(!validation.valid()) return rclcpp_action::GoalResponse::REJECT;
+  std::lock_guard<std::mutex> lock(mission_mtx_);
+  if(mission_active_.exchange(true)) return rclcpp_action::GoalResponse::REJECT;
+  accepted_steps_=validation.steps; stop_reason_.clear();
+  cancel_requested_=false; rtl_triggered_=false; steps_completed_=0;
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
-
-rclcpp_action::CancelResponse MissionFSM::handle_mission_cancel(
-  const std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>>)
-{
-  // Q10: 立即打断当前步骤 (轮询点退出 + 取消子 action), 由任务线程收尾
-  cancel_requested_ = true;
-  emergency_        = true;
-  cancel_current_step();
+rclcpp_action::CancelResponse MissionFSM::handle_mission_cancel(std::shared_ptr<Handle>) {
+  cancel_requested_=true; stop("user_cancel"); cancel_current_step();
   return rclcpp_action::CancelResponse::ACCEPT;
 }
-
-void MissionFSM::handle_mission_accepted(
-  const std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>> gh)
-{
-  auto goal = gh->get_goal();
-  RCLCPP_INFO(get_logger(), "Mission accepted: %s", goal->mission_file.c_str());
-
-  // 受生命周期管理的 worker；goal callback 已原子预留 mission slot。
-  std::lock_guard<std::mutex> worker_lk(worker_mtx_);
-  if (worker_.joinable()) worker_.join();
+void MissionFSM::handle_mission_accepted(std::shared_ptr<Handle> handle) {
+  ownership_registry_.own(easyfly_core::goalIdentity(handle->get_goal_id()));
+  std::lock_guard<std::mutex> worker_lock(worker_mtx_);
+  if(worker_.joinable()) worker_.join();
+  std::vector<MissionStep> steps;
+  {std::lock_guard<std::mutex> lock(mission_mtx_); steps=accepted_steps_;}
+  worker_=std::thread([this,handle,steps] {execute_mission(steps,handle);});
+}
+void MissionFSM::publish_status(uint8_t p,const std::string &name,int index,int total,float progress,
+  bool success,const std::string &message) {
+  MS s; s.header.stamp=now(); s.mission_phase=p; s.phase_name=name;
+  s.current_waypoint=index; s.total_waypoints=total; s.progress=progress;
+  s.mission_success=success; s.message=message; pub_status_->publish(s);
+}
+void MissionFSM::feedback(uint8_t p,const std::string &name,int index,int total,float progress,
+  std::shared_ptr<Handle> handle) {
+  auto f=std::make_shared<ExecuteMission::Feedback>(); auto &s=f->current_status;
+  s.header.stamp=now(); s.mission_phase=p; s.phase_name=name;
+  s.current_waypoint=index; s.total_waypoints=total; s.progress=progress;
+  s.message=reason(); handle->publish_feedback(f);
+  publish_status(p,name,index,total,progress,false,s.message);
+}
+void MissionFSM::execute_mission(std::vector<MissionStep> steps,std::shared_ptr<Handle> handle) {
+  const int total=static_cast<int>(steps.size());
   try {
-    worker_ = std::thread([this, gh, goal]() {
-      try {
-      execute_mission(goal->mission_file, gh);
-      } catch (const std::exception & e) {
-        RCLCPP_ERROR(get_logger(), "任务执行异常: %s", e.what());
-        try {
-          auto res = std::make_shared<ExecuteMission::Result>();
-          res->success = false;
-          res->message = std::string("internal error: ") + e.what();
-          gh->abort(res);
-        } catch (...) {}
-        mission_active_ = false;
-      }
-    });
-  } catch (...) {
-    mission_active_ = false;
-    throw;
+    // Discover every required backend before the first flight action. No sync
+    // client wait occurs on the ROS executor thread.
+    std::set<std::string> required;
+    for(const auto &s:steps) if(!backend(s.type).empty()) required.insert(backend(s.type));
+    const auto deadline=Clock::now()+std::chrono::duration<double>(backend_discovery_s_);
+    while(reason().empty() && !shutdown_) {
+      bool ready=true; for(const auto &name:required) ready &= sdk_->server_ready(name);
+      if(ready) break;
+      if(Clock::now()>=deadline) {stop("required_backend_unavailable"); break;}
+      std::this_thread::sleep_for(20ms);
+    }
+    for(int i=0;i<total && reason().empty() && !shutdown_;++i)
+      if(!execute_step(steps[i],i,total,handle)) break;
+  } catch(const std::exception &e) {
+    stop(std::string("internal_error:")+e.what()); cancel_current_step();
+    std::shared_ptr<easyfly_core::Operation> operation;
+    {std::lock_guard<std::mutex> lock(step_mtx_); operation=current_;}
+    const auto deadline=Clock::now()+std::chrono::duration<double>(cancel_budget_s_);
+    while(operation && !shutdown_ && operation->snapshot().remote_execution_pending && Clock::now()<deadline)
+      operation->wait(.02);
   }
-}
-
-// ================================================================
-// YAML parse
-// ================================================================
-
-// ================================================================
-// Q8: 数值解析保护 — std::stod 遇非数字会抛异常, 此前在 detached
-// thread 中未捕获 → std::terminate → 整个 mission_fsm 进程崩溃。
-// 非法值返回 NaN, 由调用方判定文件无效并 abort mission。
-// ================================================================
-
-double MissionFSM::safe_stod(const std::string & val, const std::string & line)
-{
+  auto result=std::make_shared<ExecuteMission::Result>();
+  result->success=steps_completed_==total && reason().empty() && !shutdown_;
+  result->message=result->success ? "mission complete" : reason().empty() ? "step failed" : reason();
   try {
-    size_t pos = 0;
-    const double v = std::stod(val, &pos);
-    // Q8 加强: std::stod 只解析前缀 ("2.5米"→2.5 不报错!),
-    // 必须验证整个字符串被消费, 拒绝任何尾随垃圾
-    while (pos < val.size() && std::isspace(static_cast<unsigned char>(val[pos]))) ++pos;
-    if (pos != val.size()) {
-      RCLCPP_ERROR(get_logger(),
-        "任务文件数值含非法字符: '%s' (行: \"%s\")", val.c_str(), line.c_str());
-      return std::numeric_limits<double>::quiet_NaN();
-    }
-    return v;
-  } catch (const std::exception &) {
-    RCLCPP_ERROR(get_logger(),
-      "任务文件数值非法: '%s' (行: \"%s\")", val.c_str(), line.c_str());
-    return std::numeric_limits<double>::quiet_NaN();
+    if(cancel_requested_ && handle->is_canceling()) handle->canceled(result);
+    else if(result->success) handle->succeed(result); else handle->abort(result);
+  } catch(const std::exception &e) {RCLCPP_WARN(get_logger(),"public result: %s",e.what());}
+  // A public failure/cancel cannot release an unknown live child. Keep the
+  // mission slot fault-locked until a real remote terminal arrives.
+  std::shared_ptr<easyfly_core::Operation> operation;
+  {std::lock_guard<std::mutex> lock(step_mtx_); operation=current_;}
+  while(operation && operation->snapshot().remote_execution_pending && !shutdown_) {
+    try {publish_status(MS::EMERGENCY,"fault_owned_child",steps_completed_,total,
+      static_cast<float>(steps_completed_)/total,false,result->message);} catch(const std::exception &) {}
+    operation->cancel(); operation->wait(.05);
+  }
+  {std::lock_guard<std::mutex> lock(step_mtx_); current_.reset();}
+  try {publish_status(MS::IDLE,result->success?"complete":"idle",steps_completed_,total,
+    static_cast<float>(steps_completed_)/total,result->success,result->message);} catch(const std::exception &) {}
+  if(!shutdown_) {
+    ownership_registry_.release(easyfly_core::goalIdentity(handle->get_goal_id()));
+    mission_active_=false;
   }
 }
-
-std::vector<MissionStep> MissionFSM::parse_mission(const std::string & path)
-{
-  auto validation = validateLegacyMissionFile(path);
-  if (!validation.valid()) {
-    RCLCPP_ERROR(get_logger(), "Mission validation failed: %s", validation.error.c_str());
-  }
-  return validation.steps;
-}
-// Mission execution (runs in separate thread)
-// ================================================================
-
-void MissionFSM::execute_mission(const std::string & mission_file,
-  std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>> gh)
-{
-  auto steps = parse_mission(mission_file);
-  int total = static_cast<int>(steps.size());
-
-  if (steps.empty()) {
-    auto res = std::make_shared<ExecuteMission::Result>();
-    res->success = false;
-    res->message = "empty or invalid mission file";
-    gh->abort(res);
-    mission_active_ = false;
-    publish_status(easyfly_msgs::msg::MissionStatus::IDLE, "idle", -1, 0, 0.0f);
-    return;
-  }
-
-  RCLCPP_INFO(get_logger(), "Executing mission with %d steps", total);
-
-  for (int i = 0; i < total; ++i) {
-    // 步骤边界检查: 用户取消 / 低电量中止
-    if (cancel_requested_ || emergency_) break;
-
-    bool ok = execute_step(steps[i], i, total, gh);
-    if (!ok) break;
-  }
-
-  // ---- 终态统一处理 ----
-  auto res = std::make_shared<ExecuteMission::Result>();
-  res->success = false;
-  try {
-    if (cancel_requested_) {
-      res->message = "mission cancelled";
-      gh->canceled(res);
-      RCLCPP_WARN(get_logger(), "Mission cancelled");
-    } else if (emergency_) {
-      res->message = "emergency stop (low battery RTL)";
-      gh->abort(res);
-      RCLCPP_WARN(get_logger(), "Mission aborted: emergency");
-    } else if (steps_completed_ == total) {
-      res->success = true;
-      res->message = "mission complete";
-      gh->succeed(res);
-      RCLCPP_INFO(get_logger(), "Mission complete");
-    } else {
-      res->message = "step " + std::to_string(steps_completed_) + " failed";
-      gh->abort(res);
-      RCLCPP_ERROR(get_logger(), "Mission aborted: %s", res->message.c_str());
+bool MissionFSM::execute_step(const MissionStep &s,int index,int total,std::shared_ptr<Handle> handle) {
+  if(s.type=="track" && s.duration<=0) {stop("invalid_track_duration"); return false;}
+  {std::lock_guard<std::mutex> lock(step_mtx_);current_type_=s.type;}
+  const auto start=Clock::now();
+  const auto deadline=start+std::chrono::duration<double>(s.timeout);
+  if(s.type=="hover") {
+    // Wait only: the flight controller continues its existing hold. Legacy
+    // ground hover remains a non-flight delay.
+    while(std::chrono::duration<double>(Clock::now()-start).count()<s.wait) {
+      if(shutdown_ || !reason().empty()) return false;
+      if(Clock::now()>=deadline) {stop("hover_timeout"); return false;}
+      feedback(phase(s.type),s.type,index,total,static_cast<float>(index)/total,handle);
+      std::this_thread::sleep_for(20ms);
     }
-  } catch (const std::exception & e) {
-    // goal 已被客户端放弃等情况 — 只记日志
-    RCLCPP_WARN(get_logger(), "设置终态异常(客户端已断开?): %s", e.what());
-  }
-  mission_active_ = false;
-  publish_status(easyfly_msgs::msg::MissionStatus::IDLE, "idle", -1, 0, 0.0f);
-}
-
-// ================================================================
-// Execute single step
-// ================================================================
-
-bool MissionFSM::execute_step(const MissionStep & step, int idx, int total,
-  std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>> gh)
-{
-  float prog = static_cast<float>(idx) / std::max(total, 1);
-
-  // Q10: 轮询等待 future — 期间响应取消/紧急中止 (原 wait_for(120s) 完全不可打断)
-  // 返回: 0=ready, 1=timeout, 2=interrupted
-  auto poll = [this](auto & fut, std::chrono::steady_clock::duration timeout) -> int {
-    const auto t0 = std::chrono::steady_clock::now();
-    while (true) {
-      if (cancel_requested_ || emergency_) return 2;
-      if (fut.wait_for(std::chrono::milliseconds(200)) == std::future_status::ready) return 0;
-      if (std::chrono::steady_clock::now() - t0 > timeout) return 1;
-    }
-  };
-  (void)gh;
-
-  if (step.type == "takeoff") {
-    publish_status(easyfly_msgs::msg::MissionStatus::TAKEOFF, "takeoff", idx, total, prog);
-
-    if (!cli_takeoff_->wait_for_action_server(5s)) {
-      RCLCPP_ERROR(get_logger(), "Takeoff action server not available");
-      return false;
-    }
-
-    auto goal = Takeoff::Goal();
-    goal.target_altitude = step.altitude;
-    goal.climb_speed = step.climb_speed;
-
-    auto gh_future = cli_takeoff_->async_send_goal(goal);
-    int st = poll(gh_future, 60s);
-    if (st == 2) {
-      // 缺陷B修复: 取消落在 goal 接受窗口内时, 子 goal 可能已被接受,
-      // 补一次取消 (否则任务中止后飞机会继续执行该步骤)
-      if (gh_future.wait_for(1s) == std::future_status::ready) {
-        auto gh2 = gh_future.get();
-        if (gh2) cli_takeoff_->async_cancel_goal(gh2);
-      }
-      return false;
-    }
-    if (st == 1) { RCLCPP_ERROR(get_logger(), "Takeoff goal timeout"); return false; }
-
-    auto goal_handle = gh_future.get();
-    // 缺陷C修复: goal 被拒 (如悬停状态发起飞) 时 handle 为空, 必须显式报错
-    // (原代码直接 async_get_result(nullptr) 抛晦涩异常 "Goal handle is not known...")
-    if (!goal_handle) {
-      RCLCPP_ERROR(get_logger(),
-        "Takeoff goal 被拒 (flight_control 要求 NONE 状态才可起飞; 当前是否在悬停?)");
-      return false;
-    }
-    { std::lock_guard<std::mutex> lk(step_mtx_); cur_takeoff_gh_ = goal_handle; }
-
-    auto res_future = cli_takeoff_->async_get_result(goal_handle);
-    st = poll(res_future, 120s);
-    { std::lock_guard<std::mutex> lk(step_mtx_); cur_takeoff_gh_.reset(); }
-    if (st == 2) return false;
-    if (st == 1) { RCLCPP_ERROR(get_logger(), "Takeoff result timeout"); return false; }
-
-    auto wrapped = res_future.get();
-    RCLCPP_INFO(get_logger(), "Takeoff %s", wrapped.result->success ? "OK" : "FAIL");
-    if (wrapped.result->success) steps_completed_ = idx + 1;
-    return wrapped.result->success;
-
-  } else if (step.type == "waypoint") {
-    publish_status(easyfly_msgs::msg::MissionStatus::WAYPOINT, "waypoint", idx, total, prog);
-
-    if (!cli_waypoint_->wait_for_action_server(5s)) {
-      RCLCPP_ERROR(get_logger(), "Waypoint action server not available");
-      return false;
-    }
-
-    auto goal = GoToWaypoint::Goal();
-    goal.target_x = step.x;
-    goal.target_y = step.y;
-    goal.target_z = step.z;
-    goal.target_yaw = step.yaw;
-    goal.max_speed = step.max_speed;
-    goal.acceptance_radius = 0.5;
-
-    auto gh_future = cli_waypoint_->async_send_goal(goal);
-    int st = poll(gh_future, 60s);
-    if (st == 2) {
-      // 缺陷B修复: 同 takeoff — 取消窗口内已接受的 goal 补取消
-      if (gh_future.wait_for(1s) == std::future_status::ready) {
-        auto gh2 = gh_future.get();
-        if (gh2) cli_waypoint_->async_cancel_goal(gh2);
-      }
-      return false;
-    }
-    if (st == 1) { RCLCPP_ERROR(get_logger(), "Waypoint goal timeout"); return false; }
-
-    auto goal_handle = gh_future.get();
-    if (!goal_handle) {
-      RCLCPP_ERROR(get_logger(), "Waypoint goal rejected");
-      return false;
-    }
-    { std::lock_guard<std::mutex> lk(step_mtx_); cur_wp_gh_ = goal_handle; }
-
-    auto res_future = cli_waypoint_->async_get_result(goal_handle);
-    st = poll(res_future, 120s);
-    { std::lock_guard<std::mutex> lk(step_mtx_); cur_wp_gh_.reset(); }
-    if (st == 2) return false;
-    if (st == 1) { RCLCPP_ERROR(get_logger(), "Waypoint result timeout"); return false; }
-
-    auto wrapped = res_future.get();
-    RCLCPP_INFO(get_logger(), "Waypoint result: success=%d code=%d",
-      wrapped.result ? wrapped.result->success : -1,
-      static_cast<int>(wrapped.code));
-    RCLCPP_INFO(get_logger(), "Waypoint %s", wrapped.result->success ? "OK" : "FAIL");
-    if (wrapped.result->success) steps_completed_ = idx + 1;
-    return wrapped.result->success;
-
-  } else if (step.type == "land") {
-    publish_status(easyfly_msgs::msg::MissionStatus::LAND, "land", idx, total, prog);
-
-    if (!cli_land_->wait_for_action_server(5s)) {
-      RCLCPP_ERROR(get_logger(), "Land action server not available");
-      return false;
-    }
-
-    auto goal = Land::Goal();
-    auto gh_future = cli_land_->async_send_goal(goal);
-    int st = poll(gh_future, 60s);
-    if (st == 2) {
-      // 缺陷B修复: 同 takeoff — 取消窗口内已接受的 goal 补取消
-      if (gh_future.wait_for(1s) == std::future_status::ready) {
-        auto gh2 = gh_future.get();
-        if (gh2) cli_land_->async_cancel_goal(gh2);
-      }
-      return false;
-    }
-    if (st == 1) { RCLCPP_ERROR(get_logger(), "Land goal timeout"); return false; }
-
-    auto goal_handle = gh_future.get();
-    if (!goal_handle) {   // 缺陷C: 同 takeoff — 判空防晦涩异常
-      RCLCPP_ERROR(get_logger(), "Land goal 被拒 (要求 HOVER 状态)");
-      return false;
-    }
-    { std::lock_guard<std::mutex> lk(step_mtx_); cur_land_gh_ = goal_handle; }
-
-    auto res_future = cli_land_->async_get_result(goal_handle);
-    st = poll(res_future, 90s);
-    { std::lock_guard<std::mutex> lk(step_mtx_); cur_land_gh_.reset(); }
-    if (st == 2) return false;
-    if (st == 1) { RCLCPP_ERROR(get_logger(), "Land result timeout"); return false; }
-
-    auto wrapped = res_future.get();
-    RCLCPP_INFO(get_logger(), "Land %s", wrapped.result->success ? "OK" : "FAIL");
-    if (wrapped.result->success) steps_completed_ = idx + 1;
-    return wrapped.result->success;
-
-  } else if (step.type == "hover") {
-    publish_status(easyfly_msgs::msg::MissionStatus::HOVER, "hover", idx, total, prog);
-    RCLCPP_INFO(get_logger(), "Hover %.0fs", step.wait);
-    // Q10: 可中断等待 (原 sleep_for 整段阻塞, 取消最长卡 wait 秒)
-    const auto t0 = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - t0 < std::chrono::duration<double>(step.wait)) {
-      if (cancel_requested_ || emergency_) return false;
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    steps_completed_ = idx + 1;
+    if(Clock::now()>deadline) {stop("hover_timeout");return false;}
+    steps_completed_=index+1;
+    feedback(phase(s.type),s.type,index+1,total,static_cast<float>(index+1)/total,handle);
     return true;
   }
-
-  RCLCPP_WARN(get_logger(), "Unknown step type: %s", step.type.c_str());
-  return false;
+  if(!sdk_->server_ready(backend(s.type))) {stop("step_backend_unavailable"); return false;}
+  std::shared_ptr<easyfly_core::Operation> operation;
+  if(s.type=="takeoff") {
+    easyfly_msgs::action::Takeoff::Goal g; g.target_altitude=s.altitude; g.climb_speed=s.climb_speed;
+    operation=sdk_->takeoff(g);
+  } else if(s.type=="waypoint") {
+    easyfly_msgs::action::GoToWaypoint::Goal g;
+    g.target_x=s.x;g.target_y=s.y;g.target_z=s.z;g.target_yaw=s.yaw;
+    g.max_speed=s.max_speed;g.acceptance_radius=s.acceptance_radius;operation=sdk_->go_to(g);
+  } else if(s.type=="navigate") {
+    easyfly_msgs::action::NavigateTo::Goal g;
+    g.target_x=s.x;g.target_y=s.y;g.target_z=s.z;g.max_speed=s.max_speed;operation=sdk_->navigate(g);
+  } else if(s.type=="track") {
+    easyfly_msgs::action::TrackTarget::Goal g;
+    g.target_id=s.target_id;g.follow_distance=s.follow_distance;g.follow_height=s.follow_height;
+    operation=sdk_->track(g);
+  } else if(s.type=="search") {
+    easyfly_msgs::action::SearchArea::Goal g;
+    g.center_x=s.center_x;g.center_y=s.center_y;g.area_width=s.area_width;g.area_height=s.area_height;
+    g.search_altitude=s.altitude;g.search_speed=s.max_speed;g.search_pattern=s.search_pattern;
+    operation=sdk_->search(g);
+  } else if(s.type=="land") operation=sdk_->land(easyfly_msgs::action::Land::Goal{});
+  else {stop("unsupported_step"); return false;}
+  {std::lock_guard<std::mutex> lock(step_mtx_);current_=operation;}
+  Clock::time_point accepted_at{};
+  bool duration_cancel=false;
+  while(!shutdown_ && reason().empty()) {
+    auto snapshot=operation->snapshot();
+    if(Clock::now()>=deadline) {stop("step_timeout");break;}
+    if(snapshot.admission==easyfly_core::Admission::Accepted && accepted_at==Clock::time_point{})
+      accepted_at=Clock::now();
+    if(!snapshot.remote_execution_pending ||
+       (snapshot.action_terminal_received && snapshot.status!=Status::Succeeded)) break;
+    if(snapshot.local_status!=easyfly_core::LocalStatus::Active) {stop("child_local_fault");break;}
+    const auto u=sdk_->state().value;
+    if(u.flight_mode==7 && s.type!="land") {stop("external_land_takeover");break;}
+    if(s.type=="track" && s.duration>0 && accepted_at!=Clock::time_point{} &&
+       std::chrono::duration<double>(Clock::now()-accepted_at).count()>=s.duration) {
+      duration_cancel=true; operation->cancel(); break;
+    }
+    float fraction=0;
+    const auto p=snapshot.feedback.numbers.find("progress");
+    if(p!=snapshot.feedback.numbers.end() && std::isfinite(p->second))
+      fraction=std::clamp(static_cast<float>(p->second),0.f,.99f);
+    feedback(phase(s.type),s.type,index,total,(index+fraction)/total,handle);
+    operation->wait(.02);
+  }
+  if(operation->snapshot().remote_execution_pending) {
+    operation->cancel();
+    const auto cancel_end=Clock::now()+std::chrono::duration<double>(cancel_budget_s_);
+    while(!shutdown_ && operation->snapshot().remote_execution_pending && Clock::now()<cancel_end)
+      operation->wait(.02);
+  }
+  const auto final=operation->snapshot();
+  if(reason().empty() && Clock::now()>deadline) stop("step_timeout");
+  const bool ok=reason().empty() && !shutdown_ && !final.remote_execution_pending &&
+    (s.type=="track" ? duration_cancel && final.status==Status::Canceled :
+      final.status==Status::Succeeded && final.success);
+  if(ok) {
+    {std::lock_guard<std::mutex> lock(step_mtx_);current_.reset();}
+    steps_completed_=index+1;
+    feedback(phase(s.type),s.type,index+1,total,static_cast<float>(index+1)/total,handle);
+  } else if(reason().empty()) stop(final.remote_execution_pending ? "child_cancel_unresolved" :
+    "step_failed:"+final.message);
+  return ok;
 }
-
-}  // namespace easyfly_mission_fsm
+}

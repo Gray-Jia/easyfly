@@ -21,6 +21,7 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>easyfly_msgs</depend>
+  <depend>easyfly_core</depend>
   <depend>yaml-cpp</depend>
   <exec_depend>easyfly_obstacle_avoidance</exec_depend>
 

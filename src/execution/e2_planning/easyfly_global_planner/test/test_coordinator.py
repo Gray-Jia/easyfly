@@ -11,6 +11,7 @@ from rclpy.action import ActionClient, ActionServer, CancelResponse
 from easyfly_msgs.action import NavigateTo
 from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
+from easyfly_msgs.srv import GetActionOwnership
 
 
 class CoordinatorTest(unittest.TestCase):
@@ -47,6 +48,7 @@ class CoordinatorTest(unittest.TestCase):
                                     'navigation_coordinator_node', '--ros-args',
                                     '-p', 'cancel_timeout:=0.2'], start_new_session=True)
         client = ActionClient(node, NavigateTo, '/navigate')
+        ownership = node.create_client(GetActionOwnership, '/navigation/ownership')
 
         def wait(future):
             deadline = time.monotonic() + 10
@@ -57,6 +59,8 @@ class CoordinatorTest(unittest.TestCase):
 
         try:
             self.assertTrue(client.wait_for_server(timeout_sec=10))
+            self.assertTrue(ownership.wait_for_service(timeout_sec=5))
+            self.assertEqual(wait(ownership.call_async(GetActionOwnership.Request(goal_id='unknown'))).state, 0)
             for target, expected_status in [(1.0, 4), (2.0, 6)]:
                 goal = NavigateTo.Goal()
                 goal.target_x = target
@@ -78,11 +82,14 @@ class CoordinatorTest(unittest.TestCase):
             wait(handle.cancel_goal_async())
             result = wait(handle.get_result_async())
             self.assertEqual(result.status, 6)  # public abort before child terminal
+            identity = bytes(handle.goal_id.uuid).hex()
+            self.assertEqual(wait(ownership.call_async(GetActionOwnership.Request(goal_id=identity))).state, 1)
             rejected = wait(client.send_goal_async(goal))
             self.assertFalse(rejected.accepted)  # fault retains child ownership
             deadline = time.monotonic() + 0.8
             while time.monotonic() < deadline:
                 rclpy.spin_once(node, timeout_sec=0.05)
+            self.assertEqual(wait(ownership.call_async(GetActionOwnership.Request(goal_id=identity))).state, 2)
             goal.target_x = 1.0
             handle = wait(client.send_goal_async(goal))
             self.assertTrue(handle.accepted)  # true child result releases the slot
@@ -139,6 +146,7 @@ class CoordinatorTest(unittest.TestCase):
                 process.wait(timeout=5)
             server.destroy()
             client.destroy()
+            node.destroy_client(ownership)
             node.destroy_node()
             rclpy.shutdown()
 

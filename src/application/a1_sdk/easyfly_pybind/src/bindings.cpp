@@ -31,6 +31,9 @@ PYBIND11_MODULE(easyfly_pybind, m) {
     .def_readonly("cancel_status", &OperationSnapshot::cancel_status)
     .def_readonly("remote_execution_pending", &OperationSnapshot::remote_execution_pending)
     .def_readonly("success", &OperationSnapshot::success)
+    .def_readonly("action_terminal_received", &OperationSnapshot::action_terminal_received)
+    .def_readonly("result_received_seconds", &OperationSnapshot::result_received_seconds)
+    .def_readonly("goal_id", &OperationSnapshot::goal_id)
     .def_readonly("message", &OperationSnapshot::message)
     .def_readonly("local_message", &OperationSnapshot::local_message)
     .def_readonly("cancel_message", &OperationSnapshot::cancel_message)
@@ -46,15 +49,17 @@ PYBIND11_MODULE(easyfly_pybind, m) {
     .def("wait", &Operation::wait, py::arg("timeout_seconds"), py::call_guard<py::gil_scoped_release>())
     .def("cancel", &Operation::cancel);
   py::class_<Client>(m, "Client")
-    .def(py::init([](std::size_t capacity, double admission_timeout, bool automatic_cancel, bool sim_time) {
+    .def(py::init([](std::size_t capacity, double admission_timeout, bool automatic_cancel, bool sim_time, bool ownership) {
       ClientOptions o;
       o.max_pending_operations = capacity;
       o.admission_timeout_seconds = admission_timeout;
       o.cancel_on_admission_timeout = automatic_cancel;
       o.use_sim_time = sim_time;
+      o.require_managed_ownership = ownership;
       return std::make_unique<Client>(o);
     }), py::arg("max_pending_operations") = 32, py::arg("admission_timeout_seconds") = 5.0,
-        py::arg("cancel_on_admission_timeout") = false, py::arg("use_sim_time") = false)
+        py::arg("cancel_on_admission_timeout") = false, py::arg("use_sim_time") = false,
+        py::arg("require_managed_ownership") = false)
     .def("running", &Client::running)
     .def("server_ready", &Client::server_ready)
     .def("pending_operations", &Client::pending_operations)

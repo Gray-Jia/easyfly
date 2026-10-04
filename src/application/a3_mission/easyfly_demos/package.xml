@@ -3,13 +3,23 @@
 <package format="3">
   <name>easyfly_demos</name>
   <version>0.1.0</version>
-  <description>TODO: easyfly_demos</description>
+  <description>Query/validate-first C++ and Python SDK mission and exact cancellation examples</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>easyfly_core</depend>
+  <depend>easyfly_mission_fsm</depend>
+  <depend>ament_index_cpp</depend>
+  <exec_depend>easyfly_pybind</exec_depend>
+  <exec_depend>easyfly_mission_scripts</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>rclpy</test_depend>
+  <test_depend>easyfly_mission_srvs</test_depend>
+  <test_depend>easyfly_global_planner</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>

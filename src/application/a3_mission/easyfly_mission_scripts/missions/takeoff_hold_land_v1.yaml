@@ -1,0 +1,8 @@
+schema_version: 1
+frame_id: odom
+units: {position: m, angle: rad, time: s}
+failure_policy: abort
+steps:
+  - {type: takeoff, altitude: 1.5, climb_speed: 1.0, timeout: 60}
+  - {type: hover, duration: 2, timeout: 5}
+  - {type: land, timeout: 60}

@@ -1,10 +1,10 @@
-# 包成熟度登记（D0 / D1 / D2）
+# 包成熟度登记（D0 / D1 / D2 / D3）
 
 登记日期：2026-10-04；发现方式：`colcon list --base-paths src`，共67包。分类依据源码、CMake及当前开发修改；此清单不是功能完成百分比。
 
-“测试源码存在”只表示文件存在，不代表本轮运行。历史动态列来自schedule-v3/question-v2最终记录；本轮仅做离线/组件/相关构建，不做全链动态复验。各项实际结果以schedule-v4为准。
+“测试源码存在”只表示文件存在，不代表本轮运行。历史动态列来自schedule-v3/question-v2最终记录；D3新增实际节点软件任务链与相关导航软件闭环，不代表PX4/SITL/实机或G9+复验。各项实际结果以schedule-v4为准。
 
-D0登记时有29个CMake明确TODO骨架；D1为28个，D2将core/pybind/mission_srvs/perception_srvs落地后为24个。easyfly_params提供配置工具及受约束的本地类型化服务，不代理任意飞行参数写入。下表保留D0范围列，增加D1/D2实现事实；新开发实际验证以schedule-v4为准，不按包数计算完成百分比。
+D0登记时有29个CMake明确TODO骨架；D1为28个，D2为24个，D3将mission_scripts模板资源与demos真实示例落地后为22个。easyfly_params提供配置工具及受约束的本地类型化服务，不代理任意飞行参数写入。下表保留D0范围列，增加D1/D2/D3实现事实；新开发实际验证以schedule-v4为准，不按包数计算完成百分比。
 
 | 包 | 当前实现类别 | 组件验证依据 | 历史集成/动态依据 | D0本轮范围 |
 |---|---|---|---|---|
@@ -13,8 +13,8 @@ D0登记时有29个CMake明确TODO骨架；D1为28个，D2将core/pybind/mission
 | [easyfly_camera_calib](../../src/perception/p1_preprocess/easyfly_camera_calib) | 已有功能实现（按现有边界） | 未发现test*.cpp/py；不推断无全部验证 | G6.1（非完整标定工具） | 未重新执行该包测试/构建 |
 | [easyfly_color_line_detection](../../src/perception/p2_detection/easyfly_color_line_detection) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
 | [easyfly_coord_transform](../../src/perception/p1_preprocess/easyfly_coord_transform) | 已有功能实现（按现有边界） | 未发现test*.cpp/py；不推断无全部验证 | G6.1 | 未重新执行该包测试/构建 |
-| [easyfly_core](../../src/application/a1_sdk/easyfly_core) | D2 C++异步SDK，独立executor/所有权drain | D2真实ROS mock及软件plant，见schedule-v4 | 无新增PX4/硬件签收 | D0未构建，D2另有记录 |
-| [easyfly_demos](../../src/application/a3_mission/easyfly_demos) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
+| [easyfly_core](../../src/application/a1_sdk/easyfly_core) | D2异步SDK；D3新增Search及递归UUID排空 | D3真实ROS 9场景及相关软件plant，见schedule-v4 | 无新增PX4/硬件签收 | D0未构建，D2/D3另有记录 |
+| [easyfly_demos](../../src/application/a3_mission/easyfly_demos) | D3安装C++/Python校验与显式执行/取消示例 | D3真实任务链3场景及安装示例 | 软件闭环，不是SITL/实机 | D0未构建，D3另有记录 |
 | [easyfly_depth_estimation](../../src/perception/p4_fusion/easyfly_depth_estimation) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
 | [easyfly_desktop](../../src/easyfly_ui/easyfly_desktop) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
 | [easyfly_ellipse_detection](../../src/perception/p2_detection/easyfly_ellipse_detection) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
@@ -31,9 +31,9 @@ D0登记时有29个CMake明确TODO骨架；D1为28个，D2将core/pybind/mission
 | [easyfly_local_planner](../../src/execution/e2_planning/easyfly_local_planner) | EGO启动适配 | 未发现test*.cpp/py；不推断无全部验证 | G8 | 未重新执行该包测试/构建 |
 | [easyfly_mavlink_bridge](../../src/communication/c2_protocol/easyfly_mavlink_bridge) | 已有功能实现（按现有边界） | 测试源码存在；是否通过另查执行记录 | G4-G5 | 未重新执行该包测试/构建 |
 | [easyfly_mesh_comm](../../src/communication/c2_protocol/easyfly_mesh_comm) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
-| [easyfly_mission_fsm](../../src/execution/e1_state_machine/easyfly_mission_fsm) | 已有功能实现（按现有边界） | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
-| [easyfly_mission_scripts](../../src/application/a3_mission/easyfly_mission_scripts) | 构建骨架，无功能目标 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
-| [easyfly_mission_srvs](../../src/application/a2_services/easyfly_mission_srvs) | D2目录/校验/执行/查询/精确取消门面，复用既有FSM | D2实际服务+mock后端回归，见schedule-v4 | 正式任务引擎与搜索仍在D3 | D0未构建，D2另有记录 |
+| [easyfly_mission_fsm](../../src/execution/e1_state_machine/easyfly_mission_fsm) | D3版本化/旧任务解析、7类顺序步骤与弓字搜索 | D3 6个行为CTest；任务13场景、搜索8场景 | D3真实节点软件任务链；无硬件签收 | D0未构建，D3另有记录 |
+| [easyfly_mission_scripts](../../src/application/a3_mission/easyfly_mission_scripts) | D3四类版本化任务模板资源，不复制执行器 | 安装校验与四模板任务链执行 | 软件闭环，不保证真实视觉/绕障场景 | D0未构建，D3另有记录 |
+| [easyfly_mission_srvs](../../src/application/a2_services/easyfly_mission_srvs) | D2门面；D3接入正式格式与递归排空 | 行为3 CTest通过、服务9场景；4项lint欠账见schedule-v4 | D3真实任务服务链，不是实机 | D0未构建，D2/D3另有记录 |
 | [easyfly_msgs](../../src/easyfly_common/easyfly_msgs) | 消息/服务/动作接口 | 未发现test*.cpp/py；不推断无全部验证 | 未逐包签收；无独立动态完成结论 | 未重新执行该包测试/构建 |
 | [easyfly_multi_object_tracking](../../src/perception/p3_tracking/easyfly_multi_object_tracking) | 已有功能实现（按现有边界） | 测试源码存在；是否通过另查执行记录 | G6.4 | 未重新执行该包测试/构建 |
 | [easyfly_object_detection](../../src/perception/p2_detection/easyfly_object_detection) | 已有功能实现（按现有边界） | 测试源码存在；是否通过另查执行记录 | G6.2 | 未重新执行该包测试/构建 |
@@ -79,7 +79,7 @@ D0登记时有29个CMake明确TODO骨架；D1为28个，D2将core/pybind/mission
 ## 特别边界
 
 - easyfly_rc_receiver是MAVROS RC通道转发，非直连SBUS驱动；easyfly_serial是库，不能推断所有设备协议可用。
-- semantic_map以几何障碍为主；GPS/UDP/Mesh/视频、其余检测/跟踪/融合及UI骨架仍待相应D批次实现。D2已实现现有动作SDK与参数/感知/旧任务服务，正式任务引擎等后续能力不在其交付范围。
+- semantic_map以几何障碍为主；GPS/UDP/Mesh/视频、其余检测/跟踪/融合及UI骨架仍待相应D批次实现。D3已实现第一版顺序任务、弓字搜索与模板；分支/重试、其他搜索模式和实机联调仍不在其交付范围。
 - ego_to_mavros为上游示例，不应与EasyFly统一控制出口同时启用。
 - realsense2_camera与Livox的代码集成/构建不等于本轮真实设备联调；传感器固件和外参尚未冻结。
 - 资源与接口包不以“没有.cpp”判为骨架；生成接口、配置和模型是其真实职责。

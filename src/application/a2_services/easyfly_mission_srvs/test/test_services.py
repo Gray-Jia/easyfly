@@ -6,18 +6,30 @@ import subprocess
 import tempfile
 import time
 import unittest
+import threading
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from easyfly_msgs.action import ExecuteMission
-from easyfly_msgs.srv import ManageMission, GetCapabilities
+from easyfly_msgs.srv import ManageMission, GetCapabilities, GetActionOwnership
 
 
 class MissionServiceTest(unittest.TestCase):
     def run_scenario(self, scenario):
         rclpy.init()
         node = rclpy.create_node('mission_service_backend')
+        backend_node = rclpy.create_node('late_cancel_backend') if scenario == 'late_cancel_reject' else node
         handles, snapshots, events = [], [], []
+        released, known, release_after = set(), set(), {}
+        def query_ownership(request, response):
+            response.goal_id = request.goal_id
+            if request.goal_id in release_after and time.monotonic() >= release_after[request.goal_id]:
+                released.add(request.goal_id)
+            response.state = 2 if request.goal_id in released else 1 if request.goal_id in known else 0
+            return response
+        owner = node.create_service(GetActionOwnership, '/mission/ownership', query_ownership)
         directory = tempfile.TemporaryDirectory(prefix='easyfly-d2-catalog-')
         root = Path(directory.name)
         (root / 'valid.mission').write_text('type=hover\nwait=0.1\n')
@@ -32,6 +44,8 @@ class MissionServiceTest(unittest.TestCase):
             return GoalResponse.REJECT if scenario == 'reject' else GoalResponse.ACCEPT
 
         async def execute(handle):
+            identity = bytes(handle.goal_id.uuid).hex()
+            known.add(identity)
             handles.append(handle)
             path = Path(handle.request.mission_file)
             snapshots.append(path)
@@ -55,13 +69,17 @@ class MissionServiceTest(unittest.TestCase):
                         return  # ACK arrived, but the backend is not terminal.
                     events.append('canceled')
                     complete.set_result(False)
-                elif scenario in ('success', 'fail') and time.monotonic() - started > 0.3:
+                elif scenario in ('success', 'fail', 'managed_drain', 'late_cancel_reject') and time.monotonic() - started > 0.3:
                     complete.set_result(scenario == 'success')
 
-            timer = node.create_timer(0.02, poll)
+            timer = backend_node.create_timer(0.02, poll)
             result = await complete
-            node.destroy_timer(timer)
+            backend_node.destroy_timer(timer)
             response = ExecuteMission.Result(success=result, message='backend result')
+            if scenario in ('managed_drain', 'late_cancel_reject'):
+                release_after[identity] = time.monotonic() + .6
+            else:
+                released.add(identity)
             if handle.is_cancel_requested:
                 handle.canceled()
             elif result:
@@ -70,9 +88,20 @@ class MissionServiceTest(unittest.TestCase):
                 handle.abort()
             return response
 
+        def cancellation(_):
+            if scenario == 'late_cancel_reject':
+                time.sleep(.5)
+                return CancelResponse.REJECT
+            return CancelResponse.ACCEPT
         backend = None if scenario == 'unavailable' else ActionServer(
-            node, ExecuteMission, '/execute_mission', execute, goal_callback=accept,
-            cancel_callback=lambda _: CancelResponse.ACCEPT)
+            backend_node, ExecuteMission, '/execute_mission', execute, goal_callback=accept,
+            cancel_callback=cancellation, callback_group=ReentrantCallbackGroup())
+        backend_executor, backend_thread = None, None
+        if backend_node != node:
+            backend_executor = MultiThreadedExecutor(num_threads=3)
+            backend_executor.add_node(backend_node)
+            backend_thread = threading.Thread(target=backend_executor.spin)
+            backend_thread.start()
         log = tempfile.TemporaryFile(mode='w+')
         process = subprocess.Popen(['ros2', 'run', 'easyfly_mission_srvs', 'mission_services',
                                     '--ros-args', '-p', 'mission_directory:=' + str(root),
@@ -110,7 +139,7 @@ class MissionServiceTest(unittest.TestCase):
             self.assertFalse(call('unsupported').success)
             self.assertFalse(call('cancel', execution='old-unknown-id').success)
             response = wait(cap.call_async(GetCapabilities.Request()))
-            self.assertEqual(response.implemented, [True, False, False])
+            self.assertEqual(response.implemented, [True, True, True])
             result = call('start', 'valid.mission')
             if scenario == 'unavailable':
                 self.assertFalse(result.success)
@@ -123,6 +152,23 @@ class MissionServiceTest(unittest.TestCase):
                 return
             self.assertTrue(result.execution_id)
             execution = result.execution_id
+            if scenario in ('managed_drain', 'late_cancel_reject'):
+                if scenario == 'late_cancel_reject':
+                    call('cancel', execution=execution)
+                until = time.monotonic() + 3
+                current = call('query', execution=execution)
+                while current.status != 'failed' and time.monotonic() < until:
+                    current = call('query', execution=execution)
+                self.assertEqual(current.status, 'failed')
+                self.assertTrue(current.execution_pending)
+                self.assertTrue(snapshots[0].exists())
+                self.assertEqual(call('start', 'valid.mission').status, 'busy')
+                while current.execution_pending and time.monotonic() < until:
+                    current = call('query', execution=execution)
+                self.assertFalse(current.execution_pending)
+                self.assertEqual(current.status, 'failed')
+                self.assertFalse(snapshots[0].exists())
+                return
             if scenario == 'late':
                 self.assertFalse(result.success)
                 self.assertEqual(result.status, 'pending_timeout')
@@ -142,7 +188,7 @@ class MissionServiceTest(unittest.TestCase):
             until = time.monotonic() + 5
             while time.monotonic() < until:
                 result = call('query', execution=execution)
-                if result.status in ('succeeded', 'failed', 'canceled'):
+                if result.status in ('succeeded', 'failed', 'canceled') and not result.execution_pending:
                     break
                 rclpy.spin_once(node, timeout_sec=0.02)
             expected = 'succeeded' if scenario == 'success' else 'failed' if scenario == 'fail' else 'canceled'
@@ -170,8 +216,13 @@ class MissionServiceTest(unittest.TestCase):
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=5)
             log.close()
+            node.destroy_service(owner)
             if backend:
                 backend.destroy()
+            if backend_executor:
+                backend_executor.shutdown(timeout_sec=5)
+                backend_thread.join(timeout=5)
+                backend_node.destroy_node()
             node.destroy_node()
             rclpy.shutdown()
             directory.cleanup()
@@ -196,6 +247,12 @@ class MissionServiceTest(unittest.TestCase):
 
     def test_unavailable(self):
         self.run_scenario('unavailable')
+
+    def test_public_terminal_does_not_delete_snapshot_or_release_catalog_slot(self):
+        self.run_scenario('managed_drain')
+
+    def test_late_cancel_rejection_cannot_overwrite_real_result_during_drain(self):
+        self.run_scenario('late_cancel_reject')
 
 
 if __name__ == '__main__':

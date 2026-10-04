@@ -2,12 +2,12 @@
 
 `Client` owns a separate ROS Context, Node, and one executor thread. It neither
 borrows nor shuts down the application's ROS context. It publishes no control
-commands. Seven typed action methods are provided: `takeoff`, `land`, `go_to`,
-`navigate`, `follow`, `track`, `execute_mission`.
+commands. Eight typed action methods are provided: `takeoff`, `land`, `go_to`,
+`navigate`, `follow`, `track`, `search`, `execute_mission`.
 
 `running()` describes this SDK runtime, not vehicle readiness. `server_ready`
 checks a particular endpoint using keys `takeoff`, `land`, `goto`, `navigate`,
-`follow`, `track`, `execute_mission`. Discovery is asynchronous; an unavailable
+`follow`, `track`, `search`, `execute_mission`. Discovery is asynchronous; an unavailable
 server produces an explicit `Unavailable` operation, not success. Platform flight
 admission remains the server's responsibility.
 
@@ -22,6 +22,15 @@ budget; cleanup timeout can return false without changing the genuine result in
 its snapshot. Other pending operations are not covered by one operation's wait.
 `cancel()` queues cancellation of that exact goal handle. Accepted cancel
 responses do NOT imply stopped execution; wait for the real result.
+
+D3 managed navigation, search and mission endpoints can finish their public
+Action before internal children stop. Set `ClientOptions.require_managed_ownership=true`
+for these endpoints: readiness also requires the matching UUID ownership service,
+and drain waits for explicit RELEASED. `action_terminal_received` and `goal_id`
+in snapshots distinguish the public result from `remote_execution_pending`.
+UNKNOWN, missing peers and invalid identity echoes retain ownership. The option
+defaults false for legacy standalone servers; default mode uses the protocol
+only when discovered at send time. See [D3 contract](../../../../docs/development/d3-missions.md).
 
 The independent admission response timeout defaults to five seconds. It records
 `AdmissionTimedOut` while keeping remote ownership unresolved. Automatic exact

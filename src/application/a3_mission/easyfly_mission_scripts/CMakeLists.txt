@@ -3,7 +3,8 @@ project(easyfly_mission_scripts)
 
 find_package(ament_cmake REQUIRED)
 
-# TODO: add library/executable targets
+# Resource package: templates only, no second mission execution engine.
+install(DIRECTORY missions DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

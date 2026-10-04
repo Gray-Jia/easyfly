@@ -8,9 +8,17 @@ only requests exact cancellation; check remote final status separately.
 `Client` supports `state`, `takeoff`, `land`, `navigate`, `execute_mission`,
 `server_ready`, `running`, `pending_operations`, `close` and a context manager.
 Constructor options: max_pending_operations=32, admission_timeout_seconds=5,
-cancel_on_admission_timeout=False, use_sim_time=False.
+cancel_on_admission_timeout=False, use_sim_time=False, require_managed_ownership=False.
 Context manager exit initiates close without pretending unresolved goals stopped.
 See easyfly_core's lifecycle and retained-drain limitations.
+
+For D3 managed navigation/mission execution use `require_managed_ownership=True`.
+An Action terminal result (`action_terminal_received`) is separate from recursive
+drain (`remote_execution_pending`); only matching UUID RELEASED confirms drain.
+Unknown or missing ownership services do not unlock an operation. Python still
+binds the same C++ implementation, including these snapshot fields.
+The minimal direct Python action set remains unchanged; track/search steps are
+available through `execute_mission` rather than new direct Python methods.
 
 Default example queries only:
 

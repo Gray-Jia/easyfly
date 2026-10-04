@@ -1,0 +1,9 @@
+# strip_spacing is configured on search_area_node, not inferred from a camera.
+schema_version: 1
+frame_id: odom
+units: {position: m, angle: rad, time: s}
+failure_policy: abort
+steps:
+  - {type: takeoff, altitude: 1.5, timeout: 60}
+  - {type: search, center_x: 0, center_y: 0, area_width: 4, area_height: 3, altitude: 1.5, max_speed: 1, pattern: boustrophedon, timeout: 120}
+  - {type: land, timeout: 60}

@@ -6,6 +6,7 @@
 #include <easyfly_msgs/action/follow_trajectory.hpp>
 #include <easyfly_msgs/action/track_target.hpp>
 #include <easyfly_msgs/action/execute_mission.hpp>
+#include <easyfly_msgs/action/search_area.hpp>
 #include <easyfly_msgs/msg/uav_state.hpp>
 #include <map>
 #include <memory>
@@ -28,6 +29,9 @@ struct OperationSnapshot {
   CancelStatus cancel_status{CancelStatus::None};
   bool remote_execution_pending{true};
   bool success{false};
+  bool action_terminal_received{false};
+  double result_received_seconds{0.0}; // monotonic steady-clock epoch, not ROS time
+  std::string goal_id;
   std::string message, local_message, cancel_message;
   Feedback feedback;
 };
@@ -44,6 +48,7 @@ struct ClientOptions {
   // Independent admission policy, not Operation::wait's observation timeout.
   bool cancel_on_admission_timeout{false};
   bool use_sim_time{false};
+  bool require_managed_ownership{false};
 };
 struct Core;
 class Operation {
@@ -81,6 +86,7 @@ class Client {
   std::shared_ptr<Operation> follow(const easyfly_msgs::action::FollowTrajectory::Goal &);
   std::shared_ptr<Operation> track(const easyfly_msgs::action::TrackTarget::Goal &);
   std::shared_ptr<Operation> execute_mission(const easyfly_msgs::action::ExecuteMission::Goal &);
+  std::shared_ptr<Operation> search(const easyfly_msgs::action::SearchArea::Goal &);
   std::shared_ptr<Operation> unsupported(const std::string &capability);
  private:
   struct Worker;

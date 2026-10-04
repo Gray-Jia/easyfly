@@ -1,8 +1,8 @@
-# EasyFly 核心接口契约（D0 / D1 / D2）
+# EasyFly 核心接口契约（D0 / D1 / D2 / D3）
 
 基线：`1860690` / 功能 `0724742`；D0提交`847dfbf`。本文说明当前生产者、消费者与调用边界；D1导航及轨迹链接口迁移见`d1-navigation.md`，公开NavigateTo字段保持不变。
 
-D1提交`dfd6859`；D2 SDK、受约束参数、感知及任务门面见[d2-platform.md](d2-platform.md)。这些客户端/服务不新增控制出口。SDK wait/close本地结果不替代远端终态；服务accept/request成功不代表执行成功。感知查询VALID空观测与未就绪/过期明确分开；任务校验器和实际旧执行器共享逻辑，正式YAML仍未实现。
+D1提交`dfd6859`；D2提交`00d12b8`，SDK、受约束参数、感知及任务门面见[d2-platform.md](d2-platform.md)。D3版本化任务与搜索见[d3-missions.md](d3-missions.md)。这些客户端/服务不新增控制出口。SDK wait/close本地结果不替代远端终态；服务accept/request成功不代表执行成功。感知查询VALID空观测与未就绪/过期明确分开；任务门面和执行器共享正式YAML及旧格式校验器。
 
 ## 数据与控制流
 
@@ -37,7 +37,8 @@ D1提交`dfd6859`；D2 SDK、受约束参数、感知及任务门面见[d2-platf
 | 公共动作 | 当前 server / 下游 | 契约 |
 |---|---|---|
 | Takeoff / Land / GoToWaypoint / FollowTrajectory | flight_control | 单动作槽、准入状态/数值校验；取消确认后 CANCELED；失败 ABORTED；到达才 SUCCEEDED |
-| ExecuteMission | mission_fsm → 飞控子 Action | takeoff/waypoint/hover/land；任务线程受生命周期管理；取消传播子 Goal；当前任务文件并非完整 YAML/JSON |
+| ExecuteMission | mission_fsm → 同一SDK → 下层动作 | schema_version=1 YAML及旧格式；七类步骤严格顺序、失败即终止；精确取消所属子Goal并保留未决锁 |
+| SearchArea | search_area → 同一SDK → /navigate | 弓字条带；已完成条带几何覆盖估计；真实到达后累计；有效稳定ID去重 |
 | TrackTarget | target_tracking → GoToWaypoint | 需已悬停；目标首次等待、丢失、跳变与边界约束；持续操作由调用者定义结束条件 |
 | NavigateTo（/navigate） | navigation_coordinator → 内部A*或受管EGO→飞行动作 | D1配置选择astar/ego/combined；无失败降级；详情见d1-navigation.md |
 
@@ -45,7 +46,9 @@ FollowTrajectory 新 Goal 准入时锁存 ID 水位，只消费其后的新有�
 
 D1受管链进一步以navigation_session_id关联FollowTrajectory/Bspline/ACK/CMD，检查先于飞控ID水位更新。生命周期消息只由受信EGO写入，新START是权威状态并停用旧流（允许depth1队列漏STOP）；STOP只匹配所属ID。该信任边界不替代DDS Security。接口同步重编译和故障锁规则见 [D1说明](d1-navigation.md)。
 
-RTL/LAND 外部接管高于业务动作；对应操作终止并让出控制，不能报告 arrived 或抢回 OFFBOARD。取消、超时、急停、下游失活、析构都必须为已接受 Goal 收尾。导航协调器在D1实现，D2交付现有动作的异步SDK与最小Python绑定；统一悬停操作及后续新增能力不在本批范围内。
+RTL/LAND 外部接管高于业务动作；对应操作终止并让出控制，不能报告 arrived 或抢回 OFFBOARD。取消、超时、急停、下游失活、析构都必须为已接受 Goal 收尾。D3的hover沿用既有保持行为并等待，不新增统一悬停控制出口。
+
+D3明确公开终态不等于递归排空。/navigation/ownership、/search/ownership、/mission/ownership以精确UUID查询GetActionOwnership，仅RELEASED确认释放；UNKNOWN/失联继续保锁。SDK的action_terminal_received与remote_execution_pending、ManageMission的execution_pending分别表达两种状态。生产任务链强制受管查询；新服务字段和SDK API须同步重编译各消费者，详情见D3迁移说明。
 
 ## 修改时需要同步的范围
 

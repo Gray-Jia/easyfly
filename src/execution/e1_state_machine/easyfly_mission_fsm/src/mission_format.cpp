@@ -1,0 +1,154 @@
+#include "easyfly_mission_fsm/mission_format.hpp"
+#include <yaml-cpp/yaml.h>
+#include <algorithm>
+#include <set>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cerrno>
+
+namespace easyfly_mission_fsm {
+namespace {
+void require(bool condition, const std::string & error) {
+  if (!condition) throw std::invalid_argument(error);
+}
+void keys(const YAML::Node & map, const std::set<std::string> & allowed) {
+  require(map.IsMap(), "expected mapping");
+  std::set<std::string> seen;
+  for (const auto & item : map) {
+    require(item.first.IsScalar(), "non-scalar key");
+    auto key = item.first.as<std::string>();
+    require(seen.insert(key).second, "duplicate key: " + key);
+    require(allowed.count(key), "unsupported field: " + key);
+  }
+}
+std::string word(const YAML::Node & node) {
+  require(node.IsScalar(), "expected scalar string");
+  return node.as<std::string>();
+}
+double number(const YAML::Node & node, double low, double high) {
+  require(node.IsScalar() && node.Tag() != "!" && node.Tag() != "tag:yaml.org,2002:str",
+    "expected unquoted numeric scalar");
+  const auto raw = node.Scalar();
+  size_t consumed = 0;
+  const auto value = std::stod(raw, &consumed);
+  require(consumed == raw.size() && std::isfinite(value) && value >= low && value <= high,
+    "numeric field out of range");
+  return value;
+}
+double optional(const YAML::Node & node, const std::string & key, double value, double low, double high) {
+  return node[key] ? number(node[key], low, high) : value;
+}
+int integer(const YAML::Node & node, int low, int high) {
+  require(node.IsScalar(), "expected integer");
+  const auto text = node.Scalar();
+  require(!text.empty(), "empty integer");
+  const auto first = text[0] == '-' ? 1u : 0u;
+  require(first < text.size() && std::all_of(text.begin() + first, text.end(),
+    [](char c) {return c >= '0' && c <= '9';}), "expected decimal integer");
+  return static_cast<int>(number(node, low, high));
+}
+MissionValidation yaml(const std::string & text) {
+  const auto docs = YAML::LoadAll(text);
+  require(docs.size() == 1, "exactly one YAML document required");
+  const auto root = docs.front();
+  keys(root, {"schema_version", "frame_id", "units", "failure_policy", "steps"});
+  require(integer(root["schema_version"], 1, 1) == 1, "unsupported schema_version");
+  require(word(root["frame_id"]) == "odom", "only odom frame supported");
+  keys(root["units"], {"position", "angle", "time"});
+  require(word(root["units"]["position"]) == "m" && word(root["units"]["angle"]) == "rad" &&
+    word(root["units"]["time"]) == "s", "units must be m/rad/s");
+  if (root["failure_policy"]) require(word(root["failure_policy"]) == "abort", "only abort policy supported");
+  const auto steps = root["steps"];
+  require(steps.IsSequence() && steps.size() > 0 && steps.size() <= 256, "expected 1..256 steps");
+  MissionValidation result;
+  double total_budget = 0;
+  for (const auto & node : steps) {
+    require(node.IsMap(), "step must be mapping");
+    MissionStep step;
+    step.type = word(node["type"]);
+    std::set<std::string> allowed{"type", "timeout"};
+    const std::map<std::string, std::set<std::string>> fields{
+      {"takeoff", {"altitude", "climb_speed"}}, {"hover", {"duration"}},
+      {"waypoint", {"x", "y", "z", "yaw", "max_speed", "acceptance_radius"}},
+      {"navigate", {"x", "y", "z", "max_speed"}},
+      {"track", {"target_id", "duration", "follow_distance", "follow_height"}},
+      {"search", {"center_x", "center_y", "area_width", "area_height", "altitude", "max_speed", "pattern"}},
+      {"land", {}}};
+    const auto spec = fields.find(step.type);
+    require(spec != fields.end(), "unsupported step type: " + step.type);
+    allowed.insert(spec->second.begin(), spec->second.end()); keys(node, allowed);
+    step.timeout = optional(node, "timeout", 120, .05, 3600);
+    if (step.type == "takeoff") {
+      step.altitude = number(node["altitude"], .01, 50);
+      step.climb_speed = optional(node, "climb_speed", 1, .01, 20);
+    } else if (step.type == "waypoint" || step.type == "navigate") {
+      step.x = number(node["x"], -1000, 1000); step.y = number(node["y"], -1000, 1000);
+      step.z = number(node["z"], 0, 50); step.max_speed = optional(node, "max_speed", 2, .01, 20);
+      if (step.type == "waypoint") {
+        step.yaw = optional(node, "yaw", 0, -3.141592653589793, 3.141592653589793);
+        step.acceptance_radius = optional(node, "acceptance_radius", .5, .05, 5);
+      }
+    } else if (step.type == "hover") {
+      step.wait = number(node["duration"], 0, 3600);
+      require(step.wait <= step.timeout, "hover duration exceeds timeout");
+    } else if (step.type == "track") {
+      step.target_id = integer(node["target_id"], -1, 2147483647);
+      step.duration = number(node["duration"], .01, 3600);
+      step.follow_distance = optional(node, "follow_distance", 2, .1, 30);
+      step.follow_height = optional(node, "follow_height", 0, -10, 10);
+      require(step.duration <= step.timeout, "track duration exceeds timeout");
+    } else if (step.type == "search") {
+      step.center_x = number(node["center_x"], -1000, 1000);
+      step.center_y = number(node["center_y"], -1000, 1000);
+      step.area_width = number(node["area_width"], .1, 100);
+      step.area_height = number(node["area_height"], .1, 100);
+      step.altitude = number(node["altitude"], .5, 50);
+      step.max_speed = optional(node, "max_speed", 1, .01, 20);
+      require(word(node["pattern"]) == "boustrophedon", "only boustrophedon search supported");
+    }
+    total_budget += step.timeout;
+    require(total_budget <= 7200, "mission step budgets exceed 7200s");
+    result.steps.push_back(step);
+  }
+  return result;
+}
+}  // namespace
+MissionValidation validateMissionText(const std::string & text) {
+  try {
+    require(text.size() <= 65536 && text.find('\0') == std::string::npos, "invalid mission size/content");
+    std::istringstream lines(text); std::string first;
+    while (std::getline(lines, first)) {
+      first = trimLegacy(first);
+      if (!first.empty() && first[0] != '#' && first != "---") break;
+    }
+    require(first.empty() || (first[0] != '{' && first[0] != '['), "JSON/flow root not supported");
+    auto separator = first.find('=');
+    if (separator == std::string::npos) separator = first.find(':');
+    const std::set<std::string> legacy_keys{"type", "altitude", "climb_speed", "x", "y", "z", "yaw", "max_speed", "wait"};
+    if (separator != std::string::npos && legacy_keys.count(trimLegacy(first.substr(0, separator)))) {
+      std::istringstream legacy(text); return validateLegacyMission(legacy);
+    }
+    return yaml(text);
+  } catch (const std::exception & exc) {return {{}, exc.what()};}
+}
+MissionValidation validateMissionFile(const std::string & path) {
+  const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0) return {{}, "cannot open mission file"};
+  struct Guard {int fd; ~Guard() {close(fd);}} guard{fd};
+  struct stat info{};
+  if (fstat(fd, &info) || !S_ISREG(info.st_mode) || info.st_size > 65536)
+    return {{}, "mission must be a regular file <=64KiB"};
+  std::string text(65537, '\0'); size_t count = 0;
+  while (count < text.size()) {
+    const auto n = read(fd, text.data() + count, text.size() - count);
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) return {{}, "mission read failed"};
+    if (!n) break;
+    count += static_cast<size_t>(n);
+  }
+  if (count > 65536) return {{}, "mission exceeds 64KiB"};
+  text.resize(count);
+  return validateMissionText(text);
+}
+}  // namespace easyfly_mission_fsm

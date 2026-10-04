@@ -1,115 +1,58 @@
-#ifndef EASYFLY_MISSION_FSM_MISSION_FSM_HPP_
-#define EASYFLY_MISSION_FSM_MISSION_FSM_HPP_
-
+#pragma once
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
-
-#include <easyfly_msgs/msg/uav_state.hpp>
-#include <easyfly_msgs/msg/mission_status.hpp>
-#include <easyfly_msgs/action/takeoff.hpp>
-#include <easyfly_msgs/action/land.hpp>
-#include <easyfly_msgs/action/go_to_waypoint.hpp>
+#include <easyfly_core/client.hpp>
+#include <easyfly_core/ownership_registry.hpp>
+#include <easyfly_msgs/srv/get_action_ownership.hpp>
 #include <easyfly_msgs/action/execute_mission.hpp>
+#include <easyfly_msgs/msg/mission_status.hpp>
 #include <easyfly_msgs/srv/set_flight_mode.hpp>
-
+#include "easyfly_mission_fsm/legacy_mission.hpp"
 #include <atomic>
 #include <mutex>
-#include <string>
 #include <thread>
-#include <vector>
-#include "easyfly_mission_fsm/legacy_mission.hpp"
-
-namespace easyfly_mission_fsm
-{
-
-class MissionFSM : public rclcpp::Node
-{
-public:
-  using Takeoff        = easyfly_msgs::action::Takeoff;
-  using Land           = easyfly_msgs::action::Land;
-  using GoToWaypoint   = easyfly_msgs::action::GoToWaypoint;
+namespace easyfly_mission_fsm {
+class MissionFSM : public rclcpp::Node {
+ public:
   using ExecuteMission = easyfly_msgs::action::ExecuteMission;
-
-  explicit MissionFSM(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  using Handle = rclcpp_action::ServerGoalHandle<ExecuteMission>;
+  explicit MissionFSM(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
   ~MissionFSM() override;
-
-private:
-  // ---- action server ----
-  rclcpp_action::Server<ExecuteMission>::SharedPtr as_mission_;
-
-  rclcpp_action::GoalResponse handle_mission_goal(
-    const rclcpp_action::GoalUUID &, std::shared_ptr<const ExecuteMission::Goal>);
-  rclcpp_action::CancelResponse handle_mission_cancel(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>>);
-  void handle_mission_accepted(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>>);
-
-  // ---- action clients ----
-  rclcpp_action::Client<Takeoff>::SharedPtr      cli_takeoff_;
-  rclcpp_action::Client<Land>::SharedPtr         cli_land_;
-  rclcpp_action::Client<GoToWaypoint>::SharedPtr cli_waypoint_;
-
-  // ---- 低电量 RTL 服务客户端 (Q2) ----
-  rclcpp::Client<easyfly_msgs::srv::SetFlightMode>::SharedPtr cli_set_mode_;
-
-  // ---- state ----
-  void cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg);
-  easyfly_msgs::msg::UAVState get_uav_snapshot() const;
-
-  // ---- mission execution ----
-  void execute_mission(const std::string & mission_file,
-    std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>> gh);
-  bool execute_step(const MissionStep & step, int step_idx, int total,
-    std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteMission>> gh);
-
-  // ---- safety ----
-  void safety_check();
-  // Q2: 低电量 → 请求 mavlink_bridge 切 PX4 RTL (异步, 不阻塞 timer)
-  void trigger_rtl();
-  // Q10: 取消当前正在执行的子 action (takeoff/land/waypoint)
+ private:
+  rclcpp_action::GoalResponse handle_mission_goal(const rclcpp_action::GoalUUID &,
+    std::shared_ptr<const ExecuteMission::Goal>);
+  rclcpp_action::CancelResponse handle_mission_cancel(std::shared_ptr<Handle>);
+  void handle_mission_accepted(std::shared_ptr<Handle>);
+  void execute_mission(std::vector<MissionStep>, std::shared_ptr<Handle>);
+  bool execute_step(const MissionStep &, int, int, std::shared_ptr<Handle>);
   void cancel_current_step();
-
-  // ---- helpers ----
-  std::vector<MissionStep> parse_mission(const std::string & path);
-  void publish_status(uint8_t phase, const std::string & name, int wp, int total, float prog);
-  // Q8: 数值解析防崩溃 (非法值返回 NaN 并记日志)
-  double safe_stod(const std::string & val, const std::string & line);
-
-  // ---- subs ----
-  rclcpp::Subscription<easyfly_msgs::msg::UAVState>::SharedPtr sub_uav_state_;
-
-  // ---- pub ----
+  void safety_check();
+  void trigger_rtl();
+  void publish_status(uint8_t, const std::string &, int, int, float,
+    bool success = false, const std::string &message = "");
+  void feedback(uint8_t, const std::string &, int, int, float, std::shared_ptr<Handle>);
+  bool state_ready() const;
+  void stop(const std::string &reason);
+  std::string reason() const;
+  std::unique_ptr<easyfly_core::Client> sdk_;
+  rclcpp_action::Server<ExecuteMission>::SharedPtr as_mission_;
+  rclcpp::Client<easyfly_msgs::srv::SetFlightMode>::SharedPtr cli_set_mode_;
   rclcpp::Publisher<easyfly_msgs::msg::MissionStatus>::SharedPtr pub_status_;
-
-  // ---- timer ----
   rclcpp::TimerBase::SharedPtr timer_safety_;
-
-  // ---- latest state ----
-  easyfly_msgs::msg::UAVState uav_;
-  mutable std::mutex state_mtx_;
-  std::atomic<bool> state_received_{false};
-
-  // ---- mission state (跨线程: 任务线程 / executor 线程) ----
-  std::atomic<int>  steps_completed_{0};   // 已完成步骤数 (终态判定)
-  std::atomic<bool> mission_active_{false};
-  std::atomic<bool> emergency_{false};      // 低电量等异常中止
-  std::atomic<bool> cancel_requested_{false}; // 用户主动取消
+  std::atomic<bool> mission_active_{false}, cancel_requested_{false}, shutdown_{false};
   std::atomic<bool> rtl_triggered_{false};
-  std::mutex mission_mtx_;                  // mission reservation + safety grace state
-  double battery_invalid_grace_s_{5.0};
-  rclcpp::Time battery_invalid_since_;
-
-  // ---- 当前子 goal handle (供取消; 任务线程写, timer 线程取消) ----
+  std::atomic<int> steps_completed_{0};
+  mutable std::mutex mission_mtx_;
+  std::string stop_reason_;
+  std::vector<MissionStep> accepted_steps_;
+  double cancel_budget_s_{3}, battery_invalid_grace_s_{5}, backend_discovery_s_{3};
+  std::chrono::steady_clock::time_point battery_invalid_since_;
   std::mutex step_mtx_;
-  std::shared_ptr<rclcpp_action::ClientGoalHandle<Takeoff>>      cur_takeoff_gh_;
-  std::shared_ptr<rclcpp_action::ClientGoalHandle<Land>>         cur_land_gh_;
-  std::shared_ptr<rclcpp_action::ClientGoalHandle<GoToWaypoint>> cur_wp_gh_;
-
-  // 任务线程受节点生命周期管理，禁止 detached thread 访问已析构的 Node。
+  std::shared_ptr<easyfly_core::Operation> current_;
+  std::string current_type_;
   std::mutex worker_mtx_;
   std::thread worker_;
+  easyfly_core::OwnershipRegistry ownership_registry_;
+  rclcpp::Service<easyfly_msgs::srv::GetActionOwnership>::SharedPtr ownership_service_;
 };
-
-}  // namespace easyfly_mission_fsm
-
-#endif  // EASYFLY_MISSION_FSM_MISSION_FSM_HPP_
+}

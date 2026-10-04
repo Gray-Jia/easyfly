@@ -9,19 +9,26 @@
 #include <random>
 #include <sstream>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <cerrno>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <easyfly_msgs/action/execute_mission.hpp>
+#include <easyfly_msgs/action/search_area.hpp>
+#include <easyfly_msgs/srv/get_action_ownership.hpp>
+#include <easyfly_core/ownership_registry.hpp>
 #include <easyfly_msgs/srv/manage_mission.hpp>
 #include <easyfly_msgs/srv/get_capabilities.hpp>
-#include <easyfly_mission_fsm/legacy_mission.hpp>
+#include <easyfly_mission_fsm/mission_format.hpp>
 
 namespace fs = std::filesystem;
 using Api = easyfly_msgs::srv::ManageMission;
 using Action = easyfly_msgs::action::ExecuteMission;
 using Child = rclcpp_action::ClientGoalHandle<Action>;
 using Clock = std::chrono::steady_clock;
+using Ownership = easyfly_msgs::srv::GetActionOwnership;
 class MissionServices : public rclcpp::Node {
   struct Reply {
     std::shared_ptr<rclcpp::Service<Api>> service;
@@ -32,6 +39,9 @@ class MissionServices : public rclcpp::Node {
   struct Execution {
     std::string id, status{"pending"}, message, snapshot;
     bool terminal{false}, cancel_requested{false}, cancel_sent{false};
+    bool result_received{false}, ownership_inflight{false};
+    int64_t ownership_request{0};
+    Clock::time_point ownership_sent{};
     Child::SharedPtr child;
     easyfly_msgs::msg::MissionStatus feedback;
     Clock::time_point received{};
@@ -56,6 +66,8 @@ public:
         !std::isfinite(freshness_) || freshness_ < 0.05 || freshness_ > 10)
       throw std::invalid_argument("invalid service timeouts");
     client_ = rclcpp_action::create_client<Action>(this, "/execute_mission");
+    ownership_client_ = create_client<Ownership>("/mission/ownership");
+    search_client_ = rclcpp_action::create_client<easyfly_msgs::action::SearchArea>(this, "/search_area");
     service_ = create_service<Api>("/platform/mission/manage",
       [this](std::shared_ptr<rclcpp::Service<Api>> service, std::shared_ptr<rmw_request_id_t> header,
              Api::Request::SharedPtr req) {
@@ -67,9 +79,11 @@ public:
              easyfly_msgs::srv::GetCapabilities::Response::SharedPtr response) {
         response->header.stamp = now(); response->header.frame_id = "odom";
         response->names = {"legacy_mission", "versioned_yaml", "search"};
-        response->implemented = {true, false, false};
-        response->ready = {client_->action_server_is_ready() && !active_, false, false};
-        response->details = {"takeoff/waypoint/hover/land; validated immutable snapshot", "unsupported: D3", "unsupported: D3"};
+        response->implemented = {true, true, true};
+        const auto ready = client_->action_server_is_ready() && ownership_client_->service_is_ready() && !active_;
+        response->ready = {ready, ready, ready && search_client_->action_server_is_ready()};
+        response->details = {"legacy four-step format", "schema_version=1, odom m/rad/s, strict sequential seven types",
+          "mission step supported; search backend/live flight admission separately required"};
       });
     timer_ = create_wall_timer(std::chrono::milliseconds(50), [this]() {tick();});
   }
@@ -89,6 +103,7 @@ private:
     response.message = message; response.missions = names;
     if (e) {
       response.execution_id = e->id; response.current_status = e->feedback;
+      response.execution_pending = !e->terminal;
       const auto & stamp = e->feedback.header.stamp;
       if (stamp.sec >= 0 && stamp.nanosec < 1000000000u && (stamp.sec || stamp.nanosec)) {
         const auto age = (now() - rclcpp::Time(stamp, get_clock()->get_clock_type())).seconds();
@@ -117,12 +132,23 @@ private:
   }
   std::string validatedText(const std::string & name) const {
     const auto path = catalogPath(name);
-    std::ifstream input(path, std::ios::binary);
-    std::string text(65537, '\0'); input.read(text.data(), text.size());
-    if (input.bad() || input.gcount() > 65536) throw std::invalid_argument("mission read failed or too large");
-    text.resize(static_cast<size_t>(input.gcount()));
-    std::istringstream stream(text);
-    const auto check = easyfly_mission_fsm::validateLegacyMission(stream);
+    const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) throw std::invalid_argument("cannot open regular catalog file");
+    struct Guard {int fd; ~Guard() {close(fd);}} guard{fd};
+    struct stat info{};
+    if (fstat(fd, &info) || !S_ISREG(info.st_mode) || info.st_size > 65536)
+      throw std::invalid_argument("mission must be a regular file <=64KiB");
+    std::string text(65537, '\0'); size_t size=0;
+    while (size < text.size()) {
+      auto n = read(fd, text.data()+size, text.size()-size);
+      if (n < 0 && errno == EINTR) continue;
+      if (n < 0) throw std::invalid_argument("mission read failed");
+      if (!n) break;
+      size += static_cast<size_t>(n);
+    }
+    if (size > 65536) throw std::invalid_argument("mission too large");
+    text.resize(size);
+    const auto check = easyfly_mission_fsm::validateMissionText(text);
     if (!check.valid()) throw std::invalid_argument(check.error);
     return text;
   }
@@ -148,12 +174,14 @@ private:
           try {catalogPath(entry.path().filename().string()); names.push_back(entry.path().filename().string());}
           catch (const std::exception &) {}
         }
-        std::sort(names.begin(), names.end()); respond(p, true, "catalog", "legacy format; suffix is not YAML support", {}, names);
+        std::sort(names.begin(), names.end()); respond(p, true, "catalog", "schema v1 YAML and legacy flat format", {}, names);
       } else if (req.operation == "validate" || req.operation == "start") {
         const auto text = validatedText(req.mission_name);
         if (req.operation == "validate") {respond(p, true, "valid", "full static validation; live flight admission is separate"); return;}
         if (active_) {respond(p, false, "busy", "previous execution ownership unresolved", active_); return;}
-        if (!client_->action_server_is_ready()) {respond(p, false, "unsupported", "execute_mission server unavailable"); return;}
+        if (!client_->action_server_is_ready() || !ownership_client_->service_is_ready()) {
+          respond(p, false, "unsupported", "execute_mission or ownership protocol unavailable"); return;
+        }
         auto e = std::make_shared<Execution>(); e->id = identity(); e->admission = p;
         e->snapshot = snapshot(text); active_ = e; history_[e->id] = e; history_order_.push_back(e->id);
         rclcpp_action::Client<Action>::SendGoalOptions callbacks;
@@ -170,11 +198,10 @@ private:
           if (!e->terminal) {e->feedback = feedback->current_status; e->received = Clock::now();}
         };
         callbacks.result_callback = [this, e](const Child::WrappedResult & result) {
-          e->terminal = true;
+          e->result_received = true;
           e->status = result.code == rclcpp_action::ResultCode::CANCELED ? "canceled" :
             result.code == rclcpp_action::ResultCode::SUCCEEDED && result.result && result.result->success ? "succeeded" : "failed";
           e->message = result.result ? result.result->message : "missing backend result";
-          resolve(e);
         };
         Action::Goal goal; goal.mission_file = e->snapshot;
         try {client_->async_send_goal(goal, callbacks);}
@@ -194,7 +221,7 @@ private:
     } catch (const std::exception & exc) {respond(p, false, "invalid", exc.what());}
   }
   void cancel(const std::shared_ptr<Execution> & e) {
-    if (e->terminal || !e->child || e->cancel_sent) return;
+    if (e->terminal || e->result_received || !e->child || e->cancel_sent) return;
     e->cancel_sent = true; e->status = "canceling";
     try {client_->async_cancel_goal(e->child, [this, e](auto response) {
       const auto owned = e->child->get_goal_id();
@@ -203,11 +230,12 @@ private:
           [&](const auto & info) {return info.goal_id.uuid == owned;});
       respond(e->cancellation, accepted, accepted ? "cancel_requested" : "cancel_rejected",
         "cancel response does not confirm terminal", e);
-      if (!accepted && !e->terminal) {
+      if (!accepted && !e->terminal && !e->result_received) {
         e->status = "fault"; e->cancel_sent = false; e->cancel_requested = false;
       }
     });} catch (const std::exception & exc) {
-      respond(e->cancellation, false, "fault", exc.what(), e); e->status = "fault";
+      respond(e->cancellation, false, "fault", exc.what(), e);
+      if (!e->result_received) e->status = "fault";
       e->cancel_sent = false; e->cancel_requested = false;
     }
   }
@@ -223,6 +251,29 @@ private:
   }
   void tick() {
     auto e = active_; if (!e) return;
+    if (e->result_received && e->child && !e->terminal) {
+      if (e->ownership_inflight && elapsed(e->ownership_sent) >= 1) {
+        ownership_client_->remove_pending_request(e->ownership_request); e->ownership_inflight = false;
+      }
+      if (!e->ownership_inflight && elapsed(e->ownership_sent) >= .2 && ownership_client_->service_is_ready()) {
+        auto request = std::make_shared<Ownership::Request>();
+        request->goal_id = easyfly_core::goalIdentity(e->child->get_goal_id());
+        e->ownership_inflight = true; e->ownership_sent = Clock::now();
+        try {
+          auto pending = ownership_client_->async_send_request(request,
+            [this, e, id=request->goal_id](rclcpp::Client<Ownership>::SharedFuture future) {
+            e->ownership_inflight = false;
+            try {
+              auto response = future.get();
+              if (response && response->goal_id == id && response->state == Ownership::Response::RELEASED) {
+                e->terminal = true; resolve(e);
+              }
+            } catch (const std::exception &) {}  // A failed query is not release evidence.
+          });
+          e->ownership_request = pending.request_id;
+        } catch (const std::exception &) {e->ownership_inflight = false;}
+      }
+    }
     if (e->admission && !e->admission->sent && elapsed(e->admission->created) >= timeout_) {
       e->status = "pending_timeout"; e->cancel_requested = true;
       respond(e->admission, false, e->status, "admission timeout; retained for late exact cancellation", e);
@@ -237,6 +288,8 @@ private:
   std::map<std::string, std::shared_ptr<Execution>> history_;
   std::deque<std::string> history_order_;
   rclcpp_action::Client<Action>::SharedPtr client_;
+  rclcpp_action::Client<easyfly_msgs::action::SearchArea>::SharedPtr search_client_;
+  rclcpp::Client<Ownership>::SharedPtr ownership_client_;
   rclcpp::Service<Api>::SharedPtr service_;
   rclcpp::Service<easyfly_msgs::srv::GetCapabilities>::SharedPtr capabilities_;
   rclcpp::TimerBase::SharedPtr timer_;

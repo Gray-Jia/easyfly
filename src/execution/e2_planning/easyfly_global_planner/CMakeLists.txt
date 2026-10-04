@@ -14,6 +14,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(easyfly_msgs REQUIRED)
+find_package(easyfly_core REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 add_library(${PROJECT_NAME}_nodes SHARED
@@ -25,7 +26,7 @@ target_include_directories(${PROJECT_NAME}_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 ament_target_dependencies(${PROJECT_NAME}_nodes
   rclcpp rclcpp_components rclcpp_action ament_index_cpp nav_msgs geometry_msgs std_msgs std_srvs easyfly_msgs)
-target_link_libraries(${PROJECT_NAME}_nodes yaml-cpp)
+target_link_libraries(${PROJECT_NAME}_nodes yaml-cpp easyfly_core::easyfly_core)
 
 rclcpp_components_register_node(${PROJECT_NAME}_nodes
   PLUGIN "easyfly_global_planner::GlobalPlannerNode"

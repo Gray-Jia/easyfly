@@ -1,4 +1,6 @@
 #include "easyfly_core/client.hpp"
+#include "easyfly_core/ownership_registry.hpp"
+#include <easyfly_msgs/srv/get_action_ownership.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <chrono>
@@ -23,6 +25,10 @@ struct Operation::Data {
   Clock::time_point cancel_retry_not_before{};
   Clock::time_point submitted{Clock::now()};
   std::function<void()> cancel_exact;
+  bool managed_ownership{false}, ownership_inflight{false};
+  int64_t ownership_request_id{0};
+  Clock::time_point ownership_deadline{}, ownership_retry{};
+  std::weak_ptr<rclcpp::Client<easyfly_msgs::srv::GetActionOwnership>> ownership_client;
 };
 static Feedback feedback(const easyfly_msgs::action::Takeoff::Feedback &f) {
   return {{{"current_altitude", f.current_altitude}, {"progress", f.progress}}, {}, {}};
@@ -50,6 +56,10 @@ static Feedback feedback(const easyfly_msgs::action::ExecuteMission::Feedback &f
     {{"mission_success", f.current_status.mission_success}},
     {{"phase_name", f.current_status.phase_name}, {"message", f.current_status.message}}};
 }
+static Feedback feedback(const easyfly_msgs::action::SearchArea::Feedback &f) {
+  return {{{"area_covered", f.area_covered}, {"progress", f.progress},
+    {"targets_found", f.targets_found}}, {}, {}};
+}
 struct Core : std::enable_shared_from_this<Core> {
   ClientOptions options;
   std::shared_ptr<rclcpp::Context> context;
@@ -66,6 +76,7 @@ struct Core : std::enable_shared_from_this<Core> {
   std::deque<std::function<void()>> inbox;
   std::map<std::string, std::shared_ptr<void>> clients;
   std::map<std::string, std::function<bool()>> ready;
+  std::map<std::string, rclcpp::Client<easyfly_msgs::srv::GetActionOwnership>::SharedPtr> ownership;
 
   template<class Action> void add(const std::string &name, const std::string &topic) {
     auto client = rclcpp_action::create_client<Action>(node, topic);
@@ -91,6 +102,17 @@ struct Core : std::enable_shared_from_this<Core> {
     add<easyfly_msgs::action::FollowTrajectory>("follow", "/follow_trajectory");
     add<easyfly_msgs::action::TrackTarget>("track", "/track_target");
     add<easyfly_msgs::action::ExecuteMission>("execute_mission", "/execute_mission");
+    add<easyfly_msgs::action::SearchArea>("search", "/search_area");
+    for(const auto &entry:std::map<std::string,std::string>{{"navigate","/navigation/ownership"},
+        {"search","/search/ownership"},{"execute_mission","/mission/ownership"}}) {
+      auto service=node->create_client<easyfly_msgs::srv::GetActionOwnership>(entry.second);
+      ownership[entry.first]=service;
+      auto action_ready=ready.at(entry.first);
+      const bool required=options.require_managed_ownership;
+      ready[entry.first]=[service,action_ready,required] {
+        return action_ready() && (!required || service->service_is_ready());
+      };
+    }
     const auto weak = weak_from_this();
     subscription = node->create_subscription<easyfly_msgs::msg::UAVState>("/uav_state",
       rclcpp::SensorDataQoS(), [weak](easyfly_msgs::msg::UAVState::SharedPtr message) {
@@ -104,12 +126,15 @@ struct Core : std::enable_shared_from_this<Core> {
       });
   }
   static void finish(const std::shared_ptr<Operation::Data> &data, Status status,
-                     const std::string &message) {
+                     const std::string &message, bool actual_result=false) {
     std::lock_guard<std::mutex> lock(data->mutex);
     data->value.status = status;
     data->value.message = message;
     data->value.success = status == Status::Succeeded;
-    data->value.remote_execution_pending = false;
+    data->value.action_terminal_received = actual_result;
+    if(actual_result)
+      data->value.result_received_seconds=std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+    data->value.remote_execution_pending = actual_result && data->managed_ownership;
     data->cancel_exact = {};
     data->changed.notify_all();
   }
@@ -149,10 +174,16 @@ struct Core : std::enable_shared_from_this<Core> {
       }
     }
     auto client = std::static_pointer_cast<rclcpp_action::Client<Action>>(clients.at(name));
-    if (!client->action_server_is_ready()) {
+    if (!ready.at(name)()) {
       { std::lock_guard<std::mutex> lock(data->mutex); data->value.admission = Admission::Unavailable; }
       finish(data, Status::Unavailable, "action_server_unavailable");
       return;
+    }
+    if(ownership.count(name)) {
+      std::lock_guard<std::mutex> lock(data->mutex);
+      auto service=ownership.at(name);
+      data->ownership_client=service;
+      data->managed_ownership=options.require_managed_ownership || service->service_is_ready();
     }
     using Handle = rclcpp_action::ClientGoalHandle<Action>;
     typename rclcpp_action::Client<Action>::SendGoalOptions so;
@@ -167,6 +198,7 @@ struct Core : std::enable_shared_from_this<Core> {
       }
       std::lock_guard<std::mutex> lock(op->mutex);
       op->value.admission = Admission::Accepted;
+      op->value.goal_id = goalIdentity(handle->get_goal_id());
       op->cancel_exact = [weak_data, client, handle] {
         const auto current = weak_data.lock();
         if (!current) return;
@@ -196,7 +228,8 @@ struct Core : std::enable_shared_from_this<Core> {
     so.feedback_callback = [weak_data](typename Handle::SharedPtr, std::shared_ptr<const typename Action::Feedback> f) {
       if (auto op = weak_data.lock()) {
         std::lock_guard<std::mutex> lock(op->mutex);
-        if (op->value.remote_execution_pending && f) op->value.feedback = feedback(*f);
+        if (op->value.remote_execution_pending && !op->value.action_terminal_received && f)
+          op->value.feedback = feedback(*f);
       }
     };
     so.result_callback = [weak_data](const typename Handle::WrappedResult &result) {
@@ -208,7 +241,7 @@ struct Core : std::enable_shared_from_this<Core> {
         const std::string message = result.result ? result.result->message : "missing_action_result";
         if (status == Status::Failed && (message == "unsupported" || message.rfind("unsupported:", 0) == 0))
           status = Status::Unsupported;
-        Core::finish(op, status, message);
+        Core::finish(op, status, message, true);
       }
     };
     try { client->async_send_goal(goal, so); }
@@ -217,6 +250,47 @@ struct Core : std::enable_shared_from_this<Core> {
       std::lock_guard<std::mutex> lock(data->mutex);
       data->value.local_status = LocalStatus::TransportError;
       data->value.local_message = e.what();
+    }
+  }
+  void poll_ownership(const std::shared_ptr<Operation::Data> &data) {
+    using Ownership=easyfly_msgs::srv::GetActionOwnership;
+    std::lock_guard<std::mutex> lock(data->mutex);
+    if(!data->value.remote_execution_pending || !data->value.action_terminal_received ||
+       !data->managed_ownership || data->value.goal_id.empty()) return;
+    auto service=data->ownership_client.lock();
+    if(!service) return; // disappearing runtime is not evidence of remote release
+    const auto now=Clock::now();
+    if(data->ownership_inflight) {
+      if(now<data->ownership_deadline) return;
+      service->remove_pending_request(data->ownership_request_id);
+      data->ownership_inflight=false;
+      data->ownership_retry=now+std::chrono::milliseconds(250);
+    }
+    if(now<data->ownership_retry || !service->service_is_ready()) return;
+    auto request=std::make_shared<Ownership::Request>(); request->goal_id=data->value.goal_id;
+    const auto weak=std::weak_ptr<Operation::Data>(data);
+    data->ownership_inflight=true;
+    data->ownership_deadline=now+std::chrono::milliseconds(500);
+    data->ownership_retry=now+std::chrono::milliseconds(250);
+    try {
+      auto future=service->async_send_request(request,[weak](rclcpp::Client<Ownership>::SharedFuture future) {
+        if(auto operation=weak.lock()) {
+          std::lock_guard<std::mutex> lock(operation->mutex);
+          operation->ownership_inflight=false;
+          operation->ownership_retry=Clock::now()+std::chrono::milliseconds(250);
+          try {
+            auto response=future.get();
+            if(response && response->goal_id==operation->value.goal_id && response->state==2) {
+              operation->value.remote_execution_pending=false;
+              operation->changed.notify_all();
+            }
+          } catch(const std::exception &) {}
+        }
+      });
+      data->ownership_request_id=future.request_id;
+    } catch(const std::exception &e) {
+      data->ownership_inflight=false;
+      data->value.local_message=std::string("ownership_query_failed:")+e.what();
     }
   }
   void loop() {
@@ -259,6 +333,7 @@ struct Core : std::enable_shared_from_this<Core> {
           }
         }
         if (cancel) cancel();
+        poll_ownership(data);
       }
       bool finish_worker = false;
       {
@@ -277,6 +352,7 @@ struct Core : std::enable_shared_from_this<Core> {
     executor.reset();
     ready.clear();
     clients.clear();
+    ownership.clear();
     node.reset();
     context->shutdown("SDK exact goal drain completed");
     context.reset();  // Complete DDS teardown before publishing the cleanup barrier.
@@ -415,6 +491,7 @@ EASYFLY_METHOD(navigate, NavigateTo, "navigate")
 EASYFLY_METHOD(follow, FollowTrajectory, "follow")
 EASYFLY_METHOD(track, TrackTarget, "track")
 EASYFLY_METHOD(execute_mission, ExecuteMission, "execute_mission")
+EASYFLY_METHOD(search, SearchArea, "search")
 #undef EASYFLY_METHOD
 std::shared_ptr<Operation> Client::unsupported(const std::string &capability) {
   return core_->immediate(Admission::Unsupported, Status::Unsupported, "unsupported:" + capability);

@@ -1,0 +1,10 @@
+# Obstacle avoidance requires an existing map, sensor stream and unified navigator.
+schema_version: 1
+frame_id: odom
+units: {position: m, angle: rad, time: s}
+failure_policy: abort
+steps:
+  - {type: takeoff, altitude: 1.5, timeout: 60}
+  - {type: navigate, x: 5, y: 0, z: 1.5, max_speed: 1, timeout: 120}
+  - {type: navigate, x: 0, y: 0, z: 1.5, max_speed: 1, timeout: 120}
+  - {type: land, timeout: 60}

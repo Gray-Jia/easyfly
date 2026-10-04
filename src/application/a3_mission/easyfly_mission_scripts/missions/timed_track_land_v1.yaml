@@ -1,0 +1,10 @@
+# target_id=-1 selects the backend's nearest valid target. No target is not success.
+schema_version: 1
+frame_id: odom
+units: {position: m, angle: rad, time: s}
+failure_policy: abort
+steps:
+  - {type: takeoff, altitude: 1.5, timeout: 60}
+  - {type: track, target_id: -1, duration: 5, follow_distance: 2, follow_height: 0, timeout: 15}
+  - {type: hover, duration: 2, timeout: 5}
+  - {type: land, timeout: 60}

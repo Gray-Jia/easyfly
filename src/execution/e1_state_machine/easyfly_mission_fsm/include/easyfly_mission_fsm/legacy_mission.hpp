@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <map>
@@ -13,6 +14,10 @@ struct MissionStep {
   std::string type;
   double altitude{0.0}, climb_speed{1.0};
   double x{0.0}, y{0.0}, z{0.0}, yaw{0.0}, max_speed{2.0}, wait{0.0};
+  double timeout{120.0}, duration{0.0}, acceptance_radius{0.5};
+  int target_id{-1}, search_pattern{1};
+  double follow_distance{2.0}, follow_height{0.0};
+  double center_x{0.0}, center_y{0.0}, area_width{0.0}, area_height{0.0};
 };
 struct MissionValidation {
   std::vector<MissionStep> steps;
@@ -57,6 +62,7 @@ inline MissionValidation validateLegacyMission(std::istream & input) {
       reject("missing required field or invalid step range"); return false;
     }
     if (result.steps.size() >= 256) {reject("more than 256 steps"); return false;}
+    if (current.type == "hover") current.timeout = std::max(120.0, current.wait + 1.0);
     result.steps.push_back(current);
     current = MissionStep{}; seen.clear(); return true;
   };

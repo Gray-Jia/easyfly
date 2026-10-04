@@ -29,4 +29,6 @@ def generate_launch_description():
         }],
     )
 
-    return LaunchDescription([use_sim_time_arg, mission_fsm])
+    search = Node(package="easyfly_mission_fsm", executable="search_area_node", name="search_area",
+                  output="screen", parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}])
+    return LaunchDescription([use_sim_time_arg, mission_fsm, search])
