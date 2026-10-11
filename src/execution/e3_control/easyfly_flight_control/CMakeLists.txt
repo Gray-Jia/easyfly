@@ -40,6 +40,14 @@ install(DIRECTORY launch config
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_cppcheck REQUIRED)
+  find_package(ament_cmake_cpplint REQUIRED)
+  find_package(ament_cmake_uncrustify REQUIRED)
+  ament_cppcheck(include src test LIBRARIES googletest)
+  # Scope the slow-version override to this bounded test, never the workspace.
+  set_tests_properties(cppcheck PROPERTIES ENVIRONMENT "AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS=1")
+  ament_cpplint(include src test)
+  ament_uncrustify(include src test)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_trajectory_startup_timeout
     test/test_trajectory_startup_timeout.cpp)

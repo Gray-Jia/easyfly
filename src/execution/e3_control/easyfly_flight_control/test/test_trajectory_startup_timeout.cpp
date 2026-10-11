@@ -1,3 +1,16 @@
+// Copyright 2026 EasyFly Project
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <gtest/gtest.h>
 
 #include <limits>
@@ -14,22 +27,29 @@ TEST(TrajectoryStartupTimeoutTest, DefaultAndFiniteBoundsAreExplicit)
   EXPECT_DOUBLE_EQ(
     sanitizeTrajectoryStartupGrace(kDefaultTrajectoryStartupGrace),
     kDefaultTrajectoryStartupGrace);
-  EXPECT_DOUBLE_EQ(sanitizeTrajectoryStartupGrace(kMinTrajectoryStartupGrace),
-                   kMinTrajectoryStartupGrace);
-  EXPECT_DOUBLE_EQ(sanitizeTrajectoryStartupGrace(kMaxTrajectoryStartupGrace),
-                   kMaxTrajectoryStartupGrace);
-  EXPECT_DOUBLE_EQ(sanitizeTrajectoryStartupGrace(0.0),
-                   kDefaultTrajectoryStartupGrace);
-  EXPECT_DOUBLE_EQ(sanitizeTrajectoryStartupGrace(-1.0),
-                   kDefaultTrajectoryStartupGrace);
-  EXPECT_DOUBLE_EQ(sanitizeTrajectoryStartupGrace(
-                     std::numeric_limits<double>::quiet_NaN()),
-                   kDefaultTrajectoryStartupGrace);
-  EXPECT_DOUBLE_EQ(sanitizeTrajectoryStartupGrace(
-                     std::numeric_limits<double>::infinity()),
-                   kDefaultTrajectoryStartupGrace);
-  EXPECT_DOUBLE_EQ(sanitizeTrajectoryStartupGrace(kMaxTrajectoryStartupGrace + 1.0),
-                   kDefaultTrajectoryStartupGrace);
+  EXPECT_DOUBLE_EQ(
+    sanitizeTrajectoryStartupGrace(kMinTrajectoryStartupGrace),
+    kMinTrajectoryStartupGrace);
+  EXPECT_DOUBLE_EQ(
+    sanitizeTrajectoryStartupGrace(kMaxTrajectoryStartupGrace),
+    kMaxTrajectoryStartupGrace);
+  EXPECT_DOUBLE_EQ(
+    sanitizeTrajectoryStartupGrace(0.0),
+    kDefaultTrajectoryStartupGrace);
+  EXPECT_DOUBLE_EQ(
+    sanitizeTrajectoryStartupGrace(-1.0),
+    kDefaultTrajectoryStartupGrace);
+  EXPECT_DOUBLE_EQ(
+    sanitizeTrajectoryStartupGrace(
+      std::numeric_limits<double>::quiet_NaN()),
+    kDefaultTrajectoryStartupGrace);
+  EXPECT_DOUBLE_EQ(
+    sanitizeTrajectoryStartupGrace(
+      std::numeric_limits<double>::infinity()),
+    kDefaultTrajectoryStartupGrace);
+  EXPECT_DOUBLE_EQ(
+    sanitizeTrajectoryStartupGrace(kMaxTrajectoryStartupGrace + 1.0),
+    kDefaultTrajectoryStartupGrace);
 }
 
 TEST(TrajectoryStartupTimeoutTest, StartupGraceAppliesOnlyBeforeFirstReadyFrame)
@@ -60,14 +80,17 @@ TEST(TrajectoryStartupTimeoutTest, StartupWaitCannotExtendActionDeadline)
 TEST(TrajectoryStartupTimeoutTest, InvalidTimingEvidenceFailsClosed)
 {
   EXPECT_TRUE(trajectoryStreamLost(false, -0.01, kDefaultTrajectoryStartupGrace));
-  EXPECT_TRUE(trajectoryStreamLost(
-    false, std::numeric_limits<double>::quiet_NaN(), kDefaultTrajectoryStartupGrace));
-  EXPECT_TRUE(trajectoryStreamLost(
-    true, 0.1, kDefaultTrajectoryStartupGrace,
-    std::numeric_limits<double>::quiet_NaN()));
-  EXPECT_TRUE(trajectoryStartupTimedOut(
-    0.1, kDefaultTrajectoryStartupGrace,
-    std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_TRUE(
+    trajectoryStreamLost(
+      false, std::numeric_limits<double>::quiet_NaN(), kDefaultTrajectoryStartupGrace));
+  EXPECT_TRUE(
+    trajectoryStreamLost(
+      true, 0.1, kDefaultTrajectoryStartupGrace,
+      std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_TRUE(
+    trajectoryStartupTimedOut(
+      0.1, kDefaultTrajectoryStartupGrace,
+      std::numeric_limits<double>::quiet_NaN()));
 }
 
 }  // namespace

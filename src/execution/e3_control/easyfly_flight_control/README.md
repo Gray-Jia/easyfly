@@ -5,6 +5,22 @@ real `/land` action terminal. Ordinary Takeoff, GoToWaypoint, FollowTrajectory a
 Land goals are rejected throughout. `/uav_command` still has this node as its only
 platform flight publisher; the observation converter cannot command flight.
 
+This node generates references and manages action ownership, not a separate
+position/velocity PID. The normal position and trajectory paths use PX4's
+position/velocity outer loops and attitude/angular-rate inner loops.
+
+## C++ checks
+
+`colcon test --packages-select easyfly_flight_control` includes cpplint,
+uncrustify and cppcheck over every C++ file in `include`, `src` and `test`.
+Cppcheck uses its installed `googletest` library to parse test/expectation macros;
+test bodies are still analyzed, with no file exclusions or added suppressions.
+Humble's slow-version override is scoped to this small cppcheck test, so an
+installed cppcheck 2.x is checked rather than silently counted as skipped.
+This is not a whole-workspace lint certification.
+
+## Precision landing configuration
+
 Precision landing is disabled by default. Enable only an explicitly configured
 simulation setup. Startup-only, read-only required parameters:
 

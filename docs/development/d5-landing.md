@@ -360,6 +360,14 @@ state仍可靠depth10，guidance发布仍可靠depth1；重建保持各自QoS，
 稳定性。原失败、指纹、验收范围与尚未清完的C++格式/lint检查见
 schedule-v4第29节；实机、初始序列缺口唯一来源及旧偶发崩溃不签收。
 
+2026-10-11后续C++收尾：桥接与飞控两包全部14个C++文件通过
+cpplint/uncrustify/cppcheck，GoogleTest宏使用系统库配置解析，
+不排除测试文件；检查已纳入各包CTest，cppcheck实际执行、无skip。
+新二进制相关39项CTest及普通任务/原AUTO.LAND接管两项SITL通过，
+无控制逻辑或安全参数变更。原六项矩阵仍关联原二进制，不追认
+全六项已用本版重跑。短时失标仍出现，性能优化未开始；详见
+schedule-v4第31节。这不代表全仓lint或长期鲁棒性完成。
+
 ## 原生输入时序诊断（默认关闭）
 
 隔离仿真入口可显式指定 `--ingress-timing-diagnostics`，仅为原

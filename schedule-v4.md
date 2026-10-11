@@ -3972,3 +3972,78 @@ bridge-header-format.log报告三个文件style divergence（大量原有
 用户明确暂缓项保持不变：旧Gazebo/EGO/semantic偶发退出专项、UI、
 实机/真实云台/动态外参、G9–G11。它们不是已解决，也不是本次提交
 或报告自动授权恢复执行。
+
+## 31. C++检查收尾（限定两包完成，2026-10-11）
+
+用户批准优先处理第30节第1项；开发基线0eececa，仅主agent。
+目标：桥接与飞控包的全部C++格式/cpplint清零，解决测试宏解析
+配置缺口，注册可复跑检查；不改控制算法、QoS或安全阈值，不执行
+间歇失标专项/新控制器/UI/实机/旧偶发崩溃专项，不自动提交git。
+证据根artifacts/cpp-lint-cleanup-20261011.hOnTFN/。
+
+验收标准：两包全部14个C++文件在cpplint/uncrustify/cppcheck中
+实际检查通过，cppcheck非skip；原6处GoogleTest语法FAIL保留，
+加载配置后仍能发现故意缺陷；重建两包并完整行为回归通过，
+消息/QoS/配置参数与安全判断不变，记录实际运行指纹，不追认
+旧二进制的SITL为新版本验收；所属测试/仿真进程清理完整。
+
+31.1 定位与实现：cppcheck-before.log两包6个GoogleTest文件在
+TEST/TEST_F处syntaxError；使用系统已有googletest.cfg后全部通过。
+该配置定义宏展开，不屏蔽syntaxError、不排除测试文件、不改
+系统库。gtest-defect-probe.cpp故意在TEST_F体解引用nullptr，
+cppcheck仍报nullPointer；反例文件只在artifact、不参与生产构建。
+
+两包14文件格式、include顺序/直接memory及string依赖、header guard、
+长行/注释、缺失自有Apache-2.0声明修正。generation日志改为PRIu64
+配实际uint64_t，不改计数值或控制分支。顺手纠正“仅PX4内环”的
+旧注释与包描述，当前正常路径位置/速度外环也由PX4执行。
+格式化器对原单语句if/for添加等价括号，复核逻辑条件/超时/模式值
+不变；原格式与cpplint日志保留。两包CMake新增三项C++检查，
+googletest配置及慢版本override仅限各自cppcheck CTest；test_depend
+声明齐全。cpplint-final.log/format-final.log已通过，正在构建。
+初次README补丁因错误上下文被拒绝，无文件修改，随后用实际内容修正。
+
+31.2 重建与检查：两包构建通过（34.1s），原ELF只读留存在本证据根，
+新Flight ELF 4ac0905e138f77791e38608486a7c6e1dfaced4f8931e3b404e0357d435df5db，
+新Bridge ELF 4899d754708ddd19f97ab32b19596a2a59254139d2b0b9d231a26ed16ac9d5f1。
+bridge完整6/6 CTest、flight完整12/12 CTest通过（包含原3及9项
+行为测试与各自3项新lint）；XML中cppcheck tests=4/10、errors/
+failures/skipped均0，另外四份格式/cpplint XML也无失败或skip。
+新增CMake lint与两package.xml schema均通过。
+两份主要控制cpp的词法序列在忽略注释/空白/括号后与HEAD一致，
+这是格式改动辅助核对、不是语义证明；补括号等价性另行复核并由
+原取消/超时/接管/未知结果/反馈故障回归验证。精准降落21项组件
+回归正在运行，之后串行补验普通任务与原AUTO.LAND接管各一次。
+不是恢复失标专项或重跑旧崩溃；任何飞行FAIL立即保留并停止，无重试。
+
+31.3 最终验收：precision-tests.log完整21/21行为CTest通过（79.42s），
+加上bridge 6/6与flight 12/12，共39项CTest通过，其中6项是新增
+C++ lint。六份lint XML留存在lint-results/，分别实际检查4/10个
+文件，failures/errors/skipped均0；不能把2.x版本skip误算成通过。
+原76条cpplint告警、7文件格式差异及6处测试宏解析FAIL均保留在
+before日志；googletest缺陷反例的nullPointer是预期失败，不混入
+生产PASS或从证据删除。
+
+新二进制普通任务：c1e4d2f7050d48f2ad4fef0db0f5c626真4/true，
+三步完成、同UUID RELEASED；精降6ccd5e9a01bc05a146ffb37cbfc5d892
+经历align/descend/handoff_wait_mode/lost_hold/reacquire_hold/
+land_handoff，同UUID释放，新鲜disarmed，源年龄.1s/receipt约.0475s。
+仍有短时失标及重获，没有以本轮格式清理宣称时序/性能问题已消失。
+4组exit0、child失败空、leftovers空，首次执行通过、未重试。
+
+新二进制外部接管：精降a133c168863f40309e0e472368a02af6真6/false/
+flight evidence/control lost; precision stream stopped。在原descend
+约.948m注入AUTO.LAND，真实ACK/模式确认、精确UUID释放，无内部Land。
+接管前一秒40条实际position输出，确认后观测2.520s；平台+.5s与
+四下游出口+1.5s后均0，离线审计从原始样本独立核对。3组exit0、
+child失败空、leftovers空，预期负向终态不是降落成功。
+
+final-audit.json两轮实际源码/ELF/参数指纹核对通过，
+current_two_scenario_regression_passed=true，missing_formal_cases=[]，
+全部所属PID/start_ticks消失。第29节原六项仍保留原运行版本，不
+追认成本次格式后版本六项全部重跑；本次按风险补验两项，加原
+完整确定性/ROS组件回归。未修改接口消息、QoS或仿真/飞行参数，
+未引入独立控制器/加速度前馈、未恢复暂缓专项；git diff --check通过。
+第30节第1项在桥接/飞控两包C++范围关闭，不声称全仓全部lint清零。
+下一项可安排精降间歇失标/耗时定位，但本轮没有自动开始。未提交
+或推送新git，用户的.codex三文件及codex_cli.sh删除保持原样。

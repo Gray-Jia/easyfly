@@ -1,10 +1,26 @@
+// Copyright 2026 EasyFly Project
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <gtest/gtest.h>
 #include "easyfly_flight_control/flight_controller.hpp"
 
-namespace easyfly_flight_control {
-class NavigationSessionTestPeer {
- public:
-  static void waitForSession(FlightController &node, const std::string &session) {
+namespace easyfly_flight_control
+{
+class NavigationSessionTestPeer
+{
+public:
+  static void waitForSession(FlightController & node, const std::string & session)
+  {
     node.active_ = FlightController::TRAJECTORY_WAIT;
     node.traj_session_id_ = session;
     node.traj_goal_pending_ = false;
@@ -12,7 +28,8 @@ class NavigationSessionTestPeer {
     node.traj_deadline_ = node.now() + rclcpp::Duration::from_seconds(120.0);
     node.traj_baseline_id_ = node.traj_seen_max_id_ = 10;
   }
-  static void receive(FlightController &node, const std::string &session, uint32_t id) {
+  static void receive(FlightController & node, const std::string & session, uint32_t id)
+  {
     auto command = std::make_shared<quadrotor_msgs::msg::PositionCommand>();
     command->header.frame_id = "odom";
     command->header.stamp = node.now();
@@ -22,9 +39,10 @@ class NavigationSessionTestPeer {
     command->trajectory_flag = quadrotor_msgs::msg::PositionCommand::TRAJECTORY_STATUS_READY;
     node.cb_position_cmd(command);
   }
-  static uint32_t watermark(FlightController &node) { return node.traj_seen_max_id_; }
-  static bool received(FlightController &node) { return node.traj_cmd_received_.load(); }
-  static rclcpp_action::GoalResponse admit(FlightController &node, const std::string &session) {
+  static uint32_t watermark(FlightController & node) {return node.traj_seen_max_id_;}
+  static bool received(FlightController & node) {return node.traj_cmd_received_.load();}
+  static rclcpp_action::GoalResponse admit(FlightController & node, const std::string & session)
+  {
     node.active_ = FlightController::HOVER;
     node.uav_.connected = node.uav_.armed = node.uav_.pose_valid = node.uav_.attitude_valid = true;
     node.uav_.flight_mode = 3;
@@ -38,7 +56,7 @@ class NavigationSessionTestPeer {
 };
 
 TEST(NavigationSession, ForeignAndEmptyFramesCannotAdvanceWatermarkOrStart) {
-  if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+  if (!rclcpp::ok()) {rclcpp::init(0, nullptr);}
   FlightController node;
   NavigationSessionTestPeer::waitForSession(node, "new-session");
   NavigationSessionTestPeer::receive(node, "old-session", 999);
@@ -54,11 +72,13 @@ TEST(NavigationSession, ForeignAndEmptyFramesCannotAdvanceWatermarkOrStart) {
 }
 
 TEST(NavigationSession, GoalSessionLengthIsBoundedAndEmptyLegacyGoalRemainsValid) {
-  if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+  if (!rclcpp::ok()) {rclcpp::init(0, nullptr);}
   FlightController node;
-  EXPECT_EQ(NavigationSessionTestPeer::admit(node, std::string(129, 'x')),
-            rclcpp_action::GoalResponse::REJECT);
-  EXPECT_EQ(NavigationSessionTestPeer::admit(node, ""),
-            rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE);
+  EXPECT_EQ(
+    NavigationSessionTestPeer::admit(node, std::string(129, 'x')),
+    rclcpp_action::GoalResponse::REJECT);
+  EXPECT_EQ(
+    NavigationSessionTestPeer::admit(node, ""),
+    rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE);
 }
 }  // namespace easyfly_flight_control

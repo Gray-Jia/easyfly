@@ -1,5 +1,18 @@
-#ifndef EASYFLY_FLIGHT_CONTROL_TRAJECTORY_STARTUP_TIMEOUT_HPP_
-#define EASYFLY_FLIGHT_CONTROL_TRAJECTORY_STARTUP_TIMEOUT_HPP_
+// Copyright 2026 EasyFly Project
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#ifndef EASYFLY_FLIGHT_CONTROL__TRAJECTORY_STARTUP_TIMEOUT_HPP_
+#define EASYFLY_FLIGHT_CONTROL__TRAJECTORY_STARTUP_TIMEOUT_HPP_
 
 #include <cmath>
 
@@ -33,8 +46,8 @@ inline bool trajectoryDeadlineExpired(
   const double deadline_seconds)
 {
   return !std::isfinite(elapsed_seconds) || elapsed_seconds < 0.0 ||
-    !std::isfinite(deadline_seconds) || deadline_seconds <= 0.0 ||
-    elapsed_seconds >= deadline_seconds;
+         !std::isfinite(deadline_seconds) || deadline_seconds <= 0.0 ||
+         elapsed_seconds >= deadline_seconds;
 }
 
 // Before the first READY frame, the planner gets a bounded retry window, but
@@ -54,7 +67,7 @@ inline bool trajectoryStartupTimedOut(
     return true;
   }
   return trajectoryDeadlineExpired(gap_seconds, action_deadline_seconds) ||
-    gap_seconds >= startup_grace_seconds;
+         gap_seconds >= startup_grace_seconds;
 }
 
 // Return true only when the relevant bounded watchdog has elapsed.  Invalid
@@ -73,4 +86,4 @@ inline bool trajectoryStreamLost(
 
 }  // namespace easyfly_flight_control
 
-#endif  // EASYFLY_FLIGHT_CONTROL_TRAJECTORY_STARTUP_TIMEOUT_HPP_
+#endif  // EASYFLY_FLIGHT_CONTROL__TRAJECTORY_STARTUP_TIMEOUT_HPP_

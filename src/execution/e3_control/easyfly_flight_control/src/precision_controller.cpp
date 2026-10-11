@@ -12,6 +12,7 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -167,8 +168,8 @@ bool FlightController::precision_receiver_progress()
   sub_precision_.reset();
   create_precision_receiver();
   RCLCPP_WARN(
-    get_logger(), "precision_receiver_processing_gap: volatile reader rebuilt; generation=%llu",
-    static_cast<unsigned long long>(precision_receiver_generation_));
+    get_logger(), "precision_receiver_processing_gap: volatile reader rebuilt; generation=%" PRIu64,
+    precision_receiver_generation_);
   return false;
 }
 

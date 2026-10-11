@@ -3,7 +3,7 @@
 <package format="3">
   <name>easyfly_flight_control</name>
   <version>0.1.0</version>
-  <description>E3: Flight controller — Takeoff / Land / GoToWaypoint action servers with PID</description>
+  <description>E3: Flight actions and setpoint generation using PX4 closed-loop control</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
   <license>Apache-2.0</license>
 
@@ -18,6 +18,9 @@
   <exec_depend>easyfly_mavlink_bridge</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_cppcheck</test_depend>
+  <test_depend>ament_cmake_cpplint</test_depend>
+  <test_depend>ament_cmake_uncrustify</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>ament_index_python</test_depend>
   <test_depend>rclpy</test_depend>

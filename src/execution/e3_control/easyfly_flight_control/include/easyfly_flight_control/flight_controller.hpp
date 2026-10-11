@@ -1,14 +1,29 @@
-#ifndef EASYFLY_FLIGHT_CONTROL_FLIGHT_CONTROLLER_HPP_
-#define EASYFLY_FLIGHT_CONTROL_FLIGHT_CONTROLLER_HPP_
+// Copyright 2026 EasyFly Project
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp_action/rclcpp_action.hpp>
+#ifndef EASYFLY_FLIGHT_CONTROL__FLIGHT_CONTROLLER_HPP_
+#define EASYFLY_FLIGHT_CONTROL__FLIGHT_CONTROLLER_HPP_
 
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <deque>
+#include <string>
+
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 
 #include <easyfly_msgs/msg/uav_state.hpp>
 #include <easyfly_msgs/msg/flight_status.hpp>
@@ -32,7 +47,7 @@ namespace easyfly_flight_control
 {
 
 // 注: 原 PID 结构已移除 (Q1) — 本节点的实际控制策略为
-// "setpoint 生成 + PX4 OFFBOARD 内环闭环", PID 从未被调用, 属死代码。
+// "setpoint 生成 + PX4 位置/速度外环及姿态/角速度内环闭环"，原 PID 从未被调用。
 // 若阶段四需要速度/姿态外环, 请重新设计并参数化。
 
 class FlightController : public rclcpp::Node
@@ -40,9 +55,10 @@ class FlightController : public rclcpp::Node
   friend class NavigationSessionTestPeer;
   friend class FlightSafetyTestPeer;
   friend class PrecisionLandingTestPeer;
+
 public:
-  using Takeoff      = easyfly_msgs::action::Takeoff;
-  using Land         = easyfly_msgs::action::Land;
+  using Takeoff = easyfly_msgs::action::Takeoff;
+  using Land = easyfly_msgs::action::Land;
   using GoToWaypoint = easyfly_msgs::action::GoToWaypoint;
   using FollowTrajectory = easyfly_msgs::action::FollowTrajectory;
   using PrecisionLand = easyfly_msgs::action::PrecisionLand;
@@ -165,18 +181,19 @@ private:
     const std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>>);
 
   // ---- service clients ----
-  rclcpp::Client<easyfly_msgs::srv::ArmMotors>::SharedPtr     cli_arm_;
+  rclcpp::Client<easyfly_msgs::srv::ArmMotors>::SharedPtr cli_arm_;
   rclcpp::Client<easyfly_msgs::srv::SetFlightMode>::SharedPtr cli_mode_;
 
   // ---- 独立 callback group (client 与 action 回调分离，避免死锁) ----
   rclcpp::CallbackGroup::SharedPtr cli_cb_group_;
   rclcpp::CallbackGroup::SharedPtr ctl_cb_group_;   // control loop 专用
-  rclcpp::CallbackGroup::SharedPtr state_cb_group_; // /uav_state 订阅专用 (Q9)
+  rclcpp::CallbackGroup::SharedPtr state_cb_group_;  // /uav_state 订阅专用 (Q9)
   rclcpp::CallbackGroup::SharedPtr action_cb_group_;
 
   // ---- helpers ----
   bool call_arm(bool arm, const std::function<bool()> & guard = {});
-  bool call_set_mode(uint8_t mode, const std::function<bool()> & guard = {},
+  bool call_set_mode(
+    uint8_t mode, const std::function<bool()> & guard = {},
     const std::function<bool()> & before_send = {});
   double clamp(double v, double lo, double hi);
   // Q9: 等待 PX4 实际进入指定模式 (轮询 /uav_state.flight_mode)
@@ -185,16 +202,19 @@ private:
   easyfly_msgs::msg::UAVState get_uav(
     std::chrono::steady_clock::time_point * receipt = nullptr,
     uint64_t * sequence = nullptr) const;
-  bool land_disarm_confirmed(const easyfly_msgs::msg::UAVState & uav,
+  bool land_disarm_confirmed(
+    const easyfly_msgs::msg::UAVState & uav,
     std::chrono::steady_clock::time_point receipt) const;
   // Q4: 用渐近状态刷新悬停目标并立即发布 setpoint (恢复 OFFBOARD 数据流)
   void enter_hover_at(double x, double y, double z, double yaw);
   // Q4: 反馈值毛刺守卫 (偏差>3m 回退 ramp 值)
   static double safe_axis(double fb, double ramp);
   void stamp_command(easyfly_msgs::msg::UAVCommand & cmd);
-  bool flight_state_ready(const easyfly_msgs::msg::UAVState & uav,
+  bool flight_state_ready(
+    const easyfly_msgs::msg::UAVState & uav,
     std::chrono::steady_clock::time_point receipt) const;
-  bool state_evidence_fresh(const easyfly_msgs::msg::UAVState & uav,
+  bool state_evidence_fresh(
+    const easyfly_msgs::msg::UAVState & uav,
     std::chrono::steady_clock::time_point receipt) const;
   void stop_owned_actions(const std::string & reason);
   // Accepted goal 的所有失败/竞态退出统一经这些 helper 收尾，确保 reservation
@@ -224,8 +244,8 @@ private:
   rclcpp::TimerBase::SharedPtr timer_ctl_;
 
   // ---- action servers ----
-  rclcpp_action::Server<Takeoff>::SharedPtr      as_takeoff_;
-  rclcpp_action::Server<Land>::SharedPtr         as_land_;
+  rclcpp_action::Server<Takeoff>::SharedPtr as_takeoff_;
+  rclcpp_action::Server<Land>::SharedPtr as_land_;
   rclcpp_action::Server<GoToWaypoint>::SharedPtr as_waypoint_;
   rclcpp_action::Server<FollowTrajectory>::SharedPtr as_traj_;
 
@@ -239,12 +259,13 @@ private:
   // ---- waypoint 目标渐近状态 (抗反馈毛刺, 自维护无毛刺插值) ----
   double x_ramp_{0.0}, y_ramp_{0.0}, z_ramp_{0.0};
   double wp_start_x_{0.0}, wp_start_y_{0.0};         // waypoint 起点
-  int    wp_in_radius_frames_{0};                    // Q16: 连续在验收半径内的帧数 (去抖)
+  int wp_in_radius_frames_{0};                       // Q16: 连续在验收半径内的帧数 (去抖)
   uint64_t wp_counted_sequence_{0};
   rclcpp::Time last_ctl_time_;                       // Q12: 上一控制周期时刻 (实测 dt)
 
   // ---- active action ----
-  enum Action {
+  enum Action
+  {
     NONE, TAKEOFF_PREPARING, TAKEOFF, LAND_PREPARING, LANDING, LAND_CANCELING,
     WAYPOINT, HOVER,
     TRAJECTORY_WAIT, TRAJECTORY, PRECISION_GUIDANCE
@@ -287,8 +308,8 @@ private:
   rclcpp::Time wp_deadline_;         // Q5: 航点超时保护
 
   // action goal handles
-  std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>>      gh_takeoff_;
-  std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>>         gh_land_;
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> gh_takeoff_;
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<Land>> gh_land_;
   std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> gh_waypoint_;
   std::shared_ptr<rclcpp_action::ServerGoalHandle<FollowTrajectory>> gh_traj_;
 
@@ -303,7 +324,7 @@ private:
   double traj_stream_timeout_{kTrajectoryStreamTimeout};  // 首帧后流断判定 [s]
   double traj_startup_grace_{kDefaultTrajectoryStartupGrace};
   // 首帧前等待 EGO 有界重试；独立于 traj_stream_timeout_ 和 action deadline。
-  int    traj_in_radius_frames_{0};                  // 到达判定去抖
+  int traj_in_radius_frames_{0};                     // 到达判定去抖
   uint64_t traj_counted_sequence_{0};
   rclcpp::Time traj_accept_time_;
   rclcpp::Time traj_deadline_;
@@ -328,4 +349,4 @@ private:
 
 }  // namespace easyfly_flight_control
 
-#endif  // EASYFLY_FLIGHT_CONTROL_FLIGHT_CONTROLLER_HPP_
+#endif  // EASYFLY_FLIGHT_CONTROL__FLIGHT_CONTROLLER_HPP_

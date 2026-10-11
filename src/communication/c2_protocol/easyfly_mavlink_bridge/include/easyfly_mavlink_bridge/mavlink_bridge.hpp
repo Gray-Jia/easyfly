@@ -1,11 +1,25 @@
-#ifndef EASYFLY_MAVLINK_BRIDGE_MAVLINK_BRIDGE_HPP_
-#define EASYFLY_MAVLINK_BRIDGE_MAVLINK_BRIDGE_HPP_
+// Copyright 2026 EasyFly Project
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-#include <rclcpp/rclcpp.hpp>
+#ifndef EASYFLY_MAVLINK_BRIDGE__MAVLINK_BRIDGE_HPP_
+#define EASYFLY_MAVLINK_BRIDGE__MAVLINK_BRIDGE_HPP_
 
 #include <chrono>
 #include <atomic>
+#include <memory>
 #include <mutex>
+
+#include <rclcpp/rclcpp.hpp>
 
 #include <easyfly_msgs/msg/uav_state.hpp>
 #include <easyfly_msgs/msg/flight_status.hpp>
@@ -41,6 +55,7 @@ namespace easyfly_mavlink_bridge
 class MavlinkBridge : public rclcpp::Node
 {
   friend class BridgeFreshnessTestPeer;
+
 public:
   explicit MavlinkBridge(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
@@ -63,41 +78,41 @@ private:
 
   // ---- service handlers ----
   void cb_arm_motors(
-    const std::shared_ptr<easyfly_msgs::srv::ArmMotors::Request>  req,
-    std::shared_ptr<easyfly_msgs::srv::ArmMotors::Response>       res);
+    const std::shared_ptr<easyfly_msgs::srv::ArmMotors::Request> req,
+    std::shared_ptr<easyfly_msgs::srv::ArmMotors::Response> res);
   void cb_set_flight_mode(
-    const std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Request>  req,
-    std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Response>       res);
+    const std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Request> req,
+    std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Response> res);
 
   // ---- 静态转换工具 ----
   static double quat_to_yaw(double x, double y, double z, double w);
 
   // ---- 订阅者 ----
-  rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr            sub_state_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr    sub_local_pose_;
-  rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr   sub_local_vel_;
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr              sub_imu_;
-  rclcpp::Subscription<mavros_msgs::msg::Altitude>::SharedPtr         sub_altitude_;
-  rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr        sub_global_pos_;
-  rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr     sub_battery_;
-  rclcpp::Subscription<mavros_msgs::msg::RCIn>::SharedPtr             sub_rc_in_;
-  rclcpp::Subscription<easyfly_msgs::msg::UAVCommand>::SharedPtr      sub_uav_command_;
+  rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr sub_state_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_local_pose_;
+  rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr sub_local_vel_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
+  rclcpp::Subscription<mavros_msgs::msg::Altitude>::SharedPtr sub_altitude_;
+  rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr sub_global_pos_;
+  rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr sub_battery_;
+  rclcpp::Subscription<mavros_msgs::msg::RCIn>::SharedPtr sub_rc_in_;
+  rclcpp::Subscription<easyfly_msgs::msg::UAVCommand>::SharedPtr sub_uav_command_;
 
   // ---- 发布者 ----
-  rclcpp::Publisher<easyfly_msgs::msg::UAVState>::SharedPtr      pub_uav_state_;
+  rclcpp::Publisher<easyfly_msgs::msg::UAVState>::SharedPtr pub_uav_state_;
   rclcpp::Publisher<easyfly_msgs::msg::FlightStatus>::SharedPtr pub_flight_status_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr  pub_setpoint_pos_;
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr        pub_setpoint_vel_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_setpoint_pos_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_setpoint_vel_;
   rclcpp::Publisher<mavros_msgs::msg::AttitudeTarget>::SharedPtr pub_setpoint_att_;
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr pub_setpoint_raw_;
 
   // ---- 服务端 ----
-  rclcpp::Service<easyfly_msgs::srv::ArmMotors>::SharedPtr      srv_arm_;
-  rclcpp::Service<easyfly_msgs::srv::SetFlightMode>::SharedPtr  srv_mode_;
+  rclcpp::Service<easyfly_msgs::srv::ArmMotors>::SharedPtr srv_arm_;
+  rclcpp::Service<easyfly_msgs::srv::SetFlightMode>::SharedPtr srv_mode_;
 
   // ---- mavros 客户端 (预创建，避免每次回调重建) ----
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr client_arming_;
-  rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr     client_set_mode_;
+  rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr client_set_mode_;
   std::atomic<bool> command_fault_{false};  // 已发送请求结果未知，人工核查后重启复位。
 
   // ---- 独立 callback group (service 与 client 分离，避免死锁) ----
@@ -127,8 +142,8 @@ private:
   easyfly_msgs::msg::UAVCommand last_cmd_;
   rclcpp::Time last_cmd_time_;
   std::chrono::steady_clock::time_point last_cmd_receipt_{};
-  bool     cmd_received_    {false};
-  double   setpoint_timeout_{1.0};   // 超时秒数，超时后停止发 setpoint (via param)
+  bool cmd_received_    {false};
+  double setpoint_timeout_{1.0};     // 超时秒数，超时后停止发 setpoint (via param)
 
   // 标志位
   bool rcvd_armed_        {false};
@@ -159,4 +174,4 @@ private:
 
 }  // namespace easyfly_mavlink_bridge
 
-#endif  // EASYFLY_MAVLINK_BRIDGE_MAVLINK_BRIDGE_HPP_
+#endif  // EASYFLY_MAVLINK_BRIDGE__MAVLINK_BRIDGE_HPP_
