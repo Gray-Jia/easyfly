@@ -17,8 +17,8 @@ from types import SimpleNamespace as NS
 
 from easyfly_precision_landing.simulation import parse_arguments
 from easyfly_precision_landing.simulation_scenarios import (
-    PrecisionScenario, exact_cancel, fresh_owned_state, held_commands,
-    loss_hold_end, remaining_owned,
+    DOWNSTREAM_TOPICS, PrecisionScenario, exact_cancel, fresh_owned_state, held_commands,
+    downstream_baseline, loss_hold_end, remaining_owned,
 )
 import pytest
 
@@ -127,3 +127,52 @@ def test_residual_identity_guard_includes_zombie_and_rejects_reused_pid():
     ticks = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
     assert remaining_owned({pid: {'start_ticks': ticks}})
     assert not remaining_owned({pid: {'start_ticks': str(int(ticks) + 1)}})
+
+
+@pytest.mark.parametrize('samples', [
+    [], [{'topic': '/mavros/setpoint_raw/local', 'steady': 9.9}],
+    [{'topic': '/mavros/setpoint_position/local', 'steady': 8.0}] * 2,
+    [{'topic': '/mavros/setpoint_position/local', 'steady': 10.1}] * 2,
+    [{'topic': '/mavros/setpoint_position/local', 'steady': 9.9}],
+])
+def test_empty_wrong_old_future_or_single_downstream_is_not_stop_evidence(samples):
+    """Absence on an unused topic cannot establish that a working bridge stopped."""
+    with pytest.raises(RuntimeError, match='baseline missing'):
+        downstream_baseline(samples, 10.)
+
+
+def test_downstream_baseline_records_actual_position_traffic():
+    """Include the real position-mode output and retain all four topic counts."""
+    samples = [{'topic': '/mavros/setpoint_position/local', 'steady': t}
+               for t in (9.6, 9.9)]
+    counts = downstream_baseline(samples, 10.)
+    assert counts['/mavros/setpoint_position/local'] == 2
+    assert len(counts) == 4 and sum(counts.values()) == 2
+
+
+def test_probe_observes_each_real_bridge_output_with_typed_callback():
+    """The normal position output must not be hidden by a raw-only subscription."""
+    subscriptions = []
+
+    def subscribe(kind, topic, callback, qos):
+        subscriptions.append((kind, topic, callback, qos))
+        return object()
+
+    node = NS(create_subscription=subscribe, create_client=lambda *args: object())
+    report = {}
+    scenario = PrecisionScenario('external-takeover', node, report, {}, {}, 0.)
+    for (kind, topic), observed in zip(DOWNSTREAM_TOPICS, subscriptions):
+        assert observed[:2] == (kind, topic)
+        observed[2](kind())
+    assert [s['topic'] for s in scenario.output_samples] == [
+        topic for _, topic in DOWNSTREAM_TOPICS]
+    assert len(scenario.outputs) == 4
+    assert report['scenario']['downstream_samples'] is scenario.output_samples
+
+
+def test_downstream_capacity_exhaustion_cannot_prove_no_new_output():
+    """Fail rather than signing stream silence after a full recorder stops storing."""
+    scenario = PrecisionScenario.__new__(PrecisionScenario)
+    scenario.outputs = [1.] * 10000
+    with pytest.raises(RuntimeError, match='capacity exhausted'):
+        scenario.downstream('/mavros/setpoint_position/local', None)

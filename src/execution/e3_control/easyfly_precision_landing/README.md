@@ -53,11 +53,20 @@ If local steady processing continuity exceeds the existing source-age budget
 sample, clears evidence and rebuilds both volatile readers. Retired reader
 callbacks cannot refresh the new generation; recovery requires newly received
 state and target evidence with the original freshness/pairing checks. Capability
-queries cannot renew processing continuity. Reader depths and reliability remain
-unchanged; RMW wall timestamps are diagnostic only. This protects local reader
+queries cannot renew processing continuity. The pure `/landing_target` reader
+uses best-effort, volatile, depth 1 (including after rebuild) to prefer current
+observations over ordered retransmission. It accepts reliable or best-effort
+writers. The state reader remains reliable depth 10 and guidance output reliable
+depth 1; freshness, replay rejection and loss protection are unchanged.
+RMW wall timestamps are diagnostic only. This protects local reader
 blackouts, not upstream acquisition timestamps or every form of transport delay.
 State failure or external takeover stops platform output. At stable low height,
-an exact internal ordinary Land goal handles final touchdown semantics. Parent
+the controller captures a fixed hold point and a source-time barrier, then waits
+for fresh original MAVROS mode evidence on `/flight_status` strictly after that
+barrier. Aggregated `/uav_state` timestamps cannot authorize handoff. During
+`handoff_wait_mode`, ordinary loss, cancellation and total timeout rules still
+apply; new external mode evidence stops output even before aggregate state catches
+up. Only then may an exact internal ordinary Land goal handle final touchdown. Parent
 ownership persists until its child drains. Unknown mode-command results keep an
 independent fault lock even after the public action ends.
 

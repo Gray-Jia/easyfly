@@ -11,6 +11,7 @@
 #include <deque>
 
 #include <easyfly_msgs/msg/uav_state.hpp>
+#include <easyfly_msgs/msg/flight_status.hpp>
 #include <easyfly_msgs/msg/uav_command.hpp>
 #include <easyfly_msgs/action/takeoff.hpp>
 #include <easyfly_msgs/action/land.hpp>
@@ -72,12 +73,21 @@ private:
   std::string precision_session() const;
   bool precision_target_ready() const;
   bool precision_handoff_ready() const;
+  bool precision_handoff_mode_ready() const;
+  bool precision_mode_control_lost() const;
 
   bool precision_enabled_{false};
   int precision_tag_id_{-1};
   double precision_tag_size_m_{0.0};
   easyfly_precision_landing::Pose precision_handoff_board_;
   bool precision_handoff_aligned_{false};
+  bool precision_handoff_pending_{false};
+  int64_t precision_handoff_barrier_ns_{0};
+  int64_t precision_start_source_ns_{0};
+  easyfly_precision_landing::Pose precision_handoff_hold_;
+  easyfly_msgs::msg::FlightStatus flight_status_;
+  std::chrono::steady_clock::time_point flight_status_receipt_{};
+  rclcpp::Subscription<easyfly_msgs::msg::FlightStatus>::SharedPtr sub_flight_status_;
   std::string precision_optical_frame_;
   easyfly_precision_landing::Config precision_config_;
   std::unique_ptr<easyfly_precision_landing::Policy> precision_policy_;

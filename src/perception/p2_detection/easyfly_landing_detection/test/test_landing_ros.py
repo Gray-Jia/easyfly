@@ -21,10 +21,13 @@ import tempfile
 import time
 import unittest
 import rclpy
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from easyfly_msgs.msg import TagObservationArray, TagObservation, LandingTarget
 
 
 class LandingRos(unittest.TestCase):
+    publication_reliability = ReliabilityPolicy.RELIABLE
+
     def test_explicit_selection_loss_bad_pose_and_expiration(self):
         rclpy.init()
         node = rclpy.create_node('landing_test')
@@ -32,7 +35,8 @@ class LandingRos(unittest.TestCase):
         self.addCleanup(rclpy.shutdown)
         self.addCleanup(node.destroy_node)
         pub = node.create_publisher(
-            TagObservationArray, '/tag_observations', 10
+            TagObservationArray, '/tag_observations',
+            QoSProfile(depth=10, reliability=self.publication_reliability)
         )
         node.create_subscription(
             LandingTarget, '/landing_target', outputs.append, 10
@@ -75,6 +79,8 @@ class LandingRos(unittest.TestCase):
             while time.monotonic() < end:
                 rclpy.spin_once(node, timeout_sec=0.01)
 
+        previous_stamp = [None]
+
         def send(kind):
             outputs.clear()
             m = TagObservationArray(valid=True)
@@ -99,17 +105,37 @@ class LandingRos(unittest.TestCase):
                 m.valid = False
             elif kind == 'frame':
                 m.header.frame_id = 'map'
+            elif kind == 'stale':
+                m.header.stamp.sec -= 1
+            elif kind == 'replay':
+                m.header.stamp = previous_stamp[0]
+                o.header = m.header
+            previous_stamp[0] = m.header.stamp
             pub.publish(m)
             spin(0.12)
             self.assertTrue(outputs)
             return outputs[-1]
 
         try:
-            spin(0.4)
+            discovery_end = time.monotonic() + 3.0
+            matched = []
+            while not matched and time.monotonic() < discovery_end:
+                spin(0.05)
+                matched = [info for info in node.get_subscriptions_info_by_topic(
+                    '/tag_observations') if info.node_name == 'landing_detection']
+            self.assertEqual(len(matched), 1)
+            # RTPS discovery does not expose history/depth in this RMW.
+            self.assertEqual(matched[0].qos_profile.reliability,
+                             ReliabilityPolicy.BEST_EFFORT)
+            output_info = node.get_publishers_info_by_topic('/landing_target')
+            self.assertEqual(len(output_info), 1)
+            self.assertEqual(output_info[0].qos_profile.reliability,
+                             ReliabilityPolicy.RELIABLE)
             good = send('good')
             self.assertTrue(good.valid)
             self.assertEqual(good.optical_depth_m, 2.0)
             self.assertEqual(good.yaw_rad, 0.0)
+            self.assertFalse(send('replay').valid)
             for kind in (
                 'empty',
                 'other',
@@ -118,6 +144,7 @@ class LandingRos(unittest.TestCase):
                 'depth',
                 'invalid',
                 'frame',
+                'stale',
             ):
                 self.assertFalse(send(kind).valid, kind)
             self.assertTrue(send('good').valid)
@@ -143,6 +170,10 @@ class LandingRos(unittest.TestCase):
                                     int(event['publish_begin_wall_ns']))
             self.assertGreaterEqual(int(event['publish_begin_wall_ns']),
                                     int(event['entry_wall_ns']))
+
+
+class BestEffortLandingRos(LandingRos):
+    publication_reliability = ReliabilityPolicy.BEST_EFFORT
 
 
 if __name__ == '__main__':

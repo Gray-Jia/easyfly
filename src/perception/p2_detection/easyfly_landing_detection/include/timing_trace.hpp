@@ -10,17 +10,18 @@
 // limitations under the License.
 
 #pragma once
+#include <fcntl.h>
+#include <unistd.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <fcntl.h>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <unistd.h>
 
 namespace ef_timing
 {
@@ -70,11 +71,10 @@ public:
     for (size_t i = count_ - retained; i < count_; ++i) {
       const auto & e = (*events_)[i % capacity];
       fprintf(
-        file_, "%zu\t%d\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%lld\t%d\t%s\n",
-        i, e.input, static_cast<long long>(e.source_ns), static_cast<long long>(e.writer_wall_ns),
-        static_cast<long long>(e.receive_wall_ns), static_cast<long long>(e.entry_wall_ns),
-        static_cast<long long>(e.entry_ros_ns), static_cast<long long>(e.publish_begin_wall_ns),
-        static_cast<long long>(e.publish_end_wall_ns), e.valid, e.reason);
+        file_, "%zu\t%d\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%" PRId64
+        "\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%d\t%s\n",
+        i, e.input, e.source_ns, e.writer_wall_ns, e.receive_wall_ns, e.entry_wall_ns,
+        e.entry_ros_ns, e.publish_begin_wall_ns, e.publish_end_wall_ns, e.valid, e.reason);
     }
     const bool failed = ferror(file_) != 0;
     if (fclose(file_) != 0 || failed) {

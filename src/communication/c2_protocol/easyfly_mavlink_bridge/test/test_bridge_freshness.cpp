@@ -56,6 +56,14 @@ public:
     rc->channels.push_back(1500);
     node.cb_rc_in(rc);
   }
+  static void status(MavlinkBridge & node, int64_t stamp, const std::string & mode = "OFFBOARD")
+  {
+    auto message = std::make_shared<mavros_msgs::msg::State>();
+    message->header.stamp = rclcpp::Time(stamp);
+    message->connected = message->armed = true;
+    message->mode = mode;
+    node.cb_state(message);
+  }
   static easyfly_msgs::msg::UAVState snapshot(MavlinkBridge & node)
   {
     node.publish_state();
@@ -119,15 +127,22 @@ protected:
     subscription_ = peer_->create_subscription<geometry_msgs::msg::PoseStamped>(
       "/mavros/setpoint_position/local", 10,
       [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr) {++setpoints_;});
+    status_subscription_ = peer_->create_subscription<easyfly_msgs::msg::FlightStatus>(
+      "/flight_status", 10, [this](easyfly_msgs::msg::FlightStatus::ConstSharedPtr message) {
+        status_ = *message;
+        ++status_count_;
+      });
     rclcpp::ExecutorOptions executor_options;
     executor_options.context = context_;
     executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>(executor_options);
     executor_->add_node(node_);
     executor_->add_node(peer_);
     const auto deadline = std::chrono::steady_clock::now() + 2s;
-    while (subscription_->get_publisher_count() == 0 &&
+    while ((subscription_->get_publisher_count() == 0 ||
+      status_subscription_->get_publisher_count() == 0) &&
       std::chrono::steady_clock::now() < deadline) {std::this_thread::sleep_for(5ms);}
     ASSERT_GT(subscription_->get_publisher_count(), 0U);
+    ASSERT_GT(status_subscription_->get_publisher_count(), 0U);
   }
   void TearDown() override
   {
@@ -146,8 +161,44 @@ protected:
   rclcpp::Node::SharedPtr peer_;
   std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr subscription_;
+  rclcpp::Subscription<easyfly_msgs::msg::FlightStatus>::SharedPtr status_subscription_;
+  easyfly_msgs::msg::FlightStatus status_;
+  int status_count_{0};
   int setpoints_{0};
 };
+
+TEST_F(BridgeFreshness, ModeSourceDoesNotBecomeAggregatePublicationTime)
+{
+  BridgeFreshnessTestPeer::status(*node_, 10000000000LL);
+  BridgeFreshnessTestPeer::snapshot(*node_);
+  spin();
+  ASSERT_GT(status_count_, 0);
+  EXPECT_TRUE(status_.valid);
+  EXPECT_EQ(rclcpp::Time(status_.header.stamp).nanoseconds(), 10000000000LL);
+  BridgeFreshnessTestPeer::freeze(*node_, 11);
+  const auto aggregate = BridgeFreshnessTestPeer::snapshot(*node_);
+  spin();
+  EXPECT_EQ(rclcpp::Time(aggregate.header.stamp).nanoseconds(), 11000000000LL);
+  EXPECT_EQ(rclcpp::Time(status_.header.stamp).nanoseconds(), 10000000000LL);
+  EXPECT_FALSE(status_.valid);
+}
+
+TEST_F(BridgeFreshness, DuplicateModeCannotRenewReceiptAndNewSourceRestoresIt)
+{
+  BridgeFreshnessTestPeer::status(*node_, 10000000000LL);
+  std::this_thread::sleep_for(80ms);
+  BridgeFreshnessTestPeer::status(*node_, 10000000000LL);
+  BridgeFreshnessTestPeer::snapshot(*node_);
+  spin();
+  EXPECT_FALSE(status_.valid);
+  EXPECT_GE(status_.receipt_age_s, .08);
+  BridgeFreshnessTestPeer::status(*node_, 10000000001LL, "AUTO.LAND");
+  BridgeFreshnessTestPeer::snapshot(*node_);
+  spin();
+  EXPECT_TRUE(status_.valid);
+  EXPECT_EQ(status_.flight_mode_name, "AUTO.LAND");
+  EXPECT_EQ(status_.flight_mode, 7);
+}
 
 TEST_F(BridgeFreshness, FrozenClockTelemetryExpiresAndOnlyNewInputRestoresValidity)
 {

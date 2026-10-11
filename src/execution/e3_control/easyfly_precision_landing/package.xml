@@ -24,6 +24,7 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>mavros_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>gazebo_msgs</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
   <exec_depend>easyfly_apriltag_detection</exec_depend>

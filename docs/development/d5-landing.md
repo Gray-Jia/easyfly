@@ -12,6 +12,7 @@
 | `/gimbal/set_tracking` | 显式目标ID，odom目标结合新鲜UAV姿态转FLU；只控制云台 |
 | `/gimbal/simulate_connection` | 仅模拟故障注入；恢复不复活旧命令 |
 | `/landing/guidance_target` | 原图像源时间、odom板中心/法向、标签ID与尺寸；仅观测，不是命令 |
+| `/flight_status` | 原MAVROS State源时间、模式/armed、首次接收年龄与有效性；独立观测，不是命令 |
 | `/precision_land` | PrecisionLand Action，tag_id＋steady总期限；真实阶段反馈/取消/终态 |
 | `/precision_landing/ownership` | 精确UUID，只有RELEASED代表动作槽排空，未知保持锁 |
 | `/trigger_landing` | 兼容启动入口，accepted不等于降落成功；不支持有限XY或自定速度 |
@@ -300,6 +301,64 @@ offset span≤.03m、world ground span≤.005m，冻结median(odom_z-world_z)。
 1过期，无持续失标；默认关闭YT7636控制tag/raw/guidance各240帧全valid，无lost。
 不以再运行覆盖原FAIL或降低三相机30Hz/.2m板负载，也不把本轮签收追认成S21唯一
 原因、全负载长期鲁棒性或实机验收。完整原始证据与结果见schedule-v4第17节。
+
+## 标签观测入口修复（2026-10-11）
+
+实际DDS缓存取证确认：可靠标签订阅会因未解决的前序序列，将已缓存
+的新观测标为future、暂不可读；真实负载曾等待339ms。初始序列缺口
+的唯一来源仍未知，详见schedule-v4第27节，旧失败证据不删除。
+经独立候选及用户批准，仅LandingNode的`/tag_observations`订阅改为
+best-effort、VOLATILE、KEEP_LAST depth1；发布者不变，输出及控制
+动作/服务仍可靠。不请求补齐缺失旧帧，允许丢帧；不是扩大缓存、
+TTL、状态配对容差、失标期限或重写source。丢帧/无新有效目标仍
+按原保护停止下降，重获仍需5帧。此有意变更取代先前“QoS不变”的
+阶段性记录，不改变其他链路的可靠性。
+正式landing 12/12检查、precision 21/21行为CTest通过；普通安装、
+全部诊断关闭的完整任务/短时重获/持续失标/下降取消/收尾取消
+五项通过。原外部接管脚本通过，但下游无正向基线，补强工具后的
+接管验证发现AUTO.LAND与内部Land收尾竞争、真实FAIL；后续修复见下节。
+具体UUID、真实终态、参数与清理证据见
+schedule-v4第28节。该已确认的tag reader等待旧帧路径已消除，
+不追认历史失败唯一原因、不声称其他输入延迟或实机风险全部消失。
+
+外部接管的下游停流验收必须先有正向观察基线：仿真工具监听桥的
+position/velocity/attitude/raw四种真实出口，在接管前一秒内要求
+至少两条实际position输出，空记录/过期/未来记录不能通过；记录
+各出口计数和真实确认接管后的停流窗口。全轮只监听未使用的raw
+话题得到的“无输出”不是证据，历史此类结果保留但不单独签收下游。
+这只是验收工具修正，平台/PX4的控制策略和停止期限不变。
+补验已取得40条实际position输出，不再是空观察；但接管时飞机
+先降低至交接区间，模式新证据到达前内部Land已收尾，父动作真成功
+而非预期接管失败。该历史FAIL保留，不能换接管模式或用未改代码的
+重跑来追认修复；新版本验收单独记录。
+
+## 独立模式证据与转换入口优化（2026-10-11）
+
+桥接新增FlightStatus，不改原UAVState ABI。保留原MAVROS源header，
+需同步构建easyfly_msgs、easyfly_mavlink_bridge及easyfly_flight_control；
+缺少独立模式输出不能用聚合header代替，交接等待至原总超时失败。
+重复/倒序source不能刷新首次steady receipt。精准降落首次满足
+低高度稳定对准时捕获固定悬停点及源时间屏障，发布handoff_wait_mode，
+等待严格晚于屏障且原源/接收年龄均可信的独立OFFBOARD证据。
+Land准入及实际发送模式请求前仍复核；新外部模式证据可在聚合状态
+仍旧OFFBOARD时终止并停流。等待仍受原目标保护、取消及总超时约束。
+交给Land之后保留原真实子动作取消与未知结果保锁规则。
+这不是PX4模式请求的跨操作者原子事务，也不保证外部接管瞬时可见。
+
+新版本首次原AUTO.LAND场景已真实ABORTED、无内部Land、下游40条
+正向基线后停止输出。随后普通任务在尚未到交接阶段时遇另一入口
+延迟（上游源年龄52ms、转换输出424ms），完整FAIL保留。独立无飞行
+诊断没有复现，不宣称初始序列缺口起因已唯一确定。
+用户批准独立候选验证后，仅转换的纯/landing_target订阅也改为
+BEST_EFFORT/VOLATILE/depth1；候选普通任务及真实可靠/非可靠发布者
+兼容、过期/重放/冻结保护与退出测试通过后合入。
+state仍可靠depth10，guidance发布仍可靠depth1；重建保持各自QoS，
+没有改变控制发布、TTL、配对或失标安全参数。当前正式六项矩阵
+（普通任务、重获、持续失标、两项取消、原AUTO.LAND接管）全部通过，
+精确UUID释放、新鲜终态、实际下游基线/停流及进程清理均复核。
+普通任务仍出现短时失标并按保护恢复，不宣称全时段零失标或长期
+稳定性。原失败、指纹、验收范围与尚未清完的C++格式/lint检查见
+schedule-v4第29节；实机、初始序列缺口唯一来源及旧偶发崩溃不签收。
 
 ## 原生输入时序诊断（默认关闭）
 

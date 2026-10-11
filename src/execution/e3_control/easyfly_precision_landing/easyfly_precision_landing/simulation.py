@@ -40,6 +40,7 @@ from ament_index_python.packages import (
 from easyfly_msgs.action import ExecuteMission, PrecisionLand, Takeoff
 from easyfly_px4_sitl.hrt_compatibility import select_px4_directory
 from easyfly_msgs.msg import (
+    FlightStatus,
     LandingGuidanceTarget,
     LandingTarget,
     MissionStatus,
@@ -63,6 +64,7 @@ from easyfly_precision_landing.simulation_setup import (
     validate_staging,
 )
 from easyfly_precision_landing.node import DiagnosticExecutor
+from easyfly_precision_landing import node as observation_implementation
 from easyfly_precision_landing.simulation_reference import (
     fixture_plane_world_z, ground_sample, height_reference,
 )
@@ -387,6 +389,7 @@ def main():
         "actions": {},
         "exits": {},
         "flight_samples": [],
+        "flight_status_samples": [],
         "precision_feedback": [],
         "mission_feedback": [],
         "mode": "mission" if args.mission else (
@@ -395,7 +398,7 @@ def main():
         "staging": staging,
         "runtime": {
             "transform_source_sha256": hashlib.sha256(
-                Path(__file__).with_name("node.py").read_bytes()).hexdigest(),
+                Path(observation_implementation.__file__).read_bytes()).hexdigest(),
             "landing_binary_sha256": hashlib.sha256((Path(
                 get_package_prefix("easyfly_landing_detection")) /
                 "lib/easyfly_landing_detection/landing_detection_node").read_bytes()).hexdigest(),
@@ -406,6 +409,9 @@ def main():
             "scenario_helper_sha256": hashlib.sha256(
                 Path(__file__).with_name("simulation_scenarios.py").read_bytes()).hexdigest(),
             "px4_sha256": hashlib.sha256(Path(staging["binary"]).read_bytes()).hexdigest(),
+            "bridge_binary_sha256": hashlib.sha256((Path(
+                get_package_prefix("easyfly_mavlink_bridge")) /
+                "lib/easyfly_mavlink_bridge/mavlink_bridge_node").read_bytes()).hexdigest(),
             "flight_binary_sha256": hashlib.sha256((Path(
                 get_package_prefix("easyfly_flight_control")) /
                 "lib/easyfly_flight_control/flight_control_node").read_bytes()).hexdigest(),
@@ -562,6 +568,16 @@ def main():
                 scenario.state(message)
         if topic == "/uav_state":
             ground_states.append((message, receipts[topic]))
+        if topic == "/flight_status":
+            if len(report["flight_status_samples"]) >= 10000:
+                raise RuntimeError("flight-status observation capacity exhausted")
+            report["flight_status_samples"].append({
+                "source_ns": message.header.stamp.sec * 1000000000 + message.header.stamp.nanosec,
+                "clock_ns": node.get_clock().now().nanoseconds,
+                "observer_receipt_steady_s": receipts[topic],
+                "receipt_age_s": message.receipt_age_s, "valid": message.valid,
+                "mode": message.flight_mode_name, "armed": message.armed,
+                "connected": message.connected})
         if (
             topic == "/uav_command" and counts[topic] % 5 == 0
             and len(report["command_samples"]) < 10000
@@ -651,6 +667,7 @@ def main():
 
     for topic, kind in [
         ("/uav_state", UAVState),
+        ("/flight_status", FlightStatus),
         ("/uav_command", UAVCommand),
         ("/tag_observations", TagObservationArray),
         ("/landing_target", LandingTarget),
@@ -1250,6 +1267,7 @@ def main():
                     if key
                     not in (
                         "flight_samples",
+                        "flight_status_samples",
                         "precision_feedback",
                         "mission_feedback",
                         "command_samples",

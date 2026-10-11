@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include <easyfly_msgs/msg/uav_state.hpp>
+#include <easyfly_msgs/msg/flight_status.hpp>
 #include <easyfly_msgs/msg/uav_command.hpp>
 #include <easyfly_msgs/msg/gimbal_state.hpp>
 
@@ -84,6 +85,7 @@ private:
 
   // ---- 发布者 ----
   rclcpp::Publisher<easyfly_msgs::msg::UAVState>::SharedPtr      pub_uav_state_;
+  rclcpp::Publisher<easyfly_msgs::msg::FlightStatus>::SharedPtr pub_flight_status_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr  pub_setpoint_pos_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr        pub_setpoint_vel_;
   rclcpp::Publisher<mavros_msgs::msg::AttitudeTarget>::SharedPtr pub_setpoint_att_;
@@ -108,6 +110,10 @@ private:
   // ---- 聚合缓存 ----
   mutable std::mutex state_mtx_;
   easyfly_msgs::msg::UAVState uav_;
+  easyfly_msgs::msg::FlightStatus flight_status_;
+  int64_t flight_status_watermark_{0};
+  bool flight_status_source_valid_{false};
+  std::chrono::steady_clock::time_point flight_status_receipt_{};
 
   // ---- Q17: RC 掉线检测 ----
   rclcpp::Time last_rc_time_;          // 最近一次收到 RCIn 的时刻 (0=从未收到)

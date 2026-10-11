@@ -10,6 +10,7 @@ find_package(builtin_interfaces REQUIRED)
 set(msg_files
   "msg/NavigationSession.msg"
   "msg/UAVState.msg"
+  "msg/FlightStatus.msg"
   "msg/UAVCommand.msg"
   "msg/DetectionInfo.msg"
   "msg/DetectionInfoArray.msg"

@@ -77,6 +77,15 @@ void FlightController::initialize_precision_landing()
   precision_policy_ = std::make_unique<easyfly_precision_landing::Policy>(config);
   precision_receiver_progress_time_ = std::chrono::steady_clock::now();
   create_precision_receiver();
+  rclcpp::SubscriptionOptions status_options;
+  status_options.callback_group = state_cb_group_;
+  sub_flight_status_ = create_subscription<easyfly_msgs::msg::FlightStatus>(
+    "/flight_status", rclcpp::QoS(1).best_effort(),
+    [this](easyfly_msgs::msg::FlightStatus::ConstSharedPtr status) {
+      std::lock_guard<std::mutex> lock(state_mtx_);
+      flight_status_ = *status;
+      flight_status_receipt_ = std::chrono::steady_clock::now();
+    }, status_options);
   if (precision_timing_diagnostics_) {
     timer_precision_timing_ = create_wall_timer(
       std::chrono::seconds(1), [this]() {flush_precision_timing();}, state_cb_group_);
@@ -314,6 +323,8 @@ rclcpp_action::GoalResponse FlightController::handle_precision_goal(
   precision_reserved_ = true;
   precision_terminal_ = false;
   precision_handoff_aligned_ = false;
+  precision_handoff_pending_ = false;
+  precision_handoff_barrier_ns_ = 0;
   precision_cancel_requested_ = false;
   precision_completion_deferred_ = false;
   precision_stop_reason_.clear();
@@ -344,6 +355,7 @@ void FlightController::handle_precision_accepted(
     return;
   }
   precision_start_ = precision_last_control_ = std::chrono::steady_clock::now();
+  precision_start_source_ns_ = now().nanoseconds();
   precision_policy_->start({uav.position_x, uav.position_y, uav.position_z}, steady_seconds());
   active_ = PRECISION_GUIDANCE;
   hover_yaw_ = uav.yaw;
@@ -364,7 +376,8 @@ bool FlightController::precision_control_loop()
   const auto current = std::chrono::steady_clock::now();
   const bool trusted = !command_uncertain_ &&
     rclcpp::ok(get_node_base_interface()->get_context()) &&
-    uav.header.frame_id == "odom" && flight_state_ready(uav, receipt);
+    uav.header.frame_id == "odom" && flight_state_ready(uav, receipt) &&
+    (precision_handoff_ || !precision_mode_control_lost());
   const bool timed_out = std::chrono::duration<double>(current - precision_start_).count() >=
     gh_precision_->get_goal()->timeout;
   if (precision_stop_reason_.empty()) {
@@ -415,9 +428,26 @@ bool FlightController::precision_control_loop()
   observation.normal_z = precision_target_.plane_normal.z;
   const double dt = std::chrono::duration<double>(current - precision_last_control_).count();
   precision_last_control_ = current;
-  const auto decision = precision_policy_->step(
+  auto decision = precision_policy_->step(
     {uav.position_x, uav.position_y, uav.position_z}, observation,
     steady_seconds(), std::max(1e-6, dt));
+  if (decision.handoff) {
+    if (!precision_handoff_pending_) {
+      precision_handoff_pending_ = true;
+      precision_handoff_barrier_ns_ = now().nanoseconds();
+      precision_handoff_hold_ = {uav.position_x, uav.position_y, uav.position_z};
+    }
+    // Never chase measured altitude while awaiting a distinct post-decision
+    // mode observation. Aggregate state publication does not provide one.
+    decision.x = precision_handoff_hold_.x;
+    decision.y = precision_handoff_hold_.y;
+    decision.z = precision_handoff_hold_.z;
+    decision.handoff = precision_handoff_mode_ready();
+    decision.phase = decision.handoff ? "land_handoff" : "handoff_wait_mode";
+  } else {
+    precision_handoff_pending_ = false;
+    precision_handoff_barrier_ns_ = 0;
+  }
   auto feedback = std::make_shared<PrecisionLand::Feedback>();
   feedback->phase = decision.phase;
   feedback->target_valid = decision.target_valid;
@@ -474,7 +504,8 @@ bool FlightController::precision_handoff_ready() const
   const auto uav = get_uav(&receipt);
   const auto & target = precision_target_.position;
   const double height = uav.position_z - target.z;
-  return precision_handoff_aligned_ && precision_stop_reason_.empty() &&
+  return precision_handoff_aligned_ && precision_handoff_mode_ready() &&
+         precision_stop_reason_.empty() &&
          !precision_cancel_requested_ && precision_target_ready() &&
          flight_state_ready(uav, receipt) && uav.header.frame_id == "odom" &&
          uav.armed && uav.flight_mode == 3 && height >= 0 &&
@@ -484,6 +515,40 @@ bool FlightController::precision_handoff_ready() const
          std::hypot(
     target.x - precision_handoff_board_.x,
     target.y - precision_handoff_board_.y) <= precision_config_.target_jump;
+}
+
+bool FlightController::precision_handoff_mode_ready() const
+{
+  std::lock_guard<std::mutex> lock(state_mtx_);
+  const auto & status = flight_status_;
+  const int64_t source = source_stamp(status.header);
+  const double source_age = static_cast<double>(now().nanoseconds() - source) * 1e-9;
+  const double receipt_age = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - flight_status_receipt_).count();
+  return precision_handoff_pending_ && precision_handoff_barrier_ns_ > 0 &&
+         source > precision_handoff_barrier_ns_ && status.valid && status.connected &&
+         status.armed && status.flight_mode == 3 && status.flight_mode_name == "OFFBOARD" &&
+         std::isfinite(status.receipt_age_s) && status.receipt_age_s >= 0 &&
+         status.receipt_age_s <= 1.0 && source_age >= -0.2 && source_age <= 1.0 &&
+         flight_status_receipt_ != std::chrono::steady_clock::time_point{} &&
+         receipt_age >= 0 && status.receipt_age_s + receipt_age <= 1.0;
+}
+
+bool FlightController::precision_mode_control_lost() const
+{
+  std::lock_guard<std::mutex> lock(state_mtx_);
+  const auto & status = flight_status_;
+  const int64_t source = source_stamp(status.header);
+  const double source_age = static_cast<double>(now().nanoseconds() - source) * 1e-9;
+  const double receipt_age = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - flight_status_receipt_).count();
+  return precision_start_source_ns_ > 0 && source > precision_start_source_ns_ &&
+         status.valid && status.connected &&
+         (!status.armed || status.flight_mode != 3 || status.flight_mode_name != "OFFBOARD") &&
+         std::isfinite(status.receipt_age_s) && status.receipt_age_s >= 0 &&
+         source_age >= -0.2 && source_age <= 1.0 &&
+         flight_status_receipt_ != std::chrono::steady_clock::time_point{} &&
+         receipt_age >= 0 && status.receipt_age_s + receipt_age <= 1.0;
 }
 
 rclcpp_action::CancelResponse FlightController::handle_precision_cancel(
@@ -534,6 +599,8 @@ void FlightController::finish_precision(
   }
   precision_reserved_ = false;
   precision_handoff_ = false;
+  precision_handoff_pending_ = false;
+  precision_handoff_barrier_ns_ = 0;
   precision_child_admission_pending_ = false;
   precision_child_cancel_pending_ = false;
   precision_child_cancel_accepted_ = false;

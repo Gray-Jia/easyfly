@@ -12,12 +12,14 @@
 """Explicit simulation-only lifecycle probes; never fabricate flight observations."""
 
 import math
+from functools import partial
 from pathlib import Path
 import time
 
 from action_msgs.msg import GoalStatusArray
 from easyfly_msgs.srv import GetActionOwnership
-from mavros_msgs.msg import PositionTarget
+from geometry_msgs.msg import PoseStamped, Twist
+from mavros_msgs.msg import AttitudeTarget, PositionTarget
 from mavros_msgs.srv import SetMode
 from rclpy.qos import qos_profile_sensor_data, DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Image
@@ -25,6 +27,21 @@ from sensor_msgs.msg import Image
 
 SCENARIOS = ('nominal', 'loss-recover', 'loss-persistent', 'cancel-descent',
              'cancel-handoff', 'external-takeover')
+DOWNSTREAM_TOPICS = (
+    (PoseStamped, '/mavros/setpoint_position/local'),
+    (Twist, '/mavros/setpoint_velocity/cmd_vel_unstamped'),
+    (AttitudeTarget, '/mavros/setpoint_raw/attitude'),
+    (PositionTarget, '/mavros/setpoint_raw/local'),
+)
+
+
+def downstream_baseline(samples, now):
+    """Require actual recent position-mode bridge traffic before a takeover test."""
+    counts = {topic: sum(s['topic'] == topic and 0 <= now - s['steady'] <= 1.
+                         for s in samples) for _, topic in DOWNSTREAM_TOPICS}
+    if counts['/mavros/setpoint_position/local'] < 2:
+        raise RuntimeError('fresh downstream position traffic baseline missing')
+    return counts
 
 
 class ScenarioComplete(Exception):
@@ -120,19 +137,29 @@ class PrecisionScenario:
         self.confirmed = None
         self.images_enabled = True
         self.commands, self.outputs, self.land_statuses = [], [], {}
+        self.output_samples = []
         self.relay = (node.create_publisher(Image, '/d5_test/image_raw', qos_profile_sensor_data)
                       if name.startswith('loss-') else None)
         self.mode_client = (node.create_client(SetMode, '/mavros/set_mode')
                             if name == 'external-takeover' else None)
         self.subscriptions = [node.create_subscription(
-            PositionTarget, '/mavros/setpoint_raw/local',
-            lambda m: self.outputs.append(time.monotonic()), qos_profile_sensor_data)]
+            kind, topic, partial(self.downstream, topic), qos_profile_sensor_data)
+            for kind, topic in DOWNSTREAM_TOPICS]
         self.subscriptions.append(node.create_subscription(
             GoalStatusArray, '/land/_action/status', self.land_status,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)))
         report['scenario'] = {'name': name, 'injected': False}
         report['scenario']['command_samples'] = self.commands
         report['scenario']['downstream_steady_samples'] = self.outputs
+        report['scenario']['downstream_samples'] = self.output_samples
+
+    def downstream(self, topic, message):
+        """Observe all actual bridge outputs; reject truncated acceptance evidence."""
+        if len(self.outputs) >= 10000:
+            raise RuntimeError('downstream observation capacity exhausted')
+        now = time.monotonic()
+        self.outputs.append(now)
+        self.output_samples.append({'topic': topic, 'steady': now})
 
     def land_status(self, message):
         """Observe the sole internal Land started during the owned precision action."""
@@ -188,6 +215,9 @@ class PrecisionScenario:
                 fresh = fresh_owned_state(state, receipt, ros_now, now, 'AUTO.LAND')
             if not fresh:
                 return
+            if self.name == 'external-takeover':
+                self.report['scenario']['downstream_baseline'] = downstream_baseline(
+                    self.output_samples, now)
             self.injected = now
             self.report['scenario'].update(injected=True, injected_steady=now,
                                            goal_uuid=self.identity, trigger_phase=phase,
@@ -301,8 +331,13 @@ class PrecisionScenario:
                 if self.confirmed is None:
                     wait(self.confirm_takeover, 5)
                 wait(lambda: time.monotonic() - began >= 2.5, 4)
-                if (any(c['steady'] >= self.confirmed + .5 for c in self.commands)
-                        or any(t >= self.confirmed + 1.5 for t in self.outputs)):
+                late_commands = sum(c['steady'] >= self.confirmed + .5 for c in self.commands)
+                late_outputs = sum(t >= self.confirmed + 1.5 for t in self.outputs)
+                self.report['scenario']['takeover_stream_check'] = {
+                    'confirmed_steady': self.confirmed, 'observed_until_steady': time.monotonic(),
+                    'late_platform_commands': late_commands,
+                    'late_downstream_outputs': late_outputs}
+                if late_commands or late_outputs:
                     raise RuntimeError('platform setpoints continued after external takeover')
             else:
                 wait(lambda: time.monotonic() - began >= .6, 2)

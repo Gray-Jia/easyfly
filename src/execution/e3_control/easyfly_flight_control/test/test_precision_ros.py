@@ -22,7 +22,7 @@ from ament_index_python.packages import get_package_prefix
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from action_msgs.srv import CancelGoal
 from easyfly_msgs.action import GoToWaypoint, Land, PrecisionLand, Takeoff
-from easyfly_msgs.msg import LandingGuidanceTarget, UAVCommand, UAVState
+from easyfly_msgs.msg import FlightStatus, LandingGuidanceTarget, UAVCommand, UAVState
 from easyfly_msgs.srv import (
     ArmMotors,
     GetActionOwnership,
@@ -47,6 +47,10 @@ from rclpy.task import Future
         "timeout_land",
         "cancel_mode_pending",
         "unknown_mode_late",
+        "mode_wait",
+        "mode_takeover_before_aggregate",
+        "mode_wait_timeout",
+        "cancel_mode_wait",
     ],
 )
 def test_precision_process(scenario):
@@ -93,6 +97,8 @@ def test_precision_process(scenario):
     mode_pending_since = None
     mode_completed = False
     land_status = []
+    status_stamp_override = None
+    status_mode_override = None
 
     async def mode_callback(request, response):
         nonlocal land_started, mode_pending_since, mode_completed
@@ -130,6 +136,7 @@ def test_precision_process(scenario):
     )
     node.create_service(ArmMotors, "/arm_motors", arm_callback)
     state_pub = node.create_publisher(UAVState, "/uav_state", 10)
+    status_pub = node.create_publisher(FlightStatus, "/flight_status", 10)
     target_pub = node.create_publisher(
         LandingGuidanceTarget, "/landing/guidance_target", 1
     )
@@ -159,7 +166,7 @@ def test_precision_process(scenario):
         end = time.monotonic() + duration
         while time.monotonic() < end:
             if (
-                scenario == "normal"
+                scenario in ["normal", "mode_wait"]
                 and land_started is not None
                 and time.monotonic() - land_started > 0.2
             ):
@@ -167,6 +174,15 @@ def test_precision_process(scenario):
                 state.pose_valid = False
             state.header.stamp = node.get_clock().now().to_msg()
             state_pub.publish(state)
+            status = FlightStatus(
+                valid=True, connected=state.connected, armed=state.armed,
+                flight_mode=(state.flight_mode if status_mode_override is None
+                             else status_mode_override),
+                receipt_age_s=0.0)
+            status.header.stamp = status_stamp_override or state.header.stamp
+            status.flight_mode_name = {3: "OFFBOARD", 7: "AUTO.LAND"}.get(
+                status.flight_mode, "OTHER")
+            status_pub.publish(status)
             if publish_target:
                 target = LandingGuidanceTarget()
                 target.header.stamp = fixed_stamp or state.header.stamp
@@ -186,6 +202,10 @@ def test_precision_process(scenario):
                         "timeout_land",
                         "cancel_mode_pending",
                         "unknown_mode_late",
+                        "mode_wait",
+                        "mode_takeover_before_aggregate",
+                        "mode_wait_timeout",
+                        "cancel_mode_wait",
                     ]
                     else 1.0
                 )
@@ -263,11 +283,16 @@ def test_precision_process(scenario):
             == GoalStatus.STATUS_SUCCEEDED
         )
         pump(0.05)
+        if scenario in ["mode_wait", "mode_takeover_before_aggregate",
+                        "mode_wait_timeout", "cancel_mode_wait"]:
+            status_stamp_override = state.header.stamp
         goal = PrecisionLand.Goal()
         goal.tag_id = 7
         goal.timeout = (
             0.4
             if scenario == "timeout_land"
+            else 0.8
+            if scenario == "mode_wait_timeout"
             else 10.0
             if scenario == "unknown_mode_late"
             else 5.0
@@ -291,7 +316,33 @@ def test_precision_process(scenario):
             move = GoToWaypoint.Goal()
             move.target_z = 0.3
             assert not wait(waypoint.send_goal_async(move)).accepted
-        if scenario == "loss":
+        if scenario in ["mode_wait", "mode_takeover_before_aggregate",
+                        "mode_wait_timeout", "cancel_mode_wait"]:
+            deadline = time.monotonic() + 3
+            while not any(item.phase == "handoff_wait_mode" for item in feedback):
+                assert time.monotonic() < deadline
+                pump(0.02)
+            assert mode_requests == [3]
+            baseline = len(commands)
+            state.position_z = .29
+            pump(.1)
+            state.position_z = .27
+            pump(.1)
+            held = commands[baseline:]
+            assert len(held) >= 2 and all(abs(c.position_z - .3) < 1e-6 for c in held)
+            assert mode_requests == [3] and not result.done()
+            if scenario == "cancel_mode_wait":
+                assert wait(handle.cancel_goal_async()).goals_canceling
+            elif scenario != "mode_wait_timeout":
+                status_stamp_override = None
+            if scenario == "mode_takeover_before_aggregate":
+                status_mode_override = 7
+                assert state.flight_mode == 3  # Deliberately stale aggregate mode.
+                pump(.1)
+                stopped_count = len(commands)
+                pump(.1)
+                assert len(commands) == stopped_count
+        elif scenario == "loss":
             # Replayed positive source stamps do not refresh receipt TTL/count.
             fixed_stamp = state.header.stamp
             pump(0.45)
@@ -344,13 +395,13 @@ def test_precision_process(scenario):
         wrapped = wait(result, 6)
         expected = (
             GoalStatus.STATUS_SUCCEEDED
-            if scenario == "normal"
+            if scenario in ["normal", "mode_wait"]
             else GoalStatus.STATUS_CANCELED
             if scenario.startswith("cancel")
             else GoalStatus.STATUS_ABORTED
         )
         assert wrapped.status == expected
-        assert wrapped.result.success == (scenario == "normal")
+        assert wrapped.result.success == (scenario in ["normal", "mode_wait"])
         assert owned(handle) == GetActionOwnership.Response.RELEASED
         if scenario == "cancel_mode_pending":
             assert not wait(probe_future).goals_canceling
@@ -400,7 +451,7 @@ def test_precision_process(scenario):
             pump(0.1)
             assert len(commands) == stopped_count
         assert arm_requests == [True]  # No compensating disarm.
-        if scenario == "normal":
+        if scenario in ["normal", "mode_wait"]:
             assert mode_requests == [3, 7]
         elif scenario in [
             "cancel_land",

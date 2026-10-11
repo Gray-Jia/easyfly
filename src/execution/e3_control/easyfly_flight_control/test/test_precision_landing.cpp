@@ -70,6 +70,15 @@ public:
     node.precision_handoff_ = true;
     node.precision_child_admission_pending_ = true;
     node.precision_handoff_aligned_ = true;
+    node.precision_handoff_pending_ = true;
+    node.precision_handoff_barrier_ns_ = node.now().nanoseconds() - 100000000;
+    auto & status = node.flight_status_;
+    status.header.stamp = node.now();
+    status.valid = status.connected = status.armed = true;
+    status.flight_mode = 3;
+    status.flight_mode_name = "OFFBOARD";
+    status.receipt_age_s = 0;
+    node.flight_status_receipt_ = std::chrono::steady_clock::now();
     node.precision_handoff_board_ = {0, 0, 0};
     node.uav_.position_z = 0.3;
     auto & target = node.precision_target_;
@@ -94,6 +103,34 @@ public:
     node.finish_precision(false, "admission unknown", false);
   }
   static bool owned(FlightController & node) {return node.precision_reserved_;}
+  static bool modeGate(FlightController & node, int scenario)
+  {
+    node.precision_handoff_pending_ = true;
+    node.precision_handoff_barrier_ns_ = node.now().nanoseconds() - 100000000;
+    node.flight_status_receipt_ = std::chrono::steady_clock::now();
+    auto & status = node.flight_status_;
+    status = easyfly_msgs::msg::FlightStatus{};
+    status.header.stamp = node.now();
+    status.valid = status.connected = status.armed = true;
+    status.flight_mode = 3;
+    status.flight_mode_name = "OFFBOARD";
+    if (scenario == 1) {status.header.stamp = rclcpp::Time(node.precision_handoff_barrier_ns_);}
+    if (scenario == 2) {status.header.stamp.sec -= 1;}
+    if (scenario == 3) {status.valid = false;}
+    if (scenario == 4) {status.flight_mode = 7; status.flight_mode_name = "AUTO.LAND";}
+    if (scenario == 5) {status.receipt_age_s = 1.1;}
+    if (scenario == 6) {status.receipt_age_s = std::numeric_limits<double>::quiet_NaN();}
+    if (scenario == 7) {node.flight_status_receipt_ -= std::chrono::seconds(2);}
+    if (scenario == 8) {status.header.stamp.sec += 1;}
+    if (scenario == 9) {status.armed = false;}
+    return node.precision_handoff_mode_ready();
+  }
+  static bool externalModeBeforeAggregate(FlightController & node)
+  {
+    modeGate(node, 4);
+    node.precision_start_source_ns_ = node.now().nanoseconds() - 200000000;
+    return node.uav_.flight_mode == 3 && node.precision_mode_control_lost();
+  }
   static bool target(FlightController & node, int scenario)
   {
     auto & target = node.precision_target_;
@@ -238,6 +275,19 @@ TEST_F(PrecisionLanding, WrongTagCannotReserveControl)
   EXPECT_EQ(PrecisionLandingTestPeer::admit(*node_, -1), rclcpp_action::GoalResponse::REJECT);
   EXPECT_EQ(PrecisionLandingTestPeer::admit(*node_, 8), rclcpp_action::GoalResponse::REJECT);
   EXPECT_FALSE(PrecisionLandingTestPeer::owned(*node_));
+}
+
+TEST_F(PrecisionLanding, HandoffNeedsDistinctPostDecisionModeSource)
+{
+  EXPECT_TRUE(PrecisionLandingTestPeer::modeGate(*node_, 0));
+  for (int scenario = 1; scenario <= 9; ++scenario) {
+    EXPECT_FALSE(PrecisionLandingTestPeer::modeGate(*node_, scenario)) << scenario;
+  }
+}
+
+TEST_F(PrecisionLanding, ExternalModeIsNotHiddenByFreshOffboardAggregate)
+{
+  EXPECT_TRUE(PrecisionLandingTestPeer::externalModeBeforeAggregate(*node_));
 }
 
 TEST_F(PrecisionLanding, DefaultDisabledAndInvalidEnabledConfiguration)

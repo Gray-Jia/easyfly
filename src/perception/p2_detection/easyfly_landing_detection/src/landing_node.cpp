@@ -41,7 +41,7 @@ public:
     pub_ = create_publisher<easyfly_msgs::msg::LandingTarget>("/landing_target", 10);
 
     sub_ = create_subscription<easyfly_msgs::msg::TagObservationArray>(
-      "/tag_observations", 1, [this](
+      "/tag_observations", rclcpp::QoS(1).best_effort(), [this](
         easyfly_msgs::msg::TagObservationArray::ConstSharedPtr message,
         const rclcpp::MessageInfo & info) {
         if (trace_->enabled()) {

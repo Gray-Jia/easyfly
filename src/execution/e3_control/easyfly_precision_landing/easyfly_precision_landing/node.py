@@ -28,7 +28,7 @@ import rclpy
 from rclpy.impl.implementation_singleton import rclpy_implementation
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 
 from .geometry import finite, rotation, transform
@@ -194,7 +194,7 @@ class LandingTransform(Node):
             )
 
     def create_receivers(self):
-        """Bind volatile readers to one generation; keep original depths/QoS."""
+        """Bind volatile readers; observations favor latest data over repair."""
         generation = self.generation
         self.state_sub = self.create_subscription(
             UAVState, "/uav_state",
@@ -204,7 +204,10 @@ class LandingTransform(Node):
         self.target_sub = self.create_subscription(
             LandingTarget, "/landing_target",
             lambda message: self.receive_target(message, generation),
-            QoSProfile(depth=1, durability=DurabilityPolicy.VOLATILE),
+            QoSProfile(
+                depth=1, durability=DurabilityPolicy.VOLATILE,
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+            ),
         )
 
     def receive_state(self, message, generation):

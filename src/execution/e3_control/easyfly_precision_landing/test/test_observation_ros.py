@@ -26,17 +26,24 @@ from easyfly_msgs.msg import LandingGuidanceTarget, LandingTarget, UAVState
 import pytest
 import rclpy
 from rosgraph_msgs.msg import Clock
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 
 @pytest.mark.parametrize("stop_signal", [signal.SIGINT, signal.SIGTERM])
-def test_actual_observation_node(stop_signal, tmp_path):
+@pytest.mark.parametrize("reliability", [
+    ReliabilityPolicy.RELIABLE, ReliabilityPolicy.BEST_EFFORT,
+])
+def test_actual_observation_node(stop_signal, reliability, tmp_path):
     """Verify real DDS outputs and process exit, not graph presence alone."""
     rclpy.init()
     fixture = rclpy.create_node("landing_observation_fixture")
     seen = []
     clock_pub = fixture.create_publisher(Clock, "/clock", 10)
     state_pub = fixture.create_publisher(UAVState, "/uav_state", 10)
-    target_pub = fixture.create_publisher(LandingTarget, "/landing_target", 10)
+    target_pub = fixture.create_publisher(
+        LandingTarget, "/landing_target",
+        QoSProfile(depth=1, reliability=reliability),
+    )
     fixture.create_subscription(
         LandingGuidanceTarget, "/landing/guidance_target", seen.append, 10
     )
@@ -116,7 +123,15 @@ def test_actual_observation_node(stop_signal, tmp_path):
         pump(
             lambda: target_pub.get_subscription_count() > 0
             and state_pub.get_subscription_count() > 0
+            and any(
+                item.node_name == "landing_transform"
+                for item in fixture.get_subscriptions_info_by_topic("/landing_target")
+            )
         )
+        readers = fixture.get_subscriptions_info_by_topic("/landing_target")
+        reader = next(item for item in readers if item.node_name == "landing_transform")
+        assert reader.qos_profile.reliability == ReliabilityPolicy.BEST_EFFORT
+        assert reader.qos_profile.durability == DurabilityPolicy.VOLATILE
         # Allow clock/state delivery before the target; all are real DDS inputs.
         inputs(valid=False)
         pump(lambda: any(not message.valid for message in seen))

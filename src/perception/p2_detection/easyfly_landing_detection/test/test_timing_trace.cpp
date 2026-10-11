@@ -9,9 +9,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "timing_trace.hpp"
 #include <gtest/gtest.h>
 #include <fstream>
+#include <limits>
+#include "timing_trace.hpp"
 
 TEST(TimingTrace, DisabledHasNoFile)
 {
@@ -44,6 +45,33 @@ TEST(TimingTrace, BoundedAndDoesNotOverwrite)
   std::getline(file, first);
   EXPECT_EQ(header, "# total=8200 retained=8192 dropped=8");
   EXPECT_EQ(first.substr(0, 6), "8\t0\t8\t");
+  file.close();
+  EXPECT_EQ(unlink(path.c_str()), 0);
+  EXPECT_EQ(rmdir(directory), 0);
+}
+
+TEST(TimingTrace, Signed64BitTimestampFormatting)
+{
+  char directory[] = "/tmp/easyfly-ingress-format-XXXXXX";
+  ASSERT_NE(mkdtemp(directory), nullptr);
+  const std::string path = std::string(directory) + "/trace.tsv";
+  ef_timing::Event event;
+  event.source_ns = std::numeric_limits<int64_t>::min();
+  event.writer_wall_ns = std::numeric_limits<int64_t>::max();
+  event.input = true;
+  event.valid = true;
+  {
+    ef_timing::Trace trace(path);
+    trace.record(event, "format");
+  }
+  std::ifstream file(path);
+  std::string line;
+  std::getline(file, line);
+  std::getline(file, line);
+  std::getline(file, line);
+  EXPECT_EQ(
+    line, "0\t1\t" + std::to_string(event.source_ns) + "\t" +
+    std::to_string(event.writer_wall_ns) + "\t0\t0\t0\t0\t0\t1\tformat");
   file.close();
   EXPECT_EQ(unlink(path.c_str()), 0);
   EXPECT_EQ(rmdir(directory), 0);

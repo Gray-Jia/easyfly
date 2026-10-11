@@ -118,6 +118,8 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   // ---- 发布者 ----
   pub_uav_state_ = create_publisher<easyfly_msgs::msg::UAVState>(
     "/uav_state", default_qos);
+  pub_flight_status_ = create_publisher<easyfly_msgs::msg::FlightStatus>(
+    "/flight_status", default_qos);
 
   // ---- encoder 发布者 (到 mavros2 setpoint topics) ----
   pub_setpoint_pos_ = create_publisher<geometry_msgs::msg::PoseStamped>(
@@ -203,6 +205,23 @@ void MavlinkBridge::cb_state(const mavros_msgs::msg::State::SharedPtr msg)
   else if (msg->mode == "AUTO.LAND")    uav_.flight_mode = 7;  // 等同于 LAND
   else if (msg->mode == "AUTO.RTL")     uav_.flight_mode = 6;  // 等同于 RTL
   else                                uav_.flight_mode = 99;
+
+  const auto & stamp = msg->header.stamp;
+  const int64_t source = stamp.sec >= 0 && stamp.nanosec < 1000000000U ?
+    static_cast<int64_t>(stamp.sec) * 1000000000LL + stamp.nanosec : 0;
+  // Repeated/older observations cannot renew original receipt evidence.
+  if (source > flight_status_watermark_) {
+    flight_status_watermark_ = source;
+    flight_status_receipt_ = std::chrono::steady_clock::now();
+    flight_status_source_valid_ = true;
+  } else {
+    flight_status_source_valid_ = false;
+  }
+  flight_status_.header = msg->header;
+  flight_status_.connected = msg->connected;
+  flight_status_.armed = msg->armed;
+  flight_status_.flight_mode = uav_.flight_mode;
+  flight_status_.flight_mode_name = msg->mode;
 
   rcvd_armed_ = true;
   last_state_time_ = now();
@@ -313,6 +332,7 @@ void MavlinkBridge::publish_state()
 {
   const auto stamp = now();
   easyfly_msgs::msg::UAVState state_snapshot;
+  easyfly_msgs::msg::FlightStatus status_snapshot;
   {
     std::lock_guard<std::mutex> lk(state_mtx_);
     uav_.header.stamp = stamp;
@@ -355,9 +375,21 @@ void MavlinkBridge::publish_state()
     }
 
     state_snapshot = uav_;
+    status_snapshot = flight_status_;
+    status_snapshot.receipt_age_s = flight_status_receipt_ ==
+      std::chrono::steady_clock::time_point{} ? -1.0 :
+      std::chrono::duration<double>(wall_now - flight_status_receipt_).count();
+    const auto & source = status_snapshot.header.stamp;
+    const double source_age = source.sec >= 0 && source.nanosec < 1000000000U ?
+      (stamp - rclcpp::Time(source, stamp.get_clock_type())).seconds() : -1.0;
+    status_snapshot.valid = flight_status_source_valid_ && status_snapshot.connected &&
+      flight_status_watermark_ > 0 && source_age >= -0.2 &&
+      source_age <= slow_sensor_freshness_s_ && status_snapshot.receipt_age_s >= 0 &&
+      status_snapshot.receipt_age_s <= slow_sensor_freshness_s_;
   }
 
   pub_uav_state_->publish(state_snapshot);
+  pub_flight_status_->publish(status_snapshot);
 }
 
 // ================================================================

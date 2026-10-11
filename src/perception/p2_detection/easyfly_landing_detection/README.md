@@ -2,6 +2,11 @@
 
 `landing_detection_node` only adapts `/tag_observations` to `/landing_target`.
 It never commands a descent, changes flight modes, or publishes map/track inputs.
+The observation subscription uses best-effort, volatile KEEP_LAST depth 1: it
+accepts reliable or best-effort publishers without waiting for missing older
+sequence numbers. Dropped frames are allowed; source/receipt freshness, replay
+rejection and missing-target expiry remain mandatory. `/landing_target` output,
+actions and services retain their existing reliable delivery policies.
 Launch `landing_detection.launch.py selected_tag_id:=7 use_sim_time:=false`.
 Default `selected_tag_id=-1` means **no selection**, and always yields invalid.
 

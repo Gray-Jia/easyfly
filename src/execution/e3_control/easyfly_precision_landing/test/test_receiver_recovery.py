@@ -23,7 +23,7 @@ from easyfly_msgs.msg import LandingTarget, UAVState
 from easyfly_msgs.srv import GetCapabilities
 import pytest
 import rclpy
-from rclpy.qos import DurabilityPolicy
+from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
 from rclpy.time import Time
 
 
@@ -151,6 +151,12 @@ def test_any_first_entry_resets_and_reacquires(receiver, entry):
     )
     assert node.state_sub.qos_profile.durability == DurabilityPolicy.VOLATILE
     assert node.target_sub.qos_profile.durability == DurabilityPolicy.VOLATILE
+    assert node.target_sub.qos_profile.reliability == ReliabilityPolicy.BEST_EFFORT
+    assert node.target_sub.qos_profile.depth == 1
+    assert node.state_sub.qos_profile.reliability == ReliabilityPolicy.RELIABLE
+    assert node.state_sub.qos_profile.depth == 10
+    assert node.publisher.qos_profile.reliability == ReliabilityPolicy.RELIABLE
+    assert node.publisher.qos_profile.depth == 1
     assert outputs and all(not message.valid for message in outputs)
     assert outputs[-1].reason == "receiver_processing_gap"
     # Cached executor callbacks from destroyed readers cannot revive the pending input.

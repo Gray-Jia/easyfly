@@ -8,7 +8,7 @@
 > D4第一版软件功能验收完成时间：2026-10-05 07:04（Asia/Shanghai）；全lint/SITL/实机不在本批签收范围。
 > D5仿真第一版完整链验收：2026-10-06；限定配置与证据见第11节，真实设备继续暂缓。
 > 计划依据：`plan-v3.md` D0–D5；起点 HEAD：`1860690`。
-> 状态：D0–D4本批组件软件功能范围完成；D2已提交00d12b8，D3已提交87ac9e5，D4未提交。10.9初次lint/SITL失败及后续修复保留；当前安全修复结果见10.13。D5仿真第一版在显式限定配置下完整链通过，组件与实际任务结果分层记录在第11节；真实设备暂缓，G9-G11复验继续暂停，全仓lint及实机未签收。
+> 状态：D0–D4本批组件软件功能范围完成；D2已提交00d12b8，D3已提交87ac9e5，D4/D5第一版已提交fc8decd。最新D5观测入口与模式交接修复、六项正式仿真矩阵通过见第29节；历史FAIL保留。真实设备、UI、G9-G11复验与旧偶发崩溃专项继续暂缓，全仓lint及实机未签收。
 > 分工：主 agent 负责范围、协调器、监督、配置/服务、契约、集成检查与记录；easyfly_coder 负责构建脚本、EGO/轨迹会话链及SDK限定实现；easyfly_reviewer 负责最终只读评审。
 
 ## 1. 目标与验收标准
@@ -3501,3 +3501,474 @@ overall_current_d5_regression_closed=false。测试与仿真已全部结束；
 保持原因未知；新增日志用于下次实际拒绝，不通过固定等待或自动
 重发绕过准入。此前已通过的负向飞控场景仍保留原证据，本批没有
 将新增观察节点退出改动追认成全部D5矩阵再次验收。
+
+## 27. D5 原生可读性与唤醒取证（进行中，2026-10-11）
+
+用户批准第26节接续。开发基线fc8decd，保留本地.codex/CLI改动，
+不使用子agent，不恢复旧Gazebo/semantic崩溃专项。优先建立已捕获
+输入延迟的确定性反例；不改正式QoS、TTL、几何/状态配对或失标规则。
+
+证据根：artifacts/d5-dds-readable-20261011.233blD/。独立诊断构建
+直接包含正式LandingNode业务源码，仅包裹并原样转发原RMW wait及
+take_with_info调用；记录同进程TID、wall/steady区间、wait订阅标识/
+返回可读标记及take结果、原writer/receive、PSN/RSN/GID。无额外take、
+reader、回调输出或系统库修改；32768条有界内存，仅退出写TSV，
+独占创建，报告截断。该构建只经本次显式包前缀用于LandingNode，
+不能以其PASS代替正式版本签收，原生时间域不交叉相减。
+
+稳定30Hz无飞行原节点同构对照完成：450条tag均真正take，原生PSN
+受支持，RSN为UINT64_MAX不受支持；等待订阅身份可以与take身份匹配，
+普通安装未替换。后续原负载正式任务与无飞行对照结果如下。
+
+验收：必须取得明确故障路径及反例，修复只能作用于已确认环节，保留
+所有失败/原生指纹和所属身份；后续原配置普通正式任务须三步真成功、
+同UUID释放、新鲜disarm、全部子进程正常退出。不将诊断PASS替代
+正式修复验收，也不将机制确认扩大成初始缺口来源已确定。
+
+### 27.1 原生等待链与真实缓存确认
+
+mission-wait-probe任务d9031bef0e2f493a9391213427422f31真6/false，
+step_failed:landing_target_lost。280个tag实际take、5535事件无截断：
+writer→receive中位281.214ms/max360.758ms，receive→take
+p95 385.315ms/max393.358ms。延迟期间主线程仍反复约50ms正常
+rmw_wait，tag订阅返回不可读；实际take耗时max.079ms，take结束
+到callback max.011ms。不支持“业务callback本身阻塞约400ms”。
+所属进程全部正常退出、残留空，仍保留飞行FAIL。
+
+受控30Hz稳定输入450/450、单次第10回调阻塞120ms（其余接收线程
+继续运行）448/450、发布2秒后晚加入418条连续PSN，均未出现持续
+100ms以上receive→take延迟。mission-readability诊断任务
+0c7da21506494f85afd30911c35b5b7f真4/true、完整三步/释放/disarm/
+退出通过；ground-readability也无输入延迟。间歇性仍保留，PASS
+不覆盖FAIL，不把强制暂停实验当成原故障的确定性复现。
+
+新增只读缓存诊断原样转发实际DataReaderHistory::get_first_untaken_info，
+用原recursive lock查看已存在的cache和reader future标记，不新建reader/
+额外take/改消息或QoS。kind3的taken是原peek可读结果（不是消费），
+unread0在kind3专指future标记（不同于kind1未读计数）。
+实际安装Fast DDS2.6.11 / rmw_fastrtps6.2.10。系统libfastrtps SHA
+cc1f45ce53ef4ed2961e57054ddb80d115dafc6604d2a6c259ec8b18452e03b8，
+shared RMW SHA3ef725d639a97c77a9a352a7d108131b235b0579659bdffefd4ffd370534dbc3；
+原库未修改。借用同版本三个内部类头文件保留原Apache版权。
+
+history-ground无飞行真实三相机30Hz负载再次捕获延迟：已缓存且
+future=true/原peek返回false的tag记录2855条，涉及19个缓存PSN。
+例如PSN5原receive1791707044030535681，future快照
+1791707044134337436，实际take1791707044369854304，缓存后等待
+339.319ms。因此“真实已到达消息因可靠序列前序未解决而不可读”的
+路径有直接证据，不只是丢失唤醒或推测执行器忙。但最初缺口为何
+产生、是否丢包/发现时序/资源限制尚未唯一确定，不能认定特定库缺陷。
+
+该轮全topic peek共66774事件，仅保留前32768、截断34006；上述
+单事件关系有效，不能描述为全轮完整take统计。随后限制只记录tag
+peek，history-ground-bounded完整12817事件无截断，484/484真实
+take与callback配对，receive→take max.517ms、无future等待；仍是
+间歇性的未复现轮，不是已修复。两轮start_only的passed=true仅表
+启动/清理验收，未发送任何Goal，不代表精降或输入时效签收。
+
+源码链（官方对应版本，非转引）：
+[RMW wait可读检查](https://raw.githubusercontent.com/ros2/rmw_fastrtps/6.2.10/rmw_fastrtps_shared_cpp/src/rmw_wait.cpp)、
+[History跳过future cache](https://raw.githubusercontent.com/eProsima/Fast-DDS/v2.6.11/src/cpp/fastdds/subscriber/history/DataReaderHistory.cpp)、
+[StatefulReader前序可用序列判定](https://raw.githubusercontent.com/eProsima/Fast-DDS/v2.6.11/src/cpp/rtps/reader/StatefulReader.cpp)。
+
+### 27.2 观测QoS独立候选（未纳入生产）
+
+用实际安装Fast DDS reader/history、关闭发现的独立无飞行fixture，
+先送seq2再送seq1：可靠depth1/10均先不可读，补齐seq1后恢复；
+不支持“depth1必然无法修复”的说法。仅将reader改best-effort、
+depth1不变，seq2先到即可读，两种depth1对照均按真实结果校验exit0。
+原生fixture不能代替真实网络负载或证明缺口起因。
+
+向用户询问是否采用仅tag观测入口best-effort+depth1、动作/服务可靠
+及原TTL/失标保护不变；当前仅artifact独立前缀构建单行QoS候选，
+无RMW方法包裹、不修改普通安装或正式源码。原感知/时钟/真实图像
+3项回归全部通过；另用best-effort实际publisher重复目标选择/坏姿态/
+缺失/过期保护并确认图中订阅best-effort、输出仍reliable，1项通过。
+最初断言图中depth=1失败：此RMW发现图只有RTPS ReaderQos，未
+提供history/depth（安装qos.hpp明确说明，图返回UNKNOWN/0）；改为
+只断言图实际提供的可靠性，depth1由候选源码绑定，不把0解释为
+实际无界队列。初始失败日志保留，未将生产问题归因于该测试断言。
+
+mission-be-candidate正式任务801eac6094c84d6daaff80cbbdf19d84真
+4/true，三步完成，精降54aeb668f4595f2fffd8860ce211f0c5完成
+align/descend/land_handoff、实际失标/reacquire_hold阶段后成功；
+任务及精降各自UUID释放，新鲜disarmed，四组exit0、child失败空、
+残留空。1287事件无截断，1283tag输入，writer→receive max.352ms，
+receive→callback max.161ms，正源时间ROS年龄max.052s，
+不是提高TTL或重写源时间得到的PASS。未启用observer native诊断，
+故不能声称output→observer逐条原生配对（该指标pairs=0）。
+候选源码SHA719c04c338d6f2d46be87a058105ca886272fe5aea7c7ed471deba67493561c0，
+ELF ac1fc3eb08b33e7c89e52133a2b77543315d628fff7028c9d95fb7a70f6bdf82；
+精降控制、任务、PX4指纹未变。只签候选这一轮，不宣称间歇故障
+消失或全部D5矩阵再次关闭，未晋级生产。
+最新取证命令第一次因输出目录不存在而前置拒绝（无进程启动），
+创建指定新目录后运行；离线摘要工具jq不可用，改Python解析JSON，
+不是修改或删除原实验失败。
+
+### 27.3 候选持续失标与本轮交接
+
+loss-be-candidate在实际descend/新鲜OFFBOARD约.943m后注入持续
+失标：精降f3ecc32dbd5449dba2fe38252b1ddc4d真6/false/
+landing_target_lost，是预期负向终态而非成功降落。35条真实悬停
+命令在原失标窗口内保持一致，internal Land状态空、对应UUID释放，
+终态后新鲜OFFBOARD/armed/connected/pose_valid、ROS年龄0、
+receipt约.016s；不盲降、不自动上锁。独立仿真停止/清理后3组exit0、
+child失败空、残留空，场景passed=true，未改2s期限或5帧重获。
+
+final-audit.json列出本轮七轮SITL全部真实结果、指纹及所属PID/
+start_ticks复核（全部已消失），保留mission-wait-probe FAIL，
+history-ground原截断trace及两次测试/准备失败；当前生产源码及
+普通安装仍reliable depth1，候选仅单行QoS差异由离线审计严格核对。
+相关验收：原三项ROS回归3/3；新候选best-effort发布兼容/图可靠性/
+原安全反例1/1；原生seq2先到可靠/尽力对照均符合真实预期；正式
+候选任务及持续失标各1轮通过。无全仓lint、统计可靠性或全部
+生命周期矩阵签收，schedule本节diff检查通过。
+
+待用户确认：是否将该仅观测QoS候选纳入正式代码。若确认，补正式
+QoS回归和文档、重编译普通安装，诊断关闭重跑正式任务，并完成
+取消/接管/短时重获矩阵；原初始序列缺口来源和历史准入拒绝仍
+开放，不以自动重试、放宽安全阈值或成功轮次覆盖历史失败。
+本轮未提交新git、未改系统库/全局配置、未启用子agent，所有测试
+进程已结束；overall_current_d5_regression_closed=false。
+
+## 28. 标签观测等待修复完成；接管补验发现新边界（2026-10-11）
+
+用户明确指令“解决这个问题”，批准第27节观测QoS候选纳入生产。
+目标：消除已确认的tag reader可靠序列等待旧帧路径，不放宽任何
+飞行安全门槛、不改系统库或控制接口。证据根：
+artifacts/d5-observation-fix-20261011.KAlj9a/。不启用子agent。
+
+实施：LandingNode唯一业务差异是/tag_observations订阅由可靠depth1
+改为best-effort depth1；仍VOLATILE，tag发布者、landing输出及
+动作/服务可靠性不变。新鲜度、重放/时钟/姿态验证与失标保护原样。
+正式ROS回归分别使用reliable与best-effort发布者，断言实际图订阅
+best-effort/输出reliable（不错误断言图中不可用的depth），追加
+重复源时间、过期输入拒绝。文档明确允许丢帧而不是补旧帧的取舍。
+
+验收标准：普通安装重编译；感知/真实图像/时钟/trace行为及改动相关
+lint通过；诊断和候选前缀均关闭的正式任务三步真成功、各自UUID
+释放、新鲜disarm、所有进程正常退出且无残留。串行补原配置的
+短时失标重获、持续失标、下降取消、普通Land收尾取消、外部接管；
+各自以真实终态/所有权/控制命令验证，而非所有场景都要求成功降落。
+保留原FAIL和新增FAIL。初始序列缺口来源、历史准入拒绝原因不
+扩大解释为已唯一确定；旧Gazebo/semantic专项仍搁置，UI/实机不做。
+
+### 28.1 正式构建与相关lint/组件
+
+普通包前缀install/easyfly_landing_detection已重新编译，非候选/
+方法包裹构建。初次全包检查11/12通过、cpplint报原诊断header/
+单测8处include顺序和long long格式问题。修正C/C++头顺序、改
+为int64_t配PRId64输出，追加INT64_MIN/MAX原样TSV回读测试；
+第二轮只剩gtest头被工具视为C系统头的1处顺序告警，随后修正。
+两次FAIL日志保留，非QoS业务故障，也未通过禁用cpplint过关。
+
+最终landing-tests-final-v2.log 12/12CTest通过：4项行为CTest
+（含3个trace gtest、reliable/best-effort两组完整ROS输入安全回归、
+真实AprilTag图像、时钟反例）和8项lint。cppcheck默认因2.7已知
+性能问题跳过；最终仅此进程设置AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS
+重新实际检查该小包并通过，不改系统/全局配置。诊断格式仍原TSV
+列/符号/精度、缓存与退出写盘规则不变。正式Landing ELF
+683e0ab8308794acde2c7809be3e2fac8cb76c991beed3c8f6865cb59f670ff3。
+正在执行precision行为回归后串行六个SITL；任何失败停止矩阵并
+保留，不自动重发动作或切换候选前缀。
+
+### 28.2 普通配置SITL串行进度
+
+precision-tests.log 21/21行为CTest全部通过（其中20项pytest及
+1项gtest），包含新鲜度/时钟/信号退出/真实接收队列/背压/恢复。
+不与飞行并发。随后mission-default全部诊断关闭，正式Landing
+ELF683e0ab8…及既有DDS/.2m板/三相机30Hz/.6-.5m边界核对通过：
+任务a8ed121fbf1c4388bf7f949c0b238549真4/true，三步完整，
+所属UUID释放/新鲜disarmed、四组exit0/child失败空/残留空，
+普通入口passed=true。短时重获及其他负向场景随后全部完成如下。
+
+### 28.3 正式普通配置生命周期矩阵完成
+
+六项均只用重新编译的普通安装，无候选前缀/RMW方法包裹，所有
+三种诊断关闭；既有DDS副本/.2m板/三相机30Hz和安全参数无放宽。
+负向场景的PASSED指“真实达到指定安全终态”，不冒充成功降落。
+
+| 场景 | 精降UUID（普通任务另有根UUID） | 真实终态及验收 |
+| --- | --- | --- |
+| mission-default | 4d8056c4b40ae286511cd72148fc486c | 根任务a8ed121fbf1c4388bf7f949c0b238549真4/true、三步；两UUID释放，新鲜disarm |
+| loss-recover | 7e4922ee11434e8e871bb371bd51410c | 真4/true；10条失标保持命令一致，恢复后重获保持/对准/下降/收尾顺序成立；子Land真4 |
+| loss-persistent | 5fb70860119c4d82b2c36c0cf50a2544 | 真6/false/landing_target_lost；37条保持命令一致，无子Land；释放后新鲜OFFBOARD可信悬停 |
+| cancel-descent | 159e0cbdb7b44d2a8b1a0e9048c7846d | 精确UUID取消ACK，真5/false，释放后新鲜OFFBOARD可信悬停，无子Land |
+| cancel-handoff | eab6e41861e342a29bda0055f71d103c | 新鲜AUTO.LAND后精确取消；子Land0963203aadb43e262007447e3b638635真5，父真5/false并释放，恢复新鲜OFFBOARD |
+| external-takeover | 82dc4e7452a049358abd5936fd10b8de | 真6/false/flight evidence/control lost；真实确认外部AUTO.LAND、精确释放，确认+.5s后平台命令无；下游停流取证不足，见后述 |
+
+全部场景进程exit0、child_exit_failures空、leftovers空，原脚本
+passed=true；run_matrix.py任一失败即停止、未重发动作或重试。
+final-audit.json逐轮再次校验当前ELF、全部安全参数/固定配置、
+实际结果及每个所属PID/start_ticks（全部消失），六项audit_passed
+均true（仅当前脚本及结构复核，不能覆盖以下下游观察缺口）。
+audit核对source_age=.3、pair_gap=.1、飞控TTL=.3、
+lost_timeout=2、settle=5、handoff=.6/descent_floor=.5不变。
+普通任务最终ROS状态年龄.1s、receipt约.040s；不是旧disarm签收。
+
+收尾独立复核发现external-takeover的downstream_steady_samples
+全轮为0：验收工具只订阅/mavros/setpoint_raw/local，本批实际
+位置模式桥发/mavros/setpoint_position/local。原“+.1.5s后无”是
+无正向观察基线的空证据，不能签收下游停流；原passed=true结果
+保留，不改为已修复也不删原日志。平台命令停流/模式/所有权证据
+有效，正在仅修复验收工具：覆盖实际position/velocity/attitude/raw
+四出口并要求接管前确实收到数据，再独立重跑接管。
+
+本次变更Landing订阅QoS及诊断格式/头顺序、对应测试文档；
+飞控ELFcf0eff4e…、兼容PX4 ELF5df38060…、Mission ELF5f363dba…、
+转换源码aec42696…、引擎fe25ca76…均沿用原版，完整SHA见每轮结果
+和audit。不改原PX4安装/系统DDS库/全局环境，不重开旧崩溃专项。
+
+### 28.4 结果、验收边界与剩余项
+
+已完成本项：已确认的“可靠tag reader等待前序旧帧而使新观测
+不可读”路径由正式best-effort depth1消除，永久ROS回归锁定此
+可靠性并验证两类publisher兼容/过期/重放/缺失保护。原生可靠/
+尽力seq2先到对照见第27节，不引入内部DDS头或方法包裹至生产。
+正式landing 12/12、precision 21/21及原脚本普通SITL六项均通过；
+下游取证修正后的接管补验失败（见28.5），不签收全部矩阵，也不是
+长期统计可靠性或实机精度认证。
+
+初始可靠序列缺口唯一来源仍未知，不能宣称系统库缺陷已修复；
+CPU/网络/其他链路造成的新延迟仍会由原TTL/失标保护拒绝。历史
+任务准入REJECTED未再出现，其当时精确快照缺失，仍不能追认唯一
+原因；新增真实决策快照日志继续保留，不用自动重试掩盖。旧第26/27
+节输入FAIL、截断trace及本轮两次lint FAIL原始日志全部保留。
+本轮相关diff检查通过，全部测试已结束，未提交新git；用户本地
+.codex改动及codex_cli.sh删除原样保留。UI、硬件和G9后复验仍不做。
+
+### 28.5 下游观察修正、补验FAIL及本轮交接
+
+验收工具补齐PoseStamped position、Twist velocity、AttitudeTarget
+attitude及PositionTarget raw四个桥实际出口；用原输入QoS，仅
+记录本机receipt/话题，不注入或改生产setpoint。外部接管注入
+前一秒必须至少收到2条真实position输出，无基线立即拒绝验收。
+记录接管后的平台命令/下游输出窗口，10000条容量耗尽直接失败，
+不能静默停止记录后签“无输出”。补显式geometry_msgs依赖。
+8个新反例/正例覆盖空/错误话题/过期/未来/单帧基线、有效基线、
+四个typed callback及容量耗尽。最终场景用例34/34通过，相关
+flake8/pep257/XML三项均通过；新全行为21项另已通过。期间新增
+101字符行触发一次flake8 FAIL，修正后定向四项CTest通过，原log保留。
+
+external-takeover-verified确实取得接管前40条position输出，其他
+三话题0（本轮POSITION模式的正常结果），全部诊断仍关闭。精降
+c777e60d021a439bb7297f394e5efd6b被接纳；外部AUTO.LAND模式
+真确认，但动作最终真4/true/land complete，而不是期望真6/false。
+脚本明确报scenario unexpected true terminal、passed=false；
+3组exit0、child失败空、leftovers空，不重试、不把实际降落成功
+当接管负向场景通过。当前helper SHA
+ed62b1ad30faa48dbb1671af9820823bf07b71dc49d6e8d541c42460c18549af。
+
+原始反馈显示descend时相对板高约.969m，约.95s后进入
+land_handoff（板高.581m），新AUTO.LAND状态观测此时高度约.535m。
+可确认模式反馈/高度交接存在竞争：控制端还使用OFFBOARD证据时
+触发内部Land，后续将AUTO.LAND视为内部收尾。现有UAVState只
+统一header时间，模式原始更新与位姿更新不同频率；不能在缺少
+独立模式时序的情况下用一次重跑/缩小TTL/延后注入“修复”。
+尚未更改飞控交接准入或扩大接口。进一步修复涉及独立模式证据/
+交接控制权判定，属于新增安全边界工作，需与用户明确范围后推进。
+
+final-audit.json保留早先结构复核结果（下游缺口当时未计入）；
+final-audit-v2.json七轮完整记录，原external下游证据不足标为
+audit_passed=false，补验真实FAIL也false，其他五项true，
+current_six_scenario_regression_passed=false。每个所属PID/
+start_ticks再次核对全部消失，普通Landing/飞控/PX4指纹不变。
+
+本轮交付：标签可靠序列等待路径的正式QoS修复、感知/时钟/真实
+图像/过期/重放回归与lint已完成，普通任务及重获/失标/两取消
+场景通过；观察工具假阴性已修复并发现一个真实接管边界，未隐藏。
+接管竞态尚未解决，不宣称全部D5问题或完整矩阵关闭，不擅自用
+AUTO.LOITER替代AUTO.LAND来签收原场景。所有进程已结束，未提交新git。
+
+## 29. 模式证据与精降交接竞态修复（功能修复与仿真验收完成，2026-10-11）
+
+用户批准继续处理第28.5节真实FAIL。证据根：
+artifacts/d5-mode-handoff-20261011.rC4VoX/。保留原失败与本地
+.codex/CLI改动，只使用主agent，UI/实机/G9后复验及旧崩溃专项不做。
+
+目标与方案：不把聚合/uav_state的新版header当模式新证据。新增
+FlightStatus消息及独立/flight_status观测，不改原UAVState ABI。
+桥保留原MAVROS State header、distinct source首次steady receipt，
+旧/重复source不能续命；发布原模式/armed及当前receipt_age/valid。
+控制端仅精降交接用最新best-effort depth1观测，在首次满足低高度
+稳定对准条件时建立ROS源时间屏障并捕获固定悬停点；等待晚于屏障
+的新鲜独立OFFBOARD证据后才授权内部Land。handoff_wait_mode期间
+不下降、不按每帧实测高度重设悬停点，目标丢失/对准失效仍按原
+policy处理、取消/状态故障/goal总超时仍有效，不新增宽松门槛。
+晚于本精降启动的新鲜独立外部模式证据可直接停流/终止，不等
+聚合模式更新。Land admission及实际模式服务发送前再次核对屏障。
+
+验收：新桥原源时间/过期/重复不续命、控制端旧模式/旧receipt/
+未来/无效/未解锁反例；真实ROS“新聚合仍旧模式→低高等待且固定
+悬停→独立外部AUTO.LAND先到而聚合仍OFFBOARD→不启动Land、真
+终止停流”与“新OFFBOARD允许正常Land”均需通过。相关构建/测试/
+lint后串行复验原AUTO.LAND接管（必须有真实下游正向基线）、普通
+任务、失标恢复/持续失标、两取消，保留任何FAIL，不自动重试。
+
+### 29.1 实施与确定性反例通过
+
+FlightStatus单独topic保留原MAVROS header/armed/mode，bridge
+同一state锁计算source/steady有效性，status发布不持锁、不改
+聚合UAVState现有字段或其ABI。重复/旧source判无效并不更新
+独立receipt，来源时钟回退默认拒绝至新source或节点重启，不能
+用聚合header新时间复活。控制端后置屏障与模式/armed/valid/
+source年龄、bridge receipt年龄加本端经过时间均检查；沿用1s
+状态证据限制和原goal总超时，不引入更长安全期限。
+
+首次decision.handoff时捕获位置和源屏障，未有新OFFBOARD
+不会把phase误报为实际land_handoff，发布handoff_wait_mode
+及固定悬停命令；Land准入/worker启动/模式请求发送前均重验。
+独立的新外部模式可使trusted=false，在聚合仍OFFBOARD时直接
+终止停流；已交给子Land后仍按原精确取消与未知结果保锁规则。
+
+普通msgs/bridge/flight三包编译通过。飞控9/9行为CTest通过，
+其中新增ROS等待模式/延迟聚合外部AUTO.LAND/等待超时/等待取消
+四场景（原8场景保留，全12通过）；测试用例总预算由45改75s
+仅容纳新增fixture，所有生产参数不改。模式源屏障9类无效反例
+及“聚合新而独立已接管”native gtest通过。桥2/2行为CTest通过，
+新增typed真实发布验证原源时间不随聚合header改写、重复mode
+不续receipt、后续新source恢复有效，订阅确已匹配。
+
+改动Python两文件flake8通过、precision controller/单测C++
+uncrustify通过。初次误用此工具不支持的--check前置报错，已保留
+format.log；正确命令format-correct.log无style差异，未忽略lint。
+仿真报告新增独立flight_status_samples（有界10000、溢出失败）
+及实际bridge ELF指纹，仅观测不注入。普通安装当前Flight ELF
+ac381c0ee404a8a6f7d2b2a3a5c39ea9ffc8feb765eecebd2eae824b0dab63e8，
+bridge ELF d3a14b7dfc87a3d1d2ac8dca08e74907ebbccca83aa7dc63ffaf15ec90f53295。
+原AUTO.LAND接管补验正在执行，未签收或重试。
+
+### 29.2 原接管场景首次正式补验通过
+
+external-takeover精降bf11f6a0d7444576aac242a369f2aed4真6/false/
+flight evidence/control lost; precision stream stopped，未变注入模式/
+触发阶段/高度/安全参数、未重试。下游接管前40条实际position，
+其他三出口0符合POSITION模式；真确认AUTO.LAND后+.5s平台命令
+及+1.5s四出口均无，持续观测约2.538s。internal Land状态空，
+同UUID释放，3组exit0/child失败空/leftovers空，场景passed=true。
+588条真实独立模式观测、23个不同源stamp、440valid，验证真实
+MAVROS此版本确会更新原模式源时间；启动无数据期间invalid不
+用于准入。关键阶段align26/descend19/handoff_wait_mode1，
+没有land_handoff，捕获到了进入低高而等待新模式的真实路径。
+这轮验证了所修模式竞争路径，不宣称一切外部事件瞬时可观察或
+PX4模式服务有跨操作者的原子compare-and-set语义。
+正在串行补普通任务及四项恢复/取消场景，不提前签收全矩阵。
+
+### 29.3 普通任务另遇观测入口延迟，独立候选验证与合入
+
+mission-default首次补验失败，根任务5761bc7e1073489ab515a63d19248571
+真6/false/step_failed:landing_target_lost。只到align/lost_hold/reacquire_hold，
+没有descend或handoff_wait_mode，不能归因于尚未执行的模式屏障。
+上游标签与/landing_target源年龄最大52ms，转换后的guidance却到424ms；
+原始FAIL完整保留，串行执行器遇FAIL停止，未自动重试。
+
+独立无飞行ingress-ground诊断20s没有复现：4691个native事件、20次
+快照、丢弃0；landing_target接收至take最大2.45ms，不能以此宣称
+已确定本轮初始序列缺口成因。先前真实FastDDS顺序等待反例说明
+RELIABLE depth1也不能避免等待旧序列，但该缺口起因仍未唯一确定。
+
+用户明确批准“验证通过后纳入”。独立candidate仅覆盖transform的
+/landing_target订阅为BEST_EFFORT、VOLATILE、depth1，其他状态订阅、
+guidance控制发布、TTL/.1s配对/五帧重获/2s失标期限保持不变。
+mission-candidate真4/true/mission complete，经历align/descend/
+handoff_wait_mode/land_handoff，全部4组exit0、child失败与leftovers空。
+报告记录实际加载的node.py指纹，不再假设与simulation.py同目录。
+候选真实ROS四组合（RELIABLE/BEST_EFFORT发布者×SIGINT/SIGTERM）
+通过，涵盖配对、过期、重放、冻结时钟及干净退出；另11个原源码
+接收恢复反例通过（这11个不冒充候选恢复验证）。合计15/15。
+随后正式合入单一观测QoS变更，新增重建后QoS及state/guidance
+原可靠性/深度不变断言，正在执行正式21组组件行为测试及飞行矩阵。
+候选通过不是长期稳定性或实机验收，也不是所有延迟唯一根因证明。
+
+静态检查如实记录：cppcheck-production.log对生产控制源码通过；
+cppcheck.log的2.7版本对gtest参数化宏报解析错误，真实C++构建及
+gtest通过，不把工具解析FAIL删去或计成通过。cpplint.log仍有既有
+诊断计数unsigned long long用法告警；未因此改变生产飞控二进制。
+
+### 29.4 正式组件回归通过，六项SITL执行中
+
+正式新增订阅图QoS断言首次遇图元数据异步同步竞态，observation-tests.log
+保留20/21结果：subscription_count已匹配但node_name尚未到达导致
+StopIteration，未执行观测校验。修正fixture等待完整图元数据，不改
+生产节点；observation-tests-final.log重新完整21/21行为CTest通过，
+79.11s。四组合真实观测测试及重建后QoS/原state和guidance可靠性
+断言通过。observation-lint-final.log四文件flake8与pep257通过；
+包flake8/pep257/xmllint三项通过。不是将原FAIL删除或自动重试飞行。
+
+formal-latest/每项独立新目录，由run_formal.py串行执行六项，首项
+失败即停止，无重试。固定正式transform源SHA
+42ce89705d8093707c581b6aecbfbbe2392766ec72c1f0233f45ebe30030cc42，
+Flight/Bridge/Landing ELF不变；各轮报告核对实际加载文件与参数。
+三相机30Hz、.2m标签、.6/.5m收尾区间、全诊断关闭不变。
+接管仍为原AUTO.LAND，须真实下游正向基线、预期ABORTED与停流；
+取消与持续失标仍按负向真实终态验收，不能称“降落成功”。
+
+### 29.5 当前正式版本六项矩阵与最终审计通过
+
+formal-matrix.log六项串行首次执行全部通过，未自动重试任何飞行。
+正式安装的实际transform、Flight、Bridge、Landing、PX4指纹与预期
+一致，三相机30Hz/.2m标签/.6/.5m高度区间/诊断关闭逐项核对。
+最终增强审计final-audit-v2.json保留本根目录全部10轮原结果路径与
+SHA256，失败与独立候选不混入正式六项。current_six_scenario_regression_passed
+=true，missing_formal_cases=[]，全部所属PID/start_ticks已消失。
+
+| 正式场景 | 精确任务/精降UUID | 真实终态与验收 |
+|---|---|---|
+| 普通任务 | 18cc8a7c86564e19b8c10f84676c29ba；精降0f5ac290a671e186a5f8d5d5e3513592 | 任务4/true，三步完成；任务及精降同UUID RELEASED；新鲜disarmed |
+| 短时失标重获 | c55dacc2a4f64bfa93fdb5c378812f62 | 4/true，真实降落并确认disarmed；失标保持窗口10条命令符合固定点规则 |
+| 持续失标 | 593eedb8496a4ffa9f7e9ff1ad50cec8 | 6/false/landing_target_lost；37条失标保持命令符合规则，无内部Land，终态仍OFFBOARD悬停 |
+| 下降取消 | 27ab73a1825b4bb880e49383a68aaca5 | 5/false，精确取消ACK，同UUID释放，未创建内部Land |
+| 收尾取消 | 1da3b126eade4f6a9ecf670024c3e3bb | 父5/false；唯一内部Land e8bf91a0f56258124821acae30d5dec3真5；新鲜OFFBOARD后同UUID释放 |
+| 原AUTO.LAND外部接管 | 4df25bb8a3f74cd89d600c09900a4977 | 6/false/flight evidence/control lost；无内部Land，停流且同UUID释放 |
+
+普通任务final state源年龄.1s/接收年龄.0334s。精降到首次Land约34.8s，
+出现37条handoff_wait_mode、16条lost_hold、27条reacquire_hold；
+目标间歇失效仍按原保护停止/稳定重获，没有放宽参数，也不宣称全程
+零失标、最短降落时间或时序滞后唯一原因已闭环。
+收尾取消后飞机新鲜OFFBOARD、armed、connected、pose_valid，
+状态源年龄0/接收年龄约44微秒；取消验收不是降落成功。
+
+外部接管下降阶段在约.941m经MAVROS请求原AUTO.LAND，ACK与新鲜
+模式真实确认；此前一秒position输出40条，其余三出口0符合POSITION。
+确认后继续观测2.548s，平台+.5s及四实际下游出口+1.5s后均0，
+增强审计从原command/downstream样本独立重算，不只相信passed字段。
+正式这轮在descend阶段即终止；29.2首次模式修复轮确实命中低高
+handoff_wait_mode竞争并拒绝内部Land，确定性ROS反例另验证聚合
+仍OFFBOARD而独立模式先接管。联合验收，不把单轮路径当全时序证明。
+
+全六项各组exit0、child_exit_failures全部空、leftovers空；本轮没有
+自动追加返航/降落/上锁、没改TTL/配对/失标期限/控制发布QoS。
+功能与当前仿真矩阵验收完成；UI/实机/G9后复验/旧偶发崩溃仍暂缓。
+
+检查边界：最后扩大C++格式检查bridge/header/test，
+bridge-header-format.log报告三个文件style divergence（大量原有
+对齐/括号风格及新增年龄表达式缩进），bridge新行为单测无差异。
+与29.3的cpplint诊断计数告警、cppcheck 2.7宏解析限制一并保留。
+没有声称全部仓库lint通过，也未为格式问题重写已验收飞控/桥二进制；
+格式/lint清理可单独排期，当前函数行为构建及9/9、2/2、21/21均通过。
+改动四个Python文件flake8/pep257通过，git diff --check无空白错误。
+未自动提交或推送git，用户本地.codex/CLI改动保留。
+
+## 30. 提交与剩余问题分层（2026-10-11）
+
+用户要求提交本批git并报告剩余问题。本次提交范围为第27–29节的
+项目源码、回归与文档，不含用户的.codex三文件及codex_cli.sh删除；
+本地artifacts原始证据保留，不将大体积仿真输出纳入源码提交，不push。
+
+下一步建议（仅登记，未开始执行）：
+
+1. 清理现存C++格式/cpplint问题，处理cppcheck 2.7对gtest宏的解析
+   兼容性并区分工具限制与真实缺陷，再签收相关包完整lint；不因此
+   擅自升级系统或压制真实检查。
+2. 精降稳定性/耗时优化：当前普通任务仍短时失标、稳定重获，精降到
+   Land约34.8s。分清图像可见性、姿态/几何拒绝、调度/传输与配对，
+   建立有界多轮指标，不放宽安全阈值，不把单轮成功当长期可靠性。
+3. 补充尚未验收的仿真边界：未知模式命令结果、其它外部接管、复杂
+   障碍/负载等；已有单元/ROS反例不能冒充每一种真实SITL场景。
+4. 历史初始DDS序列缺口来源及一次任务REJECTED仍缺唯一根因；
+   当前等待路径已规避、准入快照已增强，保留记录，后续自然复现时
+   据实际证据处理，不自动重发Goal或无限盲复跑。
+
+用户明确暂缓项保持不变：旧Gazebo/EGO/semantic偶发退出专项、UI、
+实机/真实云台/动态外参、G9–G11。它们不是已解决，也不是本次提交
+或报告自动授权恢复执行。
