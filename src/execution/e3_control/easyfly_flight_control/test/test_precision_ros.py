@@ -412,6 +412,7 @@ def test_precision_process(scenario):
                 for item in land_status
             )
         if scenario == "unknown_mode_late":
+            assert wrapped.result.message.startswith("command_result_unknown:")
             assert (
                 not mode_completed
             )  # Public terminal precedes late response.

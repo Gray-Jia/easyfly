@@ -93,6 +93,9 @@ must remain trusted. Unknown remote flight-command outcomes keep the existing
 flight fault latch and require human audit before restart.
 An Action's confirmed terminal/drain may report `RELEASED` while that independent
 flight-command fault latch stays set; release never proves the PX4 mode result.
+Fault-latched Land failures, like Takeoff failures, report
+`command_result_unknown:`. This does not claim PX4 refused or never executed the
+command. Logs do not claim OFFBOARD hover while the fault guard stops streaming.
 
 `/platform/precision_landing/capabilities` reports implementation and live
 configuration/readiness separately. This implementation and fake-feedback ROS

@@ -4327,3 +4327,134 @@ RC或改PX4参数，不关闭间歇失标、RC实机、未知命令真实飞行�
 矩阵及旧崩溃等未完成项。最终git diff --check通过，未提交/push，
 用户.codex三文件与CLI删除保持原样。
 新增CMake测试注册的ament_lint_cmake也通过（cmake-lint-final.log）。
+
+## 35. 未知模式命令结果的真实 SITL 故障锁验收（本轮两项完成，2026-10-11）
+
+用户批准先提交第32–34节成果，再执行下一项。已提交0e55426，
+不push；用户.codex三文件和CLI删除未纳入。仍仅主agent，不恢复
+POSCTL、实机、UI、旧崩溃或G9后复验。新证据根
+artifacts/d5-unknown-mode-20261011.MHmf7d/。
+
+目标：在精准降落交给普通Land的真实SITL链路中，让命令确实转发
+到现有桥接/PX4，只在仿真夹具中延迟返回服务回复，分别覆盖超过
+现有5s等待期限后的迟到回复，以及整个验收期间持续扣留回复。
+不伪造状态/模式/成功响应，不改变生产安全期限、PX4参数或保护。
+
+验收：单次起飞与精降；新鲜同UUID land_handoff/唯一Executing
+内部Land、独立OFFBOARD证据及平台/实际位置出口正向基线之后
+才转发一次AUTO.LAND。父子真实ABORTED/false与精确GetResult、
+父UUID RELEASED；另以新鲜内部只读快照证明command_uncertain
+故障锁仍保持。真实PX4新鲜disarmed后进行独立拒绝准入探针，
+不能仅因仍armed或动作busy而宣称故障锁有效。迟到原回复前后
+均拒绝后续动作；平台+.5s/四下游+1.5s停流且持续观察不少于2.5s，
+无模式重试/补偿OFFBOARD/返航/上锁。动作释放不等于故障解除。
+组件及真实ROS代理先通过，再串行两项SITL，不与测试/构建并行。
+原FAIL保留、每轮核对所属进程清理；负向验收不是降落成功。
+
+35.1 夹具：显式unknown-mode-late/unknown-mode-withheld两入口，
+仅仿真所属飞控重映射arm/mode到测试代理；原样单次转发真实桥接，
+arm响应正常返回，仅内部Land模式响应被扣留。原始FlightStatus与
+UAVState共同确认AUTO.LAND且模式源推进；记录上下游正向基线、
+实际转发/回复/释放时刻、精确Land GetResult、内部故障快照和8个
+独立拒绝探针。真实ROS异步代理及相关164项pytest通过；完整精降
+CTest两轮均行为全通过、各自29/30且仅新增测试格式失败，原日志
+保留。修正格式后6/6针对性回归和全包实际flake8通过；当前结果
+443 tests/0 errors/0 failures/3 skipped，原cppcheck skip不计分析通过。
+
+35.2 首次真实迟到回复基线unknown-mode-late/result.json passed=true，
+Takeoff dfeea078a9d34d7dbe9a69d8e92e6fa6真4/true，精降
+b649da595a824f94a5ef5f7c26435f49真6/false，上下游停流、精确父释放、
+迟到回复前后故障锁及后续动作拒绝通过，4组exit0、子失败/残留空。
+5s超时后内部fault快照active0、动作/精降预留false、fault=true；
+真实disarmed后仍fault，原回复约9.200s才返回，未解锁/重试/补偿。
+
+该基线暴露可确定的报告缺陷：实际原始AUTO.LAND已确认，但Land
+结果写AUTO.LAND not engaged，错误日志写“保持OFFBOARD悬停”。
+只修报告语义：未知命令Land终态沿用Takeoff的command_result_unknown
+前缀并说明保锁/人工核查，日志明确停流；已明确失败的普通分支
+保留原结果、不宣称一定悬停，实际hover仍由原新鲜OFFBOARD准入
+决定。不改控制/超时/故障解除机制。新增C++明确失败与未知结果
+对照，真实ROS父子链补未知前缀断言；修正版需重新组件和两项
+SITL验收，基线原记录/指纹保留，不追认成新版本验收。
+
+35.3 报告修正版飞控13/13 CTest（86.07s）、精降相关6/6通过。
+accepted/unknown-mode-late首次真实通过，父43a714625f564659b3915e7fc5e5ed19、
+子e9e659d0f19a88c0ae911be372027686均6/false/未知命令前缀，
+真实模式/原生ACK/故障锁/精确释放/8个拒绝探针/停流/清理通过。
+但accepted/unknown-mode-withheld虽然飞行子进程全exit0、负向
+行为通过，observer自身在输出result.json后挂在futex等待，不能
+签收整项。确认自有observer PID40418/start_ticks557777及所属
+证据目录，其他飞行/仿真进程均退出后只SIGKILL该observer；driver
+exit247。原记录与过早生成的final-audit.json原样保留，明确由
+teardown-failure.json撤销其两项全通过结论，不将report的passed
+当作入口清理成功。
+
+确定夹具原因：被扣留的异步ROS service coroutine仍有executor
+work-tracker占用；仅cancel Future、停止spin后直接默认shutdown
+会等待未完成回调，且原报告在observer自身关闭之前写出。修复
+仅仿真入口：所属飞行/仿真进程先关闭，executor仍运行时释放门
+并泵回调完成；扣留期间与清理释放分别记录returned/cleanup_returned。
+没有发送过的门在清理时不转发命令；实际已收到的回复仍原样返回。
+之后有界3s executor shutdown，确认后销毁实体/context，再保存报告；
+失败须记FAIL而非提前passed。新增observer PID/start_ticks到证据，
+独立审计也要求observer身份消失，防止只核对子进程的清理漏洞。
+真实ROS代理补持续扣留后drain/shutdown对照测试，通过；最终版本
+另用verified/下两个全新目录串行验收，不覆盖已有记录。
+
+35.4 最终组件与lint：生产报告修正的飞控构建通过，13/13 CTest
+通过（86.07s），3项C++ lint实际执行、无skip。夹具收尾修正后
+精降完整30项CTest运行的22项行为全部通过；唯一xmllint FAIL为
+外部http://download.ros.org/schema/package_format3.xsd资源加载失败，
+不是package.xml改动。原日志precision-tests-verified.log保留，单项
+xmllint原样复验通过（2.11s），未跳过schema或降低校验。新增
+“关闭发生在准入门之前绝不能补发命令”ROS对照后，fixture-edge-tests
+3/3通过（含全包flake8、pep257），新增故障夹具37项pytest均通过。
+最终精降结果445 tests/0 errors/0 failures/3 skipped；仍是原cppcheck
+3skip，不计实际分析通过。两项SITL从未与构建或组件测试并行。
+
+35.5 最终真实SITL证据在verified/，每轮只一次Takeoff与PrecisionLand。
+两次起飞真4/true，父精降与唯一内部Land均真6/false，结果全部
+command_result_unknown前缀，精确父UUID RELEASED而内部fault仍true。
+
+迟到回复：父c7f0825dad7144faadda3f5cd7552b2d、子
+2b770e86f831637f9835d3cd7c9bb9ee；5s本地超时后停流，原回复
+约18.383s才返回。真实新鲜disarmed后，返回前后各4个独立动作
+（Takeoff/Land/GoToWaypoint/PrecisionLand）均REJECT；故障快照
+active0、无动作/精降预留、command_uncertain=true，未因迟到回复解锁。
+
+持续扣留：父eccf492b7cfe4b0bac53ebb8787504f0、子
+d669359f99406325172162e572215b58；整个验收期间无模式回复返回，
+真实disarmed后8个探针均REJECT、同样保锁。只在飞控及其他所属
+子进程退出后，为测试回调排空释放原回复，记录cleanup_returned，
+不把清理释放当作飞行期间回复。泵回调约0.105ms记录清理返回，
+observer_shutdown_confirmed=true，入口实际exit0，不再卡住。
+
+两轮注入前一秒平台20条/实际位置出口40条；fault快照之后+.5s
+平台和+1.5s四下游均0，持续观察分别约15.891s与6.619s。独立
+FlightStatus与UAVState确认真实AUTO.LAND，原模式源推进，源年龄
+0、原receipt约4.75/8.37ms；实际模式/arm代理记录均只[3,7]及[true]。
+原生ULog确认各自唯一AUTO.LAND(main4/sub6)、command176 ACK/result0
+和nav_state18，只有一次OFFBOARD起飞请求、无模式重试/补偿上锁。
+PX4原生落地后disarmed/OFFBOARD反馈不是平台重发模式，不应误报
+成夺回控制；本轮用实际请求记录及原生日志区分，未注入额外命令。
+
+final-verified-audit.json独立重算原样本的输出基线/尾流/探针UUID，
+核对真实父子结果、内部fault与精确释放、原生ULog及参数/ELF/源码
+指纹，并要求observer自身PID/start_ticks也消失。限定本轮两项的
+requested_matrix_passed与full_matrix_passed均true；这里full只指
+本节两个明确场景，绝非所有未知命令场景。每轮4组exit0，子失败
+与残留空，observer/所属PID均消失。过早的旧final-audit.json仍由
+teardown-failure.json撤销，不作为最后结论。
+
+最终Flight ELF455929ed2efdd1b71b0c6b7d9d0e120558f6da6f65dfa9c6e2c130a77e9ee31c，
+入口0c056c12564b2ff182497299b424e29832c946c66517d62545d6d0f7a9b91427，
+故障夹具2fb82467eef4d19466763a50150f4a4fcbfc1f82678a4681c14f45f8afb2746c，
+其余桥接/感知/转换/PX4指纹及原安全阈值不变。最终diff空白检查
+通过。本轮新改动未提交/push；上一批已提交0e55426，用户配置与
+CLI删除保持原样。没有残留SITL、observer或测试进程。
+
+剩余边界：真实arming未知结果、桥接→MAVROS回复丢失及其独立
+bridge故障锁、取消与未知结果交叉等尚未纳入本轮真实飞行矩阵；
+不能用当前两项替代。POSCTL继续暂缓，间歇失标/历史启动拒绝缺
+快照/旧崩溃仍按原记录处理；未恢复UI、实机或G9后复验。故障后
+人工核查并重启仍是既定策略，本轮没有新增自动解锁/补偿恢复。

@@ -790,6 +790,38 @@ TEST_F(FlightSafety, BridgeUnknownResultPrefixLatchesFaultButExplicitRejectionDo
   EXPECT_EQ(arm_calls_.load(), 0);
 }
 
+TEST_F(FlightSafety, LandUnknownResultIsNotReportedAsKnownModeFailure)
+{
+  std::atomic<bool> unknown{false};
+  mode_hook_ = [this, &unknown](auto request, auto response) {
+      if (unknown) {FlightSafetyTestPeer::confirmMode(*node_, request->flight_mode);}
+      response->success = false;
+      response->message = unknown ?
+        "command_result_unknown: upstream reply lost" : "explicitly rejected";
+    };
+  startGraph();
+  ASSERT_TRUE(client_->wait_for_action_server(2s));
+  for (bool fault : {false, true}) {
+    unknown = fault;
+    FlightSafetyTestPeer::prepare(*node_, 3);
+    auto sent = client_->async_send_goal(FlightController::Land::Goal{});
+    ASSERT_EQ(sent.wait_for(2s), std::future_status::ready);
+    ASSERT_NE(sent.get(), nullptr);
+    auto result = client_->async_get_result(sent.get());
+    ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(result.get().code, rclcpp_action::ResultCode::ABORTED);
+    EXPECT_FALSE(result.get().result->success);
+    EXPECT_EQ(FlightSafetyTestPeer::fault(*node_), fault);
+    EXPECT_EQ(
+      result.get().result->message,
+      fault ? "command_result_unknown: flight fault latch set; manual audit required" :
+      "AUTO.LAND not engaged");
+  }
+  EXPECT_EQ(mode_calls_.load(), 2);
+  EXPECT_EQ(offboard_calls_.load(), 0);
+  EXPECT_EQ(arm_calls_.load(), 0);
+}
+
 TEST_F(FlightSafety, LandDisarmCanCompleteWithoutPoseButNotWithoutTrustedStamp)
 {
   startGraph();

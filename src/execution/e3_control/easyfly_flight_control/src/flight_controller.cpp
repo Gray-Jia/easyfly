@@ -1087,7 +1087,15 @@ void FlightController::handle_land_accepted(
   if (!call_set_mode(7, still_preparing_owned, handoff_before_send) ||
     !wait_mode_engaged(7, 3.0))
   {
-    RCLCPP_ERROR(get_logger(), "AUTO.LAND 切换未确认，保持 OFFBOARD 悬停并中止 Land");
+    if (command_uncertain_) {
+      RCLCPP_ERROR(
+        get_logger(), "AUTO.LAND command outcome uncertain: setpoint stream stopped; "
+        "flight fault latch set; manual audit required");
+    } else {
+      RCLCPP_ERROR(
+        get_logger(), "AUTO.LAND transaction not confirmed; abort Land; "
+        "hover retained only with fresh owned OFFBOARD evidence");
+    }
     finish_land_goal(gh, "AUTO.LAND not engaged", true);
     return;
   }
@@ -1401,7 +1409,8 @@ void FlightController::finish_land_goal(
   }
   auto result = std::make_shared<Land::Result>();
   result->success = false;
-  result->message = message;
+  result->message = command_uncertain_ ?
+    "command_result_unknown: flight fault latch set; manual audit required" : message;
   try {
     if (gh->is_canceling()) {gh->canceled(result);} else {gh->abort(result);}
   } catch (const std::exception & e) {

@@ -72,6 +72,7 @@ from easyfly_precision_landing.simulation_collision import fixture_ground_z
 from easyfly_precision_landing.simulation_scenarios import (
     SCENARIOS, PrecisionScenario, ScenarioComplete, owned_descendants, remaining_owned,
 )
+from easyfly_precision_landing.simulation_faults import FAULT_SCENARIOS, ModeFaultScenario
 
 
 class StartupComplete(Exception):
@@ -252,7 +253,7 @@ def parse_arguments(argv=None):
         help="execute the formal demo through mission FSM and SDK",
     )
     parser.add_argument("--fixture-scale", type=float, default=1.0)
-    parser.add_argument("--scenario", choices=SCENARIOS, default="nominal",
+    parser.add_argument("--scenario", choices=(*SCENARIOS, *FAULT_SCENARIOS), default="nominal",
                         help="Explicit direct-action lifecycle test; default nominal only")
     parser.add_argument("--handoff-height", type=float, default=None)
     parser.add_argument("--descent-floor-height", type=float, default=None)
@@ -426,6 +427,11 @@ def main():
             "start_only" if startup_only else "direct_action"
         ),
         "staging": staging,
+        "observer_process": {
+            "pid": os.getpid(),
+            "start_ticks": Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(
+                ")", 1)[1].split()[19],
+        },
         "runtime": {
             "transform_source_sha256": hashlib.sha256(
                 Path(observation_implementation.__file__).read_bytes()).hexdigest(),
@@ -438,6 +444,8 @@ def main():
             "engine_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "scenario_helper_sha256": hashlib.sha256(
                 Path(__file__).with_name("simulation_scenarios.py").read_bytes()).hexdigest(),
+            "fault_helper_sha256": hashlib.sha256(
+                Path(__file__).with_name("simulation_faults.py").read_bytes()).hexdigest(),
             "px4_sha256": hashlib.sha256(Path(staging["binary"]).read_bytes()).hexdigest(),
             "bridge_binary_sha256": hashlib.sha256((Path(
                 get_package_prefix("easyfly_mavlink_bridge")) /
@@ -507,7 +515,8 @@ def main():
     closing = [False]
     observer_timing = {}
     observer_executor = None
-    scenario = (PrecisionScenario(args.scenario, node, report, latest, receipts, started)
+    scenario_kind = ModeFaultScenario if args.scenario in FAULT_SCENARIOS else PrecisionScenario
+    scenario = (scenario_kind(args.scenario, node, report, latest, receipts, started)
                 if args.scenario != "nominal" else None)
     owned = {}
     tracked_at = [0.]
@@ -1032,8 +1041,19 @@ def main():
                           "ground_reference_offset_z_m": reference["offset_z_m"]}), flush=True)
         precision_command = [
             "ros2", "launch", "easyfly_precision_landing", "precision_landing.launch.py",
-            "config_file:=" + str(config_path), "start_flight_controller:=true",
+            "config_file:=" + str(config_path),
+            "start_flight_controller:=" + (
+                "false" if args.scenario in FAULT_SCENARIOS else "true"),
         ]
+        if args.scenario in FAULT_SCENARIOS:
+            start("flight", [
+                get_package_prefix("easyfly_flight_control")
+                + "/lib/easyfly_flight_control/flight_control_node",
+                "--ros-args", "--params-file", str(config_path),
+                "-r", "__node:=flight_controller", "-p", "use_sim_time:=true",
+                "-r", "/set_flight_mode:=/d5_test/set_flight_mode",
+                "-r", "/arm_motors:=/d5_test/arm_motors",
+            ])
         if args.scenario.startswith("loss-"):
             precision_command.append("image_topic:=/d5_test/image_raw")
         start(
@@ -1277,7 +1297,7 @@ def main():
     finally:
         closing[0] = True
         owned.update(owned_descendants(os.getpid()))
-        for name in ("mission", "precision", "bridge", "simulation"):
+        for name in ("mission", "flight", "precision", "bridge", "simulation"):
             process = processes.get(name)
             if process is None:
                 continue
@@ -1317,6 +1337,25 @@ def main():
         report["reasons"] = dict(reasons)
         report["owned_processes"] = owned
         report["leftovers"] = remaining_owned(owned)
+        if isinstance(scenario, ModeFaultScenario):
+            flight_process = processes.get("flight")
+            report["flight_exit_before_fixture_drain"] = (
+                flight_process.returncode if flight_process is not None else None)
+            try:
+                scenario.drain(spin_once)
+            except Exception as teardown_error:
+                report["fixture_teardown_error"] = str(teardown_error)
+                error = teardown_error
+        executor = observer_executor or rclpy.get_global_executor()
+        report["observer_shutdown_confirmed"] = executor.shutdown(timeout_sec=3)
+        if not report["observer_shutdown_confirmed"]:
+            error = RuntimeError("observer callbacks did not drain before shutdown")
+            report["fixture_teardown_error"] = str(error)
+        if scenario is not None:
+            scenario.destroy()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
         report["passed"] = (error is None and not report["leftovers"]
                             and all(v == 0 for v in report["exits"].values())
                             and not any(report["child_exit_failures"].values()))
@@ -1340,13 +1379,6 @@ def main():
             ),
             flush=True,
         )
-        if observer_executor is not None:
-            observer_executor.shutdown()
-        if scenario is not None:
-            scenario.destroy()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
         for stream in logs:
             stream.close()
         for number, handler in previous_signals.items():
