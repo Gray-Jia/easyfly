@@ -36,6 +36,11 @@ static Feedback feedback(const easyfly_msgs::action::Takeoff::Feedback &f) {
 static Feedback feedback(const easyfly_msgs::action::Land::Feedback &f) {
   return {{{"current_altitude", f.current_altitude}}, {}, {}};
 }
+static Feedback feedback(const easyfly_msgs::action::PrecisionLand::Feedback &f) {
+  return {{{"horizontal_error_m", f.horizontal_error_m},
+    {"height_above_target_m", f.height_above_target_m}},
+    {{"target_valid", f.target_valid}}, {{"phase", f.phase}}};
+}
 static Feedback feedback(const easyfly_msgs::action::GoToWaypoint::Feedback &f) {
   return {{{"distance_remaining", f.distance_remaining}, {"progress", f.progress}}, {}, {}};
 }
@@ -97,6 +102,7 @@ struct Core : std::enable_shared_from_this<Core> {
     executor->add_node(node);
     add<easyfly_msgs::action::Takeoff>("takeoff", "/takeoff");
     add<easyfly_msgs::action::Land>("land", "/land");
+    add<easyfly_msgs::action::PrecisionLand>("precision_land", "/precision_land");
     add<easyfly_msgs::action::GoToWaypoint>("goto", "/goto_waypoint");
     add<easyfly_msgs::action::NavigateTo>("navigate", "/navigate");
     add<easyfly_msgs::action::FollowTrajectory>("follow", "/follow_trajectory");
@@ -104,7 +110,8 @@ struct Core : std::enable_shared_from_this<Core> {
     add<easyfly_msgs::action::ExecuteMission>("execute_mission", "/execute_mission");
     add<easyfly_msgs::action::SearchArea>("search", "/search_area");
     for(const auto &entry:std::map<std::string,std::string>{{"navigate","/navigation/ownership"},
-        {"search","/search/ownership"},{"execute_mission","/mission/ownership"}}) {
+        {"search","/search/ownership"},{"execute_mission","/mission/ownership"},
+        {"precision_land","/precision_landing/ownership"}}) {
       auto service=node->create_client<easyfly_msgs::srv::GetActionOwnership>(entry.second);
       ownership[entry.first]=service;
       auto action_ready=ready.at(entry.first);
@@ -486,6 +493,7 @@ std::shared_ptr<Operation> Client::method(const easyfly_msgs::action::action_typ
 }
 EASYFLY_METHOD(takeoff, Takeoff, "takeoff")
 EASYFLY_METHOD(land, Land, "land")
+EASYFLY_METHOD(precision_land, PrecisionLand, "precision_land")
 EASYFLY_METHOD(go_to, GoToWaypoint, "goto")
 EASYFLY_METHOD(navigate, NavigateTo, "navigate")
 EASYFLY_METHOD(follow, FollowTrajectory, "follow")

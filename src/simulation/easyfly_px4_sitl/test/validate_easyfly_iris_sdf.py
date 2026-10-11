@@ -312,7 +312,7 @@ class EasyflyIrisSdfTest(unittest.TestCase):
                 self.assertEqual(len(plugins), 1)
                 plugin = plugins[0]
                 self.assertEqual(plugin.get("name"), plugin_name)
-                self.assertEqual(plugin.get("filename"), "libgazebo_ros_camera.so")
+                self.assertEqual(plugin.get("filename"), "libeasyfly_gazebo_ros_camera.so")
                 self.assertEqual(plugin.findtext("ros/namespace"), "/camera")
                 camera_name = plugin.findtext("camera_name")
                 self.assertIsNotNone(camera_name)

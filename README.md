@@ -19,6 +19,22 @@ source easyfly_env.bash
 build_all.bash
 ```
 
+## 仿真验收
+
+统一导航、取消、地图失效、任务编排和区域搜索的真实 PX4/Gazebo 验收入口及
+电池采样修复及仿真默认兼容版见[电池 SITL 说明](docs/development/battery-sitl.md)。
+
+安全边界见[导航 SITL 说明](docs/development/navigation-sitl.md)。该入口需要显式
+调用，会发送仿真飞行动作，不由普通 `colcon test` 自动执行。
+
+`semantic_map` 退出崩溃尚未定位，当前回归与默认关闭的专用取栈入口见
+[semantic 退出专项](docs/development/semantic-shutdown.md)；正常复跑不等于修复。
+
 ## 许可证
 
-Apache-2.0
+EasyFly 自有代码采用 [Apache-2.0](LICENSE)，署名沿用 `EasyFly Project`。
+
+第三方源码、模型、资源及其本地移植保留各自原许可；根许可证不替代这些声明。
+`easyfly_gazebo_plugins` 的 Livox 移植和 `easyfly_gazebo_models` 的模型资源仍需逐项
+核对来源，暂未覆盖其原有包许可元数据。详情见[许可说明](docs/development/copyright-options.md)
+与[第三方来源登记](docs/development/third-party-provenance.md)。

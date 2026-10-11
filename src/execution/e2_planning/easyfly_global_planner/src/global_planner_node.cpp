@@ -868,7 +868,8 @@ private:
                             seg_fail_code = 1;
                         else
                             seg_fail_code = 2;  // 段超时就地悬停
-                    } else if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED) {
+                    } else if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||
+                               !wrapped.result || !wrapped.result->success) {
                         seg_fail_code = 2;
                     }
                     seg_done = true;

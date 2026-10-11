@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>Owned asynchronous EasyFly C++ action and state SDK</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
-  <license>MIT</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>

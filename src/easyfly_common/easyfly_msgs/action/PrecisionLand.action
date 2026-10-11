@@ -1,0 +1,13 @@
+# Start while armed and hovering in OFFBOARD. Configuration is startup-only.
+int32 tag_id
+# Wall-clock execution budget [s], finite and positive.
+float64 timeout
+---
+bool success
+string message
+---
+string phase
+bool target_valid
+float64 horizontal_error_m
+# Vertical separation from the observed, validated landing plane; not odom Z.
+float64 height_above_target_m

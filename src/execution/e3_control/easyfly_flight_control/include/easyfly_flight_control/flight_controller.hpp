@@ -5,7 +5,10 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <functional>
 #include <mutex>
+#include <deque>
 
 #include <easyfly_msgs/msg/uav_state.hpp>
 #include <easyfly_msgs/msg/uav_command.hpp>
@@ -13,11 +16,16 @@
 #include <easyfly_msgs/action/land.hpp>
 #include <easyfly_msgs/action/go_to_waypoint.hpp>
 #include <easyfly_msgs/action/follow_trajectory.hpp>
+#include <easyfly_msgs/action/precision_land.hpp>
+#include <easyfly_msgs/msg/landing_guidance_target.hpp>
+#include <easyfly_msgs/srv/get_action_ownership.hpp>
+#include <easyfly_msgs/srv/get_capabilities.hpp>
 #include <easyfly_msgs/srv/arm_motors.hpp>
 #include <easyfly_msgs/srv/set_flight_mode.hpp>
 #include <quadrotor_msgs/msg/position_command.hpp>
 
 #include "easyfly_flight_control/trajectory_startup_timeout.hpp"
+#include "easyfly_precision_landing/policy.hpp"
 
 namespace easyfly_flight_control
 {
@@ -29,15 +37,85 @@ namespace easyfly_flight_control
 class FlightController : public rclcpp::Node
 {
   friend class NavigationSessionTestPeer;
+  friend class FlightSafetyTestPeer;
+  friend class PrecisionLandingTestPeer;
 public:
   using Takeoff      = easyfly_msgs::action::Takeoff;
   using Land         = easyfly_msgs::action::Land;
   using GoToWaypoint = easyfly_msgs::action::GoToWaypoint;
   using FollowTrajectory = easyfly_msgs::action::FollowTrajectory;
+  using PrecisionLand = easyfly_msgs::action::PrecisionLand;
 
   explicit FlightController(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+  void initialize_precision_landing();
+  void create_precision_receiver();
+  bool precision_receiver_progress();  // Caller holds flight_mtx_.
+  void record_precision_timing(
+    const char * outcome,
+    const easyfly_msgs::msg::LandingGuidanceTarget & target,
+    const rclcpp::MessageInfo & info, double entered, double acquired,
+    int64_t entry_clock, int64_t entry_wall, uint64_t callback_generation);
+  void flush_precision_timing();
+  bool precision_control_loop();
+  rclcpp_action::GoalResponse handle_precision_goal(
+    const rclcpp_action::GoalUUID &, std::shared_ptr<const PrecisionLand::Goal>);
+  rclcpp_action::CancelResponse handle_precision_cancel(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<PrecisionLand>>);
+  void handle_precision_accepted(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<PrecisionLand>>);
+  void finish_precision(bool success, const std::string & message, bool release = true);
+  void precision_handoff();
+  void precision_cancel_child();
+  bool precision_land_authorized(const std::string & session) const;
+  std::string precision_session() const;
+  bool precision_target_ready() const;
+  bool precision_handoff_ready() const;
+
+  bool precision_enabled_{false};
+  int precision_tag_id_{-1};
+  double precision_tag_size_m_{0.0};
+  easyfly_precision_landing::Pose precision_handoff_board_;
+  bool precision_handoff_aligned_{false};
+  std::string precision_optical_frame_;
+  easyfly_precision_landing::Config precision_config_;
+  std::unique_ptr<easyfly_precision_landing::Policy> precision_policy_;
+  std::chrono::steady_clock::time_point precision_last_control_{};
+  bool precision_reserved_{false};
+  bool precision_handoff_{false};
+  bool precision_child_admission_pending_{false};
+  bool precision_child_cancel_pending_{false};
+  bool precision_child_cancel_accepted_{false};
+  bool precision_terminal_{false};
+  bool precision_cancel_requested_{false};
+  bool precision_completion_deferred_{false};
+  bool precision_deferred_success_{false};
+  bool precision_deferred_release_{true};
+  std::string precision_deferred_message_;
+  std::string precision_stop_reason_;
+  rclcpp_action::GoalUUID precision_uuid_{};
+  std::deque<std::string> precision_released_;
+  std::chrono::steady_clock::time_point precision_start_{};
+  std::chrono::steady_clock::time_point precision_target_receipt_{};
+  easyfly_msgs::msg::LandingGuidanceTarget precision_target_;
+  int64_t precision_last_stamp_{0};
+  uint64_t precision_target_sequence_{0};
+  uint64_t precision_counted_sequence_{0};
+  uint64_t precision_receiver_generation_{0};
+  std::chrono::steady_clock::time_point precision_receiver_progress_time_{};
+  rclcpp::TimerBase::SharedPtr timer_precision_receiver_;
+  bool precision_timing_diagnostics_{false};
+  std::deque<std::string> precision_timing_events_;
+  uint64_t precision_timing_dropped_{0};
+  rclcpp::TimerBase::SharedPtr timer_precision_timing_;
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<PrecisionLand>> gh_precision_;
+  rclcpp_action::Client<Land>::SharedPtr cli_precision_land_;
+  rclcpp_action::ClientGoalHandle<Land>::SharedPtr precision_child_;
+  rclcpp_action::Server<PrecisionLand>::SharedPtr as_precision_;
+  rclcpp::Subscription<easyfly_msgs::msg::LandingGuidanceTarget>::SharedPtr sub_precision_;
+  rclcpp::Service<easyfly_msgs::srv::GetActionOwnership>::SharedPtr srv_precision_ownership_;
+  rclcpp::Service<easyfly_msgs::srv::GetCapabilities>::SharedPtr srv_precision_capabilities_;
   // ---- state callback ----
   void cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg);
   // M4.3: EGO-Planner 轨迹指令回调
@@ -84,21 +162,31 @@ private:
   rclcpp::CallbackGroup::SharedPtr cli_cb_group_;
   rclcpp::CallbackGroup::SharedPtr ctl_cb_group_;   // control loop 专用
   rclcpp::CallbackGroup::SharedPtr state_cb_group_; // /uav_state 订阅专用 (Q9)
+  rclcpp::CallbackGroup::SharedPtr action_cb_group_;
 
   // ---- helpers ----
-  bool call_arm(bool arm);
-  bool call_set_mode(uint8_t mode);
+  bool call_arm(bool arm, const std::function<bool()> & guard = {});
+  bool call_set_mode(uint8_t mode, const std::function<bool()> & guard = {},
+    const std::function<bool()> & before_send = {});
   double clamp(double v, double lo, double hi);
   // Q9: 等待 PX4 实际进入指定模式 (轮询 /uav_state.flight_mode)
   bool wait_mode_engaged(uint8_t mode, double timeout_s);
   // Q9: uav_ 快照 (线程安全读取)
-  easyfly_msgs::msg::UAVState get_uav() const;
+  easyfly_msgs::msg::UAVState get_uav(
+    std::chrono::steady_clock::time_point * receipt = nullptr,
+    uint64_t * sequence = nullptr) const;
+  bool land_disarm_confirmed(const easyfly_msgs::msg::UAVState & uav,
+    std::chrono::steady_clock::time_point receipt) const;
   // Q4: 用渐近状态刷新悬停目标并立即发布 setpoint (恢复 OFFBOARD 数据流)
   void enter_hover_at(double x, double y, double z, double yaw);
   // Q4: 反馈值毛刺守卫 (偏差>3m 回退 ramp 值)
   static double safe_axis(double fb, double ramp);
   void stamp_command(easyfly_msgs::msg::UAVCommand & cmd);
-  bool flight_state_ready(const easyfly_msgs::msg::UAVState & uav) const;
+  bool flight_state_ready(const easyfly_msgs::msg::UAVState & uav,
+    std::chrono::steady_clock::time_point receipt) const;
+  bool state_evidence_fresh(const easyfly_msgs::msg::UAVState & uav,
+    std::chrono::steady_clock::time_point receipt) const;
+  void stop_owned_actions(const std::string & reason);
   // Accepted goal 的所有失败/竞态退出统一经这些 helper 收尾，确保 reservation
   // 与 goal handle 不会在 action 已接受后悬挂。
   void finish_takeoff_goal(
@@ -133,6 +221,8 @@ private:
 
   // ---- latest state (Q9: 多线程读写保护) ----
   easyfly_msgs::msg::UAVState uav_;
+  std::chrono::steady_clock::time_point state_receipt_{};
+  uint64_t state_sequence_{0};
   mutable std::mutex state_mtx_;
   std::atomic<bool> state_received_{false};
 
@@ -140,13 +230,14 @@ private:
   double x_ramp_{0.0}, y_ramp_{0.0}, z_ramp_{0.0};
   double wp_start_x_{0.0}, wp_start_y_{0.0};         // waypoint 起点
   int    wp_in_radius_frames_{0};                    // Q16: 连续在验收半径内的帧数 (去抖)
+  uint64_t wp_counted_sequence_{0};
   rclcpp::Time last_ctl_time_;                       // Q12: 上一控制周期时刻 (实测 dt)
 
   // ---- active action ----
   enum Action {
     NONE, TAKEOFF_PREPARING, TAKEOFF, LAND_PREPARING, LANDING, LAND_CANCELING,
     WAYPOINT, HOVER,
-    TRAJECTORY_WAIT, TRAJECTORY
+    TRAJECTORY_WAIT, TRAJECTORY, PRECISION_GUIDANCE
   };
   // MultiThreadedExecutor 下，全部飞行状态、GoalHandle 和目标参数由此锁保护。
   mutable std::recursive_mutex flight_mtx_;
@@ -155,20 +246,28 @@ private:
   mutable std::mutex land_transaction_mtx_;
   Action active_{NONE};
   bool action_reserved_{false};       // goal callback 原子预留，关闭跨 Action 双接受窗口
-  rclcpp::Time takeover_since_;        // Q2 配套: 外部接管检测去抖起始时刻
+  rclcpp_action::GoalUUID reserved_goal_id_{};
+  std::atomic<bool> command_uncertain_{false};
 
   // hover 目标位置（takeoff/waypoint 完成后保持的位置）
   double hover_x_{0.0}, hover_y_{0.0}, hover_z_{0.0}, hover_yaw_{0.0};
 
   // takeoff state
   double takeoff_target_z_{0.0};
+  uint8_t takeoff_baseline_mode_{0};
+  bool takeoff_offboard_confirmed_{false};
+  bool takeoff_preparation_running_{false};
+  std::string takeoff_stop_reason_;
   double takeoff_speed_{1.0};
   double takeoff_start_x_{0.0}, takeoff_start_y_{0.0}, takeoff_start_z_{0.0};
   double takeoff_start_yaw_{0.0};    // Q7: 起飞时锁存 yaw, 全程不取反馈 (防姿态毛刺)
   double takeoff_ramp_z_{0.0};       // Q4/Q5: 起飞渐近高度 (取消/超时时悬停用)
   rclcpp::Time takeoff_start_time_;
   rclcpp::Time takeoff_deadline_;    // Q5: 起飞超时保护
-  rclcpp::Time land_start_time_;
+  std::chrono::steady_clock::time_point land_start_steady_{};
+  bool land_cancel_offboard_requested_{false};
+  bool land_transaction_running_{false};
+  std::string land_stop_reason_;
 
   // waypoint state
   double wp_target_x_{0.0}, wp_target_y_{0.0}, wp_target_z_{0.0}, wp_target_yaw_{0.0};
@@ -195,6 +294,7 @@ private:
   double traj_startup_grace_{kDefaultTrajectoryStartupGrace};
   // 首帧前等待 EGO 有界重试；独立于 traj_stream_timeout_ 和 action deadline。
   int    traj_in_radius_frames_{0};                  // 到达判定去抖
+  uint64_t traj_counted_sequence_{0};
   rclcpp::Time traj_accept_time_;
   rclcpp::Time traj_deadline_;
   // PositionCommand 的单调 ID 水位。它由 flight_mtx_ 保护，并且即使当前

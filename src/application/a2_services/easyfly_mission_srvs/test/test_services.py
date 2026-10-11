@@ -1,3 +1,17 @@
+# Copyright 2026 EasyFly Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Actual service facade, mock mission backend: ownership and immutable input."""
 import os
 from pathlib import Path
@@ -20,28 +34,51 @@ class MissionServiceTest(unittest.TestCase):
     def run_scenario(self, scenario):
         rclpy.init()
         node = rclpy.create_node('mission_service_backend')
-        backend_node = rclpy.create_node('late_cancel_backend') if scenario == 'late_cancel_reject' else node
+        backend_node = (
+            rclpy.create_node('late_cancel_backend')
+            if scenario == 'late_cancel_reject'
+            else node
+        )
         handles, snapshots, events = [], [], []
         released, known, release_after = set(), set(), {}
+
         def query_ownership(request, response):
             response.goal_id = request.goal_id
-            if request.goal_id in release_after and time.monotonic() >= release_after[request.goal_id]:
+            if (
+                request.goal_id in release_after
+                and time.monotonic() >= release_after[request.goal_id]
+            ):
                 released.add(request.goal_id)
-            response.state = 2 if request.goal_id in released else 1 if request.goal_id in known else 0
+            response.state = (
+                2
+                if request.goal_id in released
+                else 1
+                if request.goal_id in known
+                else 0
+            )
             return response
-        owner = node.create_service(GetActionOwnership, '/mission/ownership', query_ownership)
+
+        owner = node.create_service(
+            GetActionOwnership, '/mission/ownership', query_ownership
+        )
         directory = tempfile.TemporaryDirectory(prefix='easyfly-d2-catalog-')
         root = Path(directory.name)
         (root / 'valid.mission').write_text('type=hover\nwait=0.1\n')
         (root / 'invalid.mission').write_text('type=land\n---\ntype=search\n')
-        (root / 'yaml.yaml').write_text('schema_version: 1\nsteps:\n- type: land\n')
+        (root / 'yaml.yaml').write_text(
+            'schema_version: 1\nsteps:\n- type: land\n'
+        )
         (root / 'escape.mission').symlink_to('/etc/passwd')
         (root / 'alias.txt').symlink_to(root / 'valid.mission')
 
         def accept(_request):
             if scenario == 'late':
                 time.sleep(0.4)
-            return GoalResponse.REJECT if scenario == 'reject' else GoalResponse.ACCEPT
+            return (
+                GoalResponse.REJECT
+                if scenario == 'reject'
+                else GoalResponse.ACCEPT
+            )
 
         async def execute(handle):
             identity = bytes(handle.goal_id.uuid).hex()
@@ -61,23 +98,39 @@ class MissionServiceTest(unittest.TestCase):
                 if complete.done():
                     return
                 feedback = ExecuteMission.Feedback()
-                feedback.current_status.header.stamp = node.get_clock().now().to_msg()
+                feedback.current_status.header.stamp = (
+                    node.get_clock().now().to_msg()
+                )
                 feedback.current_status.progress = 0.5
                 handle.publish_feedback(feedback)
                 if handle.is_cancel_requested:
-                    if scenario == 'slowcancel' and time.monotonic() - started < 0.8:
+                    if (
+                        scenario == 'slowcancel'
+                        and time.monotonic() - started < 0.8
+                    ):
                         return  # ACK arrived, but the backend is not terminal.
                     events.append('canceled')
                     complete.set_result(False)
-                elif scenario in ('success', 'fail', 'managed_drain', 'late_cancel_reject') and time.monotonic() - started > 0.3:
+                elif (
+                    scenario
+                    in (
+                        'success',
+                        'fail',
+                        'managed_drain',
+                        'late_cancel_reject',
+                    )
+                    and time.monotonic() - started > 0.3
+                ):
                     complete.set_result(scenario == 'success')
 
             timer = backend_node.create_timer(0.02, poll)
             result = await complete
             backend_node.destroy_timer(timer)
-            response = ExecuteMission.Result(success=result, message='backend result')
+            response = ExecuteMission.Result(
+                success=result, message='backend result'
+            )
             if scenario in ('managed_drain', 'late_cancel_reject'):
-                release_after[identity] = time.monotonic() + .6
+                release_after[identity] = time.monotonic() + 0.6
             else:
                 released.add(identity)
             if handle.is_cancel_requested:
@@ -90,12 +143,23 @@ class MissionServiceTest(unittest.TestCase):
 
         def cancellation(_):
             if scenario == 'late_cancel_reject':
-                time.sleep(.5)
+                time.sleep(0.5)
                 return CancelResponse.REJECT
             return CancelResponse.ACCEPT
-        backend = None if scenario == 'unavailable' else ActionServer(
-            backend_node, ExecuteMission, '/execute_mission', execute, goal_callback=accept,
-            cancel_callback=cancellation, callback_group=ReentrantCallbackGroup())
+
+        backend = (
+            None
+            if scenario == 'unavailable'
+            else ActionServer(
+                backend_node,
+                ExecuteMission,
+                '/execute_mission',
+                execute,
+                goal_callback=accept,
+                cancel_callback=cancellation,
+                callback_group=ReentrantCallbackGroup(),
+            )
+        )
         backend_executor, backend_thread = None, None
         if backend_node != node:
             backend_executor = MultiThreadedExecutor(num_threads=3)
@@ -103,12 +167,26 @@ class MissionServiceTest(unittest.TestCase):
             backend_thread = threading.Thread(target=backend_executor.spin)
             backend_thread.start()
         log = tempfile.TemporaryFile(mode='w+')
-        process = subprocess.Popen(['ros2', 'run', 'easyfly_mission_srvs', 'mission_services',
-                                    '--ros-args', '-p', 'mission_directory:=' + str(root),
-                                    '-p', 'response_timeout:=0.15'], stdout=log, stderr=log,
-                                   start_new_session=True)
+        process = subprocess.Popen(
+            [
+                'ros2',
+                'run',
+                'easyfly_mission_srvs',
+                'mission_services',
+                '--ros-args',
+                '-p',
+                'mission_directory:=' + str(root),
+                '-p',
+                'response_timeout:=0.15',
+            ],
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
         api = node.create_client(ManageMission, '/platform/mission/manage')
-        cap = node.create_client(GetCapabilities, '/platform/mission/capabilities')
+        cap = node.create_client(
+            GetCapabilities, '/platform/mission/capabilities'
+        )
 
         def wait(future, seconds=5):
             until = time.monotonic() + seconds
@@ -119,8 +197,15 @@ class MissionServiceTest(unittest.TestCase):
             return future.result()
 
         def call(operation, name='', execution=''):
-            return wait(api.call_async(ManageMission.Request(operation=operation, mission_name=name,
-                                                            execution_id=execution)))
+            return wait(
+                api.call_async(
+                    ManageMission.Request(
+                        operation=operation,
+                        mission_name=name,
+                        execution_id=execution,
+                    )
+                )
+            )
 
         try:
             self.assertTrue(api.wait_for_service(timeout_sec=10))
@@ -134,10 +219,18 @@ class MissionServiceTest(unittest.TestCase):
             self.assertNotIn('escape.mission', result.missions)
             self.assertNotIn('alias.txt', result.missions)
             self.assertTrue(call('validate', 'valid.mission').success)
-            for name in ('invalid.mission', 'yaml.yaml', '../valid.mission', 'escape.mission', 'alias.txt'):
+            for name in (
+                'invalid.mission',
+                'yaml.yaml',
+                '../valid.mission',
+                'escape.mission',
+                'alias.txt',
+            ):
                 self.assertFalse(call('validate', name).success)
             self.assertFalse(call('unsupported').success)
-            self.assertFalse(call('cancel', execution='old-unknown-id').success)
+            self.assertFalse(
+                call('cancel', execution='old-unknown-id').success
+            )
             response = wait(cap.call_async(GetCapabilities.Request()))
             self.assertEqual(response.implemented, [True, True, True])
             result = call('start', 'valid.mission')
@@ -177,24 +270,43 @@ class MissionServiceTest(unittest.TestCase):
                 self.assertEqual(result.status, 'accepted')
             if scenario in ('cancel', 'slowcancel'):
                 self.assertFalse(call('start', 'valid.mission').success)
-                self.assertFalse(call('cancel', execution='wrong-current').success)
+                self.assertFalse(
+                    call('cancel', execution='wrong-current').success
+                )
                 canceled = call('cancel', execution=execution)
                 self.assertTrue(canceled.success)
-                self.assertIn(canceled.status, ('cancel_requested', 'canceled'))
+                self.assertIn(
+                    canceled.status, ('cancel_requested', 'canceled')
+                )
                 if scenario == 'slowcancel':
                     self.assertEqual(canceled.status, 'cancel_requested')
-                    self.assertEqual(call('query', execution=execution).status, 'canceling')
-                    self.assertEqual(call('start', 'valid.mission').status, 'busy')
+                    self.assertEqual(
+                        call('query', execution=execution).status, 'canceling'
+                    )
+                    self.assertEqual(
+                        call('start', 'valid.mission').status, 'busy'
+                    )
             until = time.monotonic() + 5
             while time.monotonic() < until:
                 result = call('query', execution=execution)
-                if result.status in ('succeeded', 'failed', 'canceled') and not result.execution_pending:
+                if (
+                    result.status in ('succeeded', 'failed', 'canceled')
+                    and not result.execution_pending
+                ):
                     break
                 rclpy.spin_once(node, timeout_sec=0.02)
-            expected = 'succeeded' if scenario == 'success' else 'failed' if scenario == 'fail' else 'canceled'
+            expected = (
+                'succeeded'
+                if scenario == 'success'
+                else 'failed'
+                if scenario == 'fail'
+                else 'canceled'
+            )
             self.assertEqual(result.status, expected)
             self.assertTrue(snapshots)
-            self.assertFalse(snapshots[0].exists())  # Only delete after real terminal.
+            self.assertFalse(
+                snapshots[0].exists()
+            )  # Only delete after real terminal.
             if scenario == 'late':
                 self.assertEqual(events, ['canceled'])
             if scenario == 'success':
@@ -248,10 +360,14 @@ class MissionServiceTest(unittest.TestCase):
     def test_unavailable(self):
         self.run_scenario('unavailable')
 
-    def test_public_terminal_does_not_delete_snapshot_or_release_catalog_slot(self):
+    def test_public_terminal_does_not_delete_snapshot_or_release_catalog_slot(
+        self,
+    ):
         self.run_scenario('managed_drain')
 
-    def test_late_cancel_rejection_cannot_overwrite_real_result_during_drain(self):
+    def test_late_cancel_rejection_cannot_overwrite_real_result_during_drain(
+        self,
+    ):
         self.run_scenario('late_cancel_reject')
 
 

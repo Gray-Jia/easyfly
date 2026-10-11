@@ -8,6 +8,16 @@
 namespace ego_planner
 {
 
+TEST(NavigationSession, RuntimeCollisionScanRequiresPublishedCurrentSession)
+{
+  EXPECT_FALSE(runtimeTrajectoryBelongsToSession(true, "old", "new"));
+  EXPECT_FALSE(runtimeTrajectoryBelongsToSession(true, "", "new"));
+  EXPECT_FALSE(runtimeTrajectoryBelongsToSession(true, "", ""));
+  EXPECT_FALSE(runtimeTrajectoryBelongsToSession(true, "old", ""));
+  EXPECT_TRUE(runtimeTrajectoryBelongsToSession(true, "new", "new"));
+  EXPECT_TRUE(runtimeTrajectoryBelongsToSession(false, "", ""));
+}
+
 TEST(EmergencyRecoveryGate, PreviousSessionAckCannotRecoverNewSession) {
   EmergencyRecoveryGate gate;
   gate.beginStop(7);

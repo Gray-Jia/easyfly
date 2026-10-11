@@ -57,6 +57,15 @@ add_library(${PROJECT_NAME} SHARED
   # 添加其他源文件
 )
 
+# Mapping is a real-time input consumer even in a diagnostic Debug build.
+# Keep symbols/assertions and the selected Debug ABI, but optimize this library
+# so voxel aging/inflation does not starve odom beyond its 1s validity budget.
+# The separately instrumented depth regression retains its explicit -O1.
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(${PROJECT_NAME} PRIVATE
+    $<$<CONFIG:Debug>:-O2> $<$<CONFIG:>:-O2>)
+endif()
+
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -93,6 +102,16 @@ if(BUILD_TESTING)
   target_include_directories(test_odom_freshness PRIVATE include)
   ament_add_gtest(test_virtual_ceiling test/test_virtual_ceiling.cpp)
   target_include_directories(test_virtual_ceiling PRIVATE include)
+  # Instrument the actual depth path, not only a duplicated arithmetic model.
+  ament_add_gtest(test_depth_projection_memory
+    test/test_depth_projection_memory.cpp src/grid_map.cpp src/raycast.cpp)
+  ament_target_dependencies(test_depth_projection_memory ${dependencies})
+  target_link_libraries(test_depth_projection_memory ${PCL_LIBRARIES})
+  target_compile_options(test_depth_projection_memory PRIVATE
+    -fsanitize=address -fno-omit-frame-pointer -O1)
+  target_link_libraries(test_depth_projection_memory -fsanitize=address)
+  set_tests_properties(test_depth_projection_memory PROPERTIES
+    ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0:halt_on_error=1" TIMEOUT 30)
 endif()
 
 ament_package()

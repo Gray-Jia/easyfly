@@ -170,7 +170,9 @@ namespace ego_planner
     safety_timer_ = nh->create_wall_timer(std::chrono::milliseconds(50), std::bind(&EGOReplanFSM::checkCollisionCallback, this));
 
     // odom_sub_ = nh.subscribe("odom_world", 1, &EGOReplanFSM::odometryCallback, this);
-    odom_sub_ = nh->create_subscription<nav_msgs::msg::Odometry>("odom_world",1,std::bind(&EGOReplanFSM::odometryCallback, this, std::placeholders::_1));
+    odom_sub_ = nh->create_subscription<nav_msgs::msg::Odometry>(
+      "odom_world", rclcpp::SensorDataQoS().keep_last(1),
+      std::bind(&EGOReplanFSM::odometryCallback, this, std::placeholders::_1));
     // The downstream executor owns this dedicated ACK topic.  It is not the
     // periodic PositionCommand stream: only traj_server publishes an ACK
     // after validating and activating a candidate B-spline.
@@ -410,6 +412,7 @@ namespace ego_planner
       have_target_ = have_new_target_ = have_trigger_ = false;
       if (exec_state_ != EMERGENCY_STOP) changeFSMExecState(WAIT_TARGET, "SESSION_STOP");
       navigation_session_id_.clear();
+      navigation_trajectory_session_id_.clear();
       planner_manager_->setNavigationVelocityLimits(
         original_manager_velocity_, original_optimizer_velocity_);
       planner_manager_->setNavigationFixedEndpoint(false);
@@ -428,7 +431,9 @@ namespace ego_planner
     const Eigen::Vector3d target(request->target_x, request->target_y, request->target_z);
     const double axis_limit = navigationAxisVelocityLimit(
       request->max_speed, planner_manager_->pp_.feasibility_tolerance_);
-    if (!hasFreshOdom() || !hasFreshTrustedCloud() || !target.allFinite() ||
+    const bool fresh_odom = hasFreshOdom();
+    const bool fresh_cloud = fresh_odom && hasFreshTrustedCloud();
+    if (!fresh_odom || !fresh_cloud || !target.allFinite() ||
         target.cwiseAbs().maxCoeff() > 1000.0 ||
         !planner_manager_->grid_map_->isInMap(target) ||
         target.z() < planner_manager_->grid_map_->getGroundHeight() ||
@@ -437,6 +442,13 @@ namespace ego_planner
         !std::isfinite(request->max_speed) || request->max_speed <= 0.0 ||
         request->max_speed > navigation_max_velocity_ || !std::isfinite(axis_limit)) {
       response->message = "invalid_target_speed_or_stale_sensors";
+      RCLCPP_WARN(node_->get_logger(),
+        "navigation START rejected: odom=%d cloud=%d target=(%.6f,%.6f,%.6f) "
+        "speed=%.6f cap=%.6f axis=%.6f now=%.6f odom_source=%.6f odom_receipt=%.6f",
+        fresh_odom ? 1 : 0, fresh_cloud ? 1 : 0, target.x(), target.y(), target.z(),
+        request->max_speed, navigation_max_velocity_, axis_limit,
+        node_->get_clock()->now().seconds(), last_odom_stamp_.seconds(),
+        last_odom_receive_time_.seconds());
       return;
     }
     planner_manager_->setNavigationVelocityLimits(axis_limit, axis_limit);
@@ -451,6 +463,7 @@ namespace ego_planner
       return;
     }
     navigation_session_id_ = request->session_id;
+    navigation_trajectory_session_id_.clear();
     navigation_requested_speed_ = request->max_speed;
     have_trigger_ = true;
     if (exec_state_ == EMERGENCY_STOP) {
@@ -1123,7 +1136,7 @@ namespace ego_planner
             RCLCPP_ERROR(rclcpp::get_logger("EGOReplanFSM"), "Failed to generate the first trajectory!!!");
 
             if (exec_state_ == SEQUENTIAL_START)
-              enterEmergencyStop("FIRST_TRAJ_COLLISION");
+              enterEmergencyStop("FIRST_TRAJ_FAILED");
           }
         }
         else
@@ -1487,6 +1500,14 @@ namespace ego_planner
       return;
     }
 
+    // STOP deactivates the previous spline downstream, but local_data_ keeps
+    // its ID/time for monotonic planning. A new START must not scan that old
+    // session's inactive curve as if it were executing for the new goal.
+    // Fresh sensors were checked above; new curves still undergo the full
+    // planner collision check, and runtime checks resume after publication.
+    if (!runtimeTrajectoryBelongsToSession(navigation_managed_,
+        navigation_trajectory_session_id_, navigation_session_id_)) return;
+
     /* ---------- check trajectory ---------- */
     // Runtime safety is a rolling, bounded look-ahead.  It deliberately does
     // not permanently omit the terminal part: each callback advances the
@@ -1717,7 +1738,11 @@ namespace ego_planner
         if (!velocity_points.allFinite() || velocity_points.cols() == 0) return false;
         for (Eigen::Index i = 0; i < velocity_points.cols(); ++i) {
           if (velocity_points.col(i).norm() > navigation_requested_speed_ + 1e-9) {
-            RCLCPP_WARN(node_->get_logger(), "managed trajectory exceeds requested speed; reject publication");
+            RCLCPP_WARN(node_->get_logger(),
+              "managed trajectory exceeds requested speed; reject publication: "
+              "cp=%ld speed=%.9f requested=%.9f start_speed=%.9f",
+              static_cast<long>(i), velocity_points.col(i).norm(),
+              navigation_requested_speed_, start_vel_.norm());
             return false;
           }
         }
@@ -1752,6 +1777,7 @@ namespace ego_planner
 
       /* 1. publish traj to traj_server */
       bspline_pub_->publish(bspline);
+      navigation_trajectory_session_id_ = navigation_session_id_;
 
       /* 2. publish traj to the next drone of swarm */
 
@@ -1972,6 +1998,7 @@ namespace ego_planner
 
     try {
       bspline_pub_->publish(bspline);
+      navigation_trajectory_session_id_ = navigation_session_id_;
     } catch (const std::exception & e) {
       RCLCPP_ERROR(
         rclcpp::get_logger("EGOReplanFSM"),

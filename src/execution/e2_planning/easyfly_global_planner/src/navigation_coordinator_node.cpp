@@ -218,8 +218,8 @@ private:
     auto g = grid();
     auto path = planPath(g, state_->position_x, state_->position_y, goal->target_x, goal->target_y, 0);
     if (!path.ok) {drain(c, "global route unavailable"); return false;}
-    path.waypoints.back() = {goal->target_x, goal->target_y};
-    if (path.waypoints.size() == 1) path.waypoints.insert(path.waypoints.begin(), {state_->position_x, state_->position_y});
+    // planPath preserves the requested endpoint before collision/LOS pruning;
+    // never replace a checked final segment with an unchecked endpoint here.
     for (size_t i = 1; i < path.waypoints.size(); ++i) {
       const auto from = path.waypoints[i - 1], to = path.waypoints[i];
       const double distance = std::hypot(to.first - from.first, to.second - from.second);

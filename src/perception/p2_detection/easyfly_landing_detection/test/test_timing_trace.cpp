@@ -1,0 +1,50 @@
+// Copyright 2026 EasyFly Project
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "timing_trace.hpp"
+#include <gtest/gtest.h>
+#include <fstream>
+
+TEST(TimingTrace, DisabledHasNoFile)
+{
+  ef_timing::Trace trace("");
+  EXPECT_FALSE(trace.enabled());
+  trace.record({}, "not_recorded");
+}
+
+TEST(TimingTrace, BoundedAndDoesNotOverwrite)
+{
+  char directory[] = "/tmp/easyfly-ingress-XXXXXX";
+  ASSERT_NE(mkdtemp(directory), nullptr);
+  const std::string path = std::string(directory) + "/trace.tsv";
+  {
+    ef_timing::Trace trace(path);
+    EXPECT_TRUE(trace.enabled());
+    EXPECT_THROW(ef_timing::Trace existing(path), std::runtime_error);
+    for (int i = 0; i < 8200; ++i) {
+      ef_timing::Event event;
+      event.source_ns = i;
+      trace.record(event, "test");
+    }
+    std::ifstream live(path);
+    EXPECT_EQ(live.peek(), std::ifstream::traits_type::eof());
+  }
+  std::ifstream file(path);
+  std::string header, columns, first;
+  std::getline(file, header);
+  std::getline(file, columns);
+  std::getline(file, first);
+  EXPECT_EQ(header, "# total=8200 retained=8192 dropped=8");
+  EXPECT_EQ(first.substr(0, 6), "8\t0\t8\t");
+  file.close();
+  EXPECT_EQ(unlink(path.c_str()), 0);
+  EXPECT_EQ(rmdir(directory), 0);
+}

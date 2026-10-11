@@ -11,12 +11,20 @@ import rclpy
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-from easyfly_msgs.action import Takeoff, Land, NavigateTo, ExecuteMission
+from easyfly_msgs.action import Takeoff, Land, NavigateTo, ExecuteMission, PrecisionLand
 from easyfly_msgs.msg import UAVState
 import easyfly_pybind as sdk
 
 
 class PythonSdkTest(unittest.TestCase):
+    def test_precision_landing_uses_same_owned_cpp_client(self):
+        client = sdk.Client()
+        self.until(lambda: client.server_ready('precision_land'))
+        operation = client.precision_land(7, timeout=3)
+        self.assertTrue(operation.wait(3))
+        self.assertTrue(operation.snapshot().success)
+        self.assertTrue(client.close(3))
+
     def test_late_acceptance_subprocess_drain_exits_after_real_cancel_result(self):
         body = '''
 import time
@@ -87,7 +95,8 @@ print('real_cancel_terminal_received', file=sys.stderr, flush=True)
         cls.timer = cls.node.create_timer(.02, publish)
         cls.servers = []
         for action, name in [(Takeoff, '/takeoff'), (Land, '/land'),
-                             (NavigateTo, '/navigate'), (ExecuteMission, '/execute_mission')]:
+                             (NavigateTo, '/navigate'), (ExecuteMission, '/execute_mission'),
+                             (PrecisionLand, '/precision_land')]:
             def goal(request):
                 if getattr(request, 'target_altitude', 0) < 0:
                     return GoalResponse.REJECT

@@ -1,5 +1,8 @@
 # 降落
 float64 landing_speed     # 预留；当前 PX4 AUTO.LAND 不支持逐任务设置，必须为 0
+# Internal PrecisionLand handoff identity. Ordinary clients leave empty.
+# Not an authentication token; ROS control publishers remain trusted.
+string precision_landing_session_id
 ---
 # 结果
 bool success

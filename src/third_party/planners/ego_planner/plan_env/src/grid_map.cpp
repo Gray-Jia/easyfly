@@ -1,6 +1,7 @@
 #include "plan_env/grid_map.h"
 #include "rclcpp/logging.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -361,12 +362,15 @@ void GridMap::initMap(std::shared_ptr<rclcpp::Node> &nh)
         std::bind(&GridMap::depthOdomCallback, this, std::placeholders::_1, std::placeholders::_2));
   }
 
+  // Live control inputs are latest-only, not a reliable replay queue. Every
+  // accepted sample still passes the original source/odom freshness checks.
+  const auto latest_sensor_qos = rclcpp::SensorDataQoS().keep_last(1);
   indep_cloud_sub_ =
-      node_->create_subscription<sensor_msgs::msg::PointCloud2>("grid_map/cloud", 10, 
+      node_->create_subscription<sensor_msgs::msg::PointCloud2>("grid_map/cloud", latest_sensor_qos,
           std::bind(&GridMap::cloudCallback, this, std::placeholders::_1));
 
   indep_odom_sub_ =
-      node_->create_subscription<nav_msgs::msg::Odometry>("grid_map/odom", 10, 
+      node_->create_subscription<nav_msgs::msg::Odometry>("grid_map/odom", latest_sensor_qos,
           std::bind(&GridMap::odomCallback, this, std::placeholders::_1));
 
   occ_timer_ = node_->create_wall_timer(std::chrono::milliseconds(50), 
@@ -475,6 +479,11 @@ bool GridMap::checkOdomFreshness()
     secondsToNanoseconds(mp_.trusted_cloud_future_tolerance_),
     secondsToNanoseconds(mp_.odom_clock_jump_limit_));
   if (result != plan_env::OdomFreshnessResult::kFresh) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      "GridMap odom freshness lost: reason=%d now=%lld source=%lld receipt=%lld",
+      static_cast<int>(result), static_cast<long long>(now_ns),
+      static_cast<long long>(md_.last_odom_sample_.stamp_ns),
+      static_cast<long long>(md_.last_odom_sample_.receive_ns));
     clearOdomState();
     return false;
   }
@@ -513,6 +522,16 @@ void GridMap::projectDepthImage()
   int cols = md_.depth_image_.cols;
   int rows = md_.depth_image_.rows;
   int skip_pix = mp_.skip_pixel_;
+  if (rows <= 0 || cols <= 0 || skip_pix <= 0 ||
+      md_.depth_image_.type() != CV_16UC1 ||
+      (mp_.use_depth_filter_ && mp_.depth_filter_margin_ < 0)) {
+    return;
+  }
+  // The input dimensions and sampling stride need not divide 640x480.
+  // A ceiling count bounds either branch without writing beyond vector storage.
+  const size_t sampled_rows = (static_cast<size_t>(rows) + skip_pix - 1) / skip_pix;
+  const size_t sampled_cols = (static_cast<size_t>(cols) + skip_pix - 1) / skip_pix;
+  md_.proj_points_.resize(sampled_rows * sampled_cols);
 
   double depth;
 
@@ -557,20 +576,20 @@ void GridMap::projectDepthImage()
 
       for (int v = mp_.depth_filter_margin_; v < rows - mp_.depth_filter_margin_; v += mp_.skip_pixel_)
       {
-        row_ptr = md_.depth_image_.ptr<uint16_t>(v) + mp_.depth_filter_margin_;
+        row_ptr = md_.depth_image_.ptr<uint16_t>(v);
 
         for (int u = mp_.depth_filter_margin_; u < cols - mp_.depth_filter_margin_;
              u += mp_.skip_pixel_)
         {
 
-          depth = (*row_ptr) * inv_factor;
-          row_ptr = row_ptr + mp_.skip_pixel_;
+          const uint16_t pixel = row_ptr[u];
+          depth = pixel * inv_factor;
 
           // filter depth
           // depth += rand_noise_(eng_);
           // if (depth > 0.01) depth += rand_noise2_(eng_);
 
-          if (*row_ptr == 0)
+          if (pixel == 0)
           {
             depth = mp_.max_ray_length_ + 0.1;
           }
@@ -1094,6 +1113,13 @@ void GridMap::odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom)
       secondsToNanoseconds(mp_.trusted_cloud_future_tolerance_),
       secondsToNanoseconds(mp_.odom_clock_jump_limit_));
     if (previous_result != plan_env::OdomFreshnessResult::kFresh) {
+      RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+        "fresh odom resets expired local reference: reason=%d now=%lld previous_source=%lld "
+        "previous_receipt=%lld current_source=%lld",
+        static_cast<int>(previous_result), static_cast<long long>(now_ns),
+        static_cast<long long>(md_.last_odom_sample_.stamp_ns),
+        static_cast<long long>(md_.last_odom_sample_.receive_ns),
+        static_cast<long long>(current_sample.stamp_ns));
       clearOdomState();
     }
   }
@@ -1119,6 +1145,7 @@ void GridMap::odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom)
 
 void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr img)
 {
+  const auto processing_started = std::chrono::steady_clock::now();
 
   md_.has_cloud_ = false;
   const auto clock_type = node_->get_clock()->get_clock_type();
@@ -1161,6 +1188,9 @@ void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr img)
   if (msg_stamp.nanoseconds() <= 0 || !std::isfinite(age) ||
       age < -mp_.trusted_cloud_future_tolerance_ ||
       age > mp_.trusted_cloud_timeout_) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      "trusted cloud source age rejected: age=%.6f now=%.6f source=%.6f",
+      age, now.seconds(), msg_stamp.seconds());
     clearLocalCloud();
     return;
   }
@@ -1307,14 +1337,24 @@ void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr img)
       }
   }
 
+  const double processing_ms = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - processing_started).count();
   RCLCPP_INFO_THROTTLE(
       node_->get_logger(), *node_->get_clock(), 1000,
       "trusted cloud accepted: points=%zu local=%zu xyz=[%.2f,%.2f]x[%.2f,%.2f]x[%.2f,%.2f] "
-      "camera=(%.2f,%.2f,%.2f) persistence=%zu",
+      "camera=(%.2f,%.2f,%.2f) persistence=%zu wall_ms=%.3f source_age=%.6f",
       latest_cloud.points.size(), local_point_count,
       min_x, max_x, min_y, max_y, min_z, max_z,
       md_.camera_pos_(0), md_.camera_pos_(1), md_.camera_pos_(2),
-      mp_.trusted_cloud_persistence_frames_);
+      mp_.trusted_cloud_persistence_frames_, processing_ms,
+      (node_->get_clock()->now() - msg_stamp).seconds());
+  if (processing_ms > 250.0) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      "trusted cloud processing slow: points=%zu wall_ms=%.3f source_age=%.6f ready_age=%.6f",
+      latest_cloud.points.size(), processing_ms,
+      (node_->get_clock()->now() - msg_stamp).seconds(),
+      (node_->get_clock()->now() - md_.last_trusted_cloud_time_).seconds());
+  }
 }
 
 bool GridMap::hasFreshTrustedCloud()
@@ -1330,6 +1370,11 @@ bool GridMap::hasFreshTrustedCloud()
   }
   const double age =
       (node_->get_clock()->now() - md_.last_trusted_cloud_time_).seconds();
+  if (!std::isfinite(age) || age < 0.0 || age > mp_.trusted_cloud_timeout_) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+      "trusted cloud ready age expired: age=%.6f now=%.6f accepted=%.6f",
+      age, node_->get_clock()->now().seconds(), md_.last_trusted_cloud_time_.seconds());
+  }
   return std::isfinite(age) && age >= 0.0 && age <= mp_.trusted_cloud_timeout_;
 }
 

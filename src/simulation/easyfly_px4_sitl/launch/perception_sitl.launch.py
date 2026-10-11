@@ -17,15 +17,13 @@ perception_sitl.launch.py — 阶段三感知调试启动（Gazebo + PX4 + RViz2
   /livox/lidar                        MID-360 点云 (livox CustomMsg, 10 Hz)
   /livox/imu                          MID-360 内置 IMU (200 Hz)
 
-PX4 路径按 PX4_DIR > ~/PX4-Autopilot-1.16.2 > ~/PX4-Autopilot-1.16.1
-> ~/PX4-Autopilot 解析；不使用模糊版本匹配。
+PX4 默认使用 prepare_px4_hrt 生成的项目局部仿真兼容版；缺失或指纹不符拒绝启动。
+PX4_DIR 可指定已验证兼容输入或独立 staging，不静默回退未修补的 PX4。
 """
 
 import os
-from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
@@ -38,20 +36,13 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from easyfly_px4_sitl.session_guard import guarded_launch
+from easyfly_px4_sitl.hrt_compatibility import select_px4_directory
 
 
 def _resolve_px4_dir():
-    """按 PX4_DIR > ~/PX4-Autopilot-1.16.2 > ~/PX4-Autopilot-1.16.1 >
-    ~/PX4-Autopilot 选择目录。"""
-    env = os.environ.get("PX4_DIR", "").strip()
-    if env:
-        return Path(env).expanduser()
-    for candidate in ("PX4-Autopilot-1.16.2", "PX4-Autopilot-1.16.1",
-                      "PX4-Autopilot"):
-        default = Path.home() / candidate
-        if default.exists():
-            return default
-    return Path.home() / "PX4-Autopilot"
+    """Use only the reviewed local compatibility build or its verified private staging."""
+    return select_px4_directory(os.environ.get("PX4_DIR", "").strip() or None)
 
 
 def generate_launch_description():
@@ -84,11 +75,15 @@ def generate_launch_description():
     local_planner_ceiling_arg = DeclareLaunchArgument(
         "local_planner_virtual_ceil_height", default_value="3.2",
         description="Absolute odom planning ceiling; existing default is unchanged")
+    semantic_capture_arg = DeclareLaunchArgument(
+        "semantic_capture_shutdown", default_value="false",
+        description="Opt-in stack capture for semantic_map only; normal simulation stays unchanged")
 
     pkg_px4_sitl       = get_package_share_directory("easyfly_px4_sitl")
     pkg_gazebo_models  = get_package_share_directory("easyfly_gazebo_models")
     pkg_gazebo_worlds  = get_package_share_directory("easyfly_gazebo_worlds")
-    pkg_gazebo_plugins = get_package_share_directory("easyfly_gazebo_plugins")
+    gazebo_plugins_lib = get_package_prefix("easyfly_gazebo_plugins") + "/lib"
+    gazebo_server = gazebo_plugins_lib + "/easyfly_gazebo_plugins/easyfly_gzserver"
 
     px4_dir = _resolve_px4_dir()
     px4_build = str(px4_dir / "build" / "px4_sitl_default")
@@ -113,7 +108,7 @@ def generate_launch_description():
     # /opt/ros/humble/lib 必须包含: libgazebo_ros_init.so / libgazebo_ros_camera.so 等系统插件
     set_plugin_path = SetEnvironmentVariable(
         "GAZEBO_PLUGIN_PATH",
-        gazebo_plugin_dir + ":" + pkg_gazebo_plugins + "/lib:/opt/ros/humble/lib:" + os.environ.get("GAZEBO_PLUGIN_PATH", ""))
+        gazebo_plugin_dir + ":" + gazebo_plugins_lib + ":/opt/ros/humble/lib:" + os.environ.get("GAZEBO_PLUGIN_PATH", ""))
     # PX4 gazebo 插件依赖 libmav_msgs.so / libsensor_msgs.so 等, 位于 PX4 build_gazebo-classic
     set_ld_library_path = SetEnvironmentVariable(
         "LD_LIBRARY_PATH",
@@ -122,7 +117,7 @@ def generate_launch_description():
     # ---- Gazebo + 模型 + PX4 (复用 px4_sitl.launch.py 的启动逻辑, 固定 perception_demo.world) ----
     # -s libgazebo_ros_init.so: 加载 ROS2 时钟插件(SystemPlugin, 发布 /clock), 必须用 -s 方式加载
     gzserver = ExecuteProcess(
-        cmd=["gzserver", "--verbose", "-s", "libgazebo_ros_init.so", world_file],
+        cmd=[gazebo_server, "--verbose", "-s", "libgazebo_ros_init.so", world_file],
         output="screen",
         name="gzserver",
     )
@@ -272,7 +267,9 @@ def generate_launch_description():
             get_package_share_directory("easyfly_pointcloud_filter") + "/launch/pcf.launch.py"))
     semantic_map = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            get_package_share_directory("easyfly_semantic_map") + "/launch/semantic_map.launch.py"))
+            get_package_share_directory("easyfly_semantic_map") + "/launch/semantic_map.launch.py"),
+        launch_arguments={"capture_shutdown": LaunchConfiguration(
+            "semantic_capture_shutdown")}.items())
 
     spawn_delayed = TimerAction(period=3.0, actions=[spawn_model])
     px4_delayed = TimerAction(period=6.0, actions=[px4_sitl])
@@ -313,7 +310,7 @@ def generate_launch_description():
         }.items())
     m43_nodes = TimerAction(period=26.0, actions=[local_planner])
 
-    return LaunchDescription([
+    actions = [
         set_model_path,
         set_plugin_path,
         set_ld_library_path,
@@ -326,6 +323,7 @@ def generate_launch_description():
         detection_qos_reliability_arg,
         detection_qos_depth_arg,
         local_planner_ceiling_arg,
+        semantic_capture_arg,
         navigation_strategy_arg,
         gzserver,
         spawn_delayed,
@@ -341,4 +339,7 @@ def generate_launch_description():
         m41_nodes,
         m42_nodes,
         m43_nodes,
-    ])
+    ]
+    return guarded_launch(actions, {
+        gzserver: "Gazebo", px4_sitl: "PX4", spawn_model: "model spawn",
+    })

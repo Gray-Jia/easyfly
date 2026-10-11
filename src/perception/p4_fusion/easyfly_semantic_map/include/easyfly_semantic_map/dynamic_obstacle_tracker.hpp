@@ -221,7 +221,8 @@ inline std::size_t boundedCompletePredictionPointCount(
   const std::size_t requested_count, const std::size_t footprint_points = 9)
 {
   if (footprint_points == 0 || current_count > total_limit ||
-    requested_count % footprint_points != 0) {
+    requested_count % footprint_points != 0)
+  {
     return 0;
   }
   const std::size_t remaining = total_limit - current_count;
@@ -249,20 +250,26 @@ inline double dynamicObservationBoxIoU(
       return center + 0.5 * size;
     };
   const double overlap_x = std::max(
-    0.0, std::min(max_corner(first.center_x, first.size_x),
-    max_corner(second.center_x, second.size_x)) -
-    std::max(min_corner(first.center_x, first.size_x),
-    min_corner(second.center_x, second.size_x)));
+    0.0, std::min(
+      max_corner(first.center_x, first.size_x),
+      max_corner(second.center_x, second.size_x)) -
+    std::max(
+      min_corner(first.center_x, first.size_x),
+      min_corner(second.center_x, second.size_x)));
   const double overlap_y = std::max(
-    0.0, std::min(max_corner(first.center_y, first.size_y),
-    max_corner(second.center_y, second.size_y)) -
-    std::max(min_corner(first.center_y, first.size_y),
-    min_corner(second.center_y, second.size_y)));
+    0.0, std::min(
+      max_corner(first.center_y, first.size_y),
+      max_corner(second.center_y, second.size_y)) -
+    std::max(
+      min_corner(first.center_y, first.size_y),
+      min_corner(second.center_y, second.size_y)));
   const double overlap_z = std::max(
-    0.0, std::min(max_corner(first.center_z, first.size_z),
-    max_corner(second.center_z, second.size_z)) -
-    std::max(min_corner(first.center_z, first.size_z),
-    min_corner(second.center_z, second.size_z)));
+    0.0, std::min(
+      max_corner(first.center_z, first.size_z),
+      max_corner(second.center_z, second.size_z)) -
+    std::max(
+      min_corner(first.center_z, first.size_z),
+      min_corner(second.center_z, second.size_z)));
   const double intersection = overlap_x * overlap_y * overlap_z;
   const double first_volume = first.size_x * first.size_y * first.size_z;
   const double second_volume = second.size_x * second.size_y * second.size_z;
@@ -335,15 +342,19 @@ inline double dynamicObservationPlanarIoU(
       return center + 0.5 * size;
     };
   const double overlap_x = std::max(
-    0.0, std::min(max_corner(first.center_x, first.size_x),
-    max_corner(second.center_x, second.size_x)) -
-    std::max(min_corner(first.center_x, first.size_x),
-    min_corner(second.center_x, second.size_x)));
+    0.0, std::min(
+      max_corner(first.center_x, first.size_x),
+      max_corner(second.center_x, second.size_x)) -
+    std::max(
+      min_corner(first.center_x, first.size_x),
+      min_corner(second.center_x, second.size_x)));
   const double overlap_y = std::max(
-    0.0, std::min(max_corner(first.center_y, first.size_y),
-    max_corner(second.center_y, second.size_y)) -
-    std::max(min_corner(first.center_y, first.size_y),
-    min_corner(second.center_y, second.size_y)));
+    0.0, std::min(
+      max_corner(first.center_y, first.size_y),
+      max_corner(second.center_y, second.size_y)) -
+    std::max(
+      min_corner(first.center_y, first.size_y),
+      min_corner(second.center_y, second.size_y)));
   const double intersection = overlap_x * overlap_y;
   const double first_area = first.size_x * first.size_y;
   const double second_area = second.size_x * second.size_y;
@@ -538,8 +549,9 @@ inline std::vector<int> matchCurrentDynamicObservations(
   std::vector<std::vector<double>> edge_costs(
     output_count, std::vector<double>(current_count, kInvalidCost));
   std::vector<std::vector<double>> edge_distances(
-    output_count, std::vector<double>(current_count,
-    std::numeric_limits<double>::infinity()));
+    output_count, std::vector<double>(
+      current_count,
+      std::numeric_limits<double>::infinity()));
   for (std::size_t output_index = 0; output_index < output_count; ++output_index) {
     for (std::size_t current_index = 0; current_index < current_count; ++current_index) {
       if (!current_estimates[current_index].valid ||
@@ -608,11 +620,12 @@ inline std::vector<int> matchCurrentDynamicObservations(
     for (std::size_t current_index = 0; current_index < current_count; ++current_index) {
       if (current_index != static_cast<std::size_t>(assigned) &&
         edge_costs[output_index][current_index] < kUnmatchedCost &&
-        (std::abs(edge_distances[output_index][current_index] -
+        (std::abs(
+          edge_distances[output_index][current_index] -
           edge_distances[output_index][static_cast<std::size_t>(assigned)]) <=
-          safe_ambiguity_distance ||
+        safe_ambiguity_distance ||
         std::abs(edge_costs[output_index][current_index] - assigned_cost) <=
-          safe_cost_margin))
+        safe_cost_margin))
       {
         ambiguous_output[output_index] = true;
         ambiguous_current[current_index] = true;
@@ -646,7 +659,7 @@ inline std::vector<int> matchCurrentDynamicObservations(
         continue;
       }
       if (std::abs(edge_distances[output_index][current_index] - assigned_distance) <=
-          safe_ambiguity_distance ||
+        safe_ambiguity_distance ||
         std::abs(edge_costs[output_index][current_index] - assigned_cost) <= safe_cost_margin)
       {
         ambiguous_output[static_cast<std::size_t>(assigned_output)] = true;
@@ -841,7 +854,8 @@ public:
         }
       }
       tracks_.erase(
-        std::remove_if(tracks_.begin(), tracks_.end(),
+        std::remove_if(
+          tracks_.begin(), tracks_.end(),
           [](const Track & track) {return !track.have_stamp;}), tracks_.end());
       return result;
     }
@@ -867,7 +881,8 @@ public:
       if (track.misses == 0 && track.has_velocity) {
         const double elapsed = stamp_s - track.last_stamp;
         if (std::isfinite(elapsed) && elapsed >= config_.min_dt &&
-          elapsed <= config_.max_dt) {
+          elapsed <= config_.max_dt)
+        {
           predicted.center_x += track.velocity[0] * elapsed;
           predicted.center_y += track.velocity[1] * elapsed;
         }
@@ -951,6 +966,10 @@ public:
           const bool usable_speed = usable_dt && std::isfinite(speed) &&
             speed <= config_.max_speed;
           const bool expired_history = motionHistoryExpired(track, stamp_s);
+          const bool shape_consistent = passesMotionShapeGate(
+            track.last, observations[oi], kMotionShapeTolerance);
+          const bool direction_inconsistent = track.has_velocity &&
+            planarDirectionCosine(track.velocity, measured) < config_.min_direction_cosine;
           if (!usable_dt) {
             ++result.stats.rejected_by_dt;
             resetMotionEvidenceAtSample(track, stamp_s, observations[oi]);
@@ -966,15 +985,13 @@ public:
             // The bounded window expired even though this individual dt may
             // still be association-valid.  Start a new evidence run here.
             resetMotionEvidenceAtSample(track, stamp_s, observations[oi]);
-          } else if (!passesMotionShapeGate(
-              track.last, observations[oi], kMotionShapeTolerance)) {
+          } else if (!shape_consistent) {
             // A centroid displacement no larger than the projected footprint
             // change can be explained by split/merge geometry, not rigid
             // translation.  Keep the current box and association, but clear
             // all prediction evidence.
             resetMotionEvidenceAtSample(track, stamp_s, observations[oi]);
-          } else if (track.has_velocity &&
-            planarDirectionCosine(track.velocity, measured) < config_.min_direction_cosine) {
+          } else if (direction_inconsistent) {
             ++result.stats.rejected_by_direction;
             // Direction disagreement is a discontinuity, not a sample to
             // accumulate.  Restart from the current static observation.
@@ -1008,14 +1025,15 @@ public:
                 net_square >= 0.0 ? std::sqrt(net_square) :
                 std::numeric_limits<double>::infinity();
               const std::array<double, 3> window_velocity{{
-                  span > 0.0 ? net_dx / span : 0.0,
-                  span > 0.0 ? net_dy / span : 0.0,
-                  0.0}};
+                span > 0.0 ? net_dx / span : 0.0,
+                span > 0.0 ? net_dy / span : 0.0,
+                0.0}};
               const bool endpoint_direction_ok = !had_velocity ||
                 planarDirectionCosine(track.velocity, window_velocity) >=
                 config_.min_direction_cosine;
               if (!std::isfinite(span) || !std::isfinite(net_displacement) ||
-                !endpoint_direction_ok) {
+                !endpoint_direction_ok)
+              {
                 if (std::isfinite(span) && std::isfinite(net_displacement) &&
                   !endpoint_direction_ok)
                 {
@@ -1094,18 +1112,22 @@ public:
     DynamicObstaclePredictionEnvelope result;
     if (!validObservation(observation) ||
       !dynamicObservationWithinPredictionBounds(observation, config_) ||
-      !std::isfinite(time_s) || time_s < 0.0) {
+      !std::isfinite(time_s) || time_s < 0.0)
+    {
       return result;
     }
     const double uncertainty = std::min(
       config_.prediction_max_uncertainty,
       config_.prediction_uncertainty_growth * time_s);
-    const double half_x = std::max(0.5 * observation.size_x,
+    const double half_x = std::max(
+      0.5 * observation.size_x,
       config_.prediction_min_half_x) + uncertainty;
-    const double half_y = std::max(0.5 * observation.size_y,
+    const double half_y = std::max(
+      0.5 * observation.size_y,
       config_.prediction_min_half_y) + uncertainty;
     if (!std::isfinite(uncertainty) || !std::isfinite(half_x) ||
-      !std::isfinite(half_y)) {
+      !std::isfinite(half_y))
+    {
       return result;
     }
     result.valid = true;
@@ -1168,9 +1190,10 @@ public:
         const double dz = observations[index].center_z - safe_reference_z;
         const double squared = dx * dx + dy * dy + dz * dz;
         return std::isfinite(squared) && squared >= 0.0 ? squared :
-          std::numeric_limits<double>::infinity();
+               std::numeric_limits<double>::infinity();
       };
-    std::stable_sort(dynamic_indices.begin(), dynamic_indices.end(),
+    std::stable_sort(
+      dynamic_indices.begin(), dynamic_indices.end(),
       [&](const std::size_t first, const std::size_t second) {
         const double first_distance = reference_distance(first);
         const double second_distance = reference_distance(second);

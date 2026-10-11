@@ -86,7 +86,7 @@ ros2 service call /platform/params/export std_srvs/srv/Trigger '{}'
 
 响应status明确区分NOT_READY、VALID、STALE、INVALID、UNSUPPORTED；source_topic、observed_at、age_sec说明源数组时间。有效空数组保持原非零header，不与未就绪混淆。全部数组/条目须为odom、新鲜且几何有限；无效position_valid、非法尺寸/时间/置信度等失败关闭，不将损坏的目标悄悄过滤成“有效空”。只有VALID响应提供可用数据。steady接收间隔与ROS源时间同时检查，避免持续重播旧数据伪装新观测。
 
-`/platform/perception/capabilities`（GetCapabilities）分别返回names/implemented/ready/details；实现查询接口不表示数据就绪，标签/精准降落明确unsupported。节点不推理、预测或发布控制命令。
+`/platform/perception/capabilities`（GetCapabilities）分别返回names/implemented/ready/details；实现查询接口不表示数据就绪。D2验收时标签/精准降落unsupported；D4已接独立`/landing_target`的新鲜有效能力状态，landing_detection implemented，但精准降落控制仍unsupported，见[d4-perception.md](d4-perception.md)。节点不推理、预测或发布控制命令。
 
 ## 任务服务
 

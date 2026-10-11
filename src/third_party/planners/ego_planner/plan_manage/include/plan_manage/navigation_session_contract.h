@@ -13,4 +13,8 @@ inline double navigationAxisVelocityLimit(double speed, double tolerance) {
 inline bool matchesNavigationSession(const std::string &candidate, const std::string &active) {
   return candidate.size() <= 128 && candidate == active;
 }
+inline bool runtimeTrajectoryBelongsToSession(bool managed,
+  const std::string &published, const std::string &active) {
+  return !managed || (!active.empty() && matchesNavigationSession(published, active));
+}
 }  // namespace ego_planner

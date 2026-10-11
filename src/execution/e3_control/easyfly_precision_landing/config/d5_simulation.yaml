@@ -1,0 +1,49 @@
+# SIMULATION EXAMPLE ONLY. Do not use these limits/calibration on hardware.
+# Fixed downward camera: optical x -> -body y, y -> -body x, z -> -body z.
+landing_transform:
+  ros__parameters:
+    configured: true
+    selected_tag_id: 7
+    tag_size_m: 0.2
+    optical_frame: camera_down_optical_frame
+    camera_translation_flu: [0.0, 0.0, -0.08]
+    camera_quaternion_xyzw: [0.7071067811865476, -0.7071067811865476, 0.0, 0.0]
+    landing_plane_z_m: 0.0
+    plane_height_tolerance_m: 0.15
+    plane_tilt_limit_rad: 0.175
+    source_age_s: 0.3
+    state_pair_gap_s: 0.1
+apriltag_detection:
+  ros__parameters:
+    tag_size_m: 0.2
+    optical_frame: camera_down_optical_frame
+landing_detection:
+  ros__parameters:
+    selected_tag_id: 7
+    optical_frame: camera_down_optical_frame
+landing_gateway:
+  ros__parameters:
+    selected_tag_id: 7
+    operation_timeout_s: 120.0
+flight_controller:
+  ros__parameters:
+    precision_enabled: true
+    precision_tag_id: 7
+    precision_tag_size_m: 0.2
+    precision_optical_frame: camera_down_optical_frame
+    precision_horizontal_speed: 0.2
+    precision_descent_speed: 0.1
+    precision_align_tolerance: 0.08
+    # Keep marker + white margin inside the short vertical FOV at alignment error.
+    precision_handoff_height: 0.6
+    precision_descent_floor_height: 0.5
+    precision_max_height: 1.8
+    precision_max_radius: 1.5
+    precision_plane_z: 0.0
+    precision_plane_tolerance: 0.15
+    precision_tilt_limit: 0.175
+    precision_target_jump: 0.25
+    precision_target_max_age: 0.3
+    precision_acquire_timeout: 5.0
+    precision_lost_timeout: 2.0
+    precision_settle_observations: 5

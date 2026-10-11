@@ -10,4 +10,4 @@ capabilities:
   navigation: true
   landing_detection: false
   precision_landing: false
-note: Sensor/TF development only; tag detection and precision landing are not implemented.
+note: Sensor/TF preparation only; D4/D5 require the separate explicitly configured landing launch.

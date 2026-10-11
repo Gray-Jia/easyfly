@@ -278,8 +278,7 @@ private:
   bool candidateIsPhysicallyValid(
     const GroundPlaneCandidate & candidate, const GroundVehiclePose & vehicle) const
   {
-    if (!model_valid_ && (!vehicleStateFresh(vehicle) || vehicle.armed))
-    {
+    if (!model_valid_ && (!vehicleStateFresh(vehicle) || vehicle.armed)) {
       return false;
     }
     if (!candidate.model.valid() || candidate.sample_count == 0 ||

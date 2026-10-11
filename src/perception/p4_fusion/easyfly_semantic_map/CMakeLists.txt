@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
+ament_python_install_package(easyfly_obstacle_classification)
+install(PROGRAMS scripts/obstacle_classifier DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/semantic_shutdown_capture.py
+  DESTINATION lib/${PROJECT_NAME} RENAME semantic_shutdown_capture)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(ament_index_cpp REQUIRED)
@@ -49,6 +54,17 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_classification test/test_classification.py)
+  ament_add_pytest_test(test_classification_ros test/test_classification_ros.py TIMEOUT 45
+    ENV ROS_DOMAIN_ID=111 ROS_LOG_DIR=/tmp/easyfly_d4_classification)
+  ament_add_pytest_test(test_shutdown_ros test/test_shutdown_ros.py TIMEOUT 100
+    ENV ROS_DOMAIN_ID=186)
+  ament_add_pytest_test(test_capture test/test_capture.py TIMEOUT 60)
+  ament_add_pytest_test(test_shutdown_stress_ros test/test_shutdown_stress_ros.py TIMEOUT 100
+    ENV ROS_DOMAIN_ID=186)
+  # Both actual-node fixtures deliberately use one isolated DDS domain.
+  set_tests_properties(test_shutdown_ros test_shutdown_stress_ros PROPERTIES RUN_SERIAL TRUE)
   ament_add_gtest(test_ground_plane_tracker test/test_ground_plane_tracker.cpp)
   target_include_directories(test_ground_plane_tracker PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)

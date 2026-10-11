@@ -87,3 +87,16 @@ ros2 launch easyfly_mission_srvs platform.launch.py use_sim_time:=false \
 上面是本工作区路径。部署时可用 ament_index 的 easyfly_mission_scripts share 目录找到模板，再对模板文件 Path.resolve().parent 求规范父目录；--symlink-install 下单个文件可能指向源码，不能把未解析的安装目录误当作受信目录。任务门面要求规范化后的文件父目录与允许目录一致，保留此安全边界。
 
 platform.launch.py 默认不启动执行器，也不启动飞控或自动发起任务；仅当尚无执行器时显式 start_mission_executor:=true，现有 profile 已启动 mission_fsm 和 search，勿重复。hardware_unverified 仍禁止启动。验收结果及失败修复见 [schedule-v4](../../schedule-v4.md) 第 9 节，限于组件/软件闭环，不是 PX4/Gazebo SITL 或实机签收。
+
+2026-10-07另补充版本1三步任务和两条几何扫描带的真实PX4/Gazebo有界验收，
+检查外层任务/搜索UUID及内层导航UUID全部RELEASED、新鲜disarm和正常退出。
+入口见[导航SITL说明](navigation-sitl.md)，原始结果见 `schedule-v4.md` 第20节；
+不将几何面积当作实际传感器覆盖，不改变失败即终止或未决子动作保锁语义。
+
+同日任务级导航/搜索取消、原生步骤超时及仿真AUTO.LAND接管六类真实SITL
+通过，见 `schedule-v4.md` 第21节。先执行独立正式准备任务并核实实际稳定
+高度，再提交被测任务；每类核实子UUID真实终态/载荷、精确释放和会话STOP，
+未继续后续哨兵Land。取消/超时排空后另发明确的恢复任务，接管则只等PX4
+自行降落，不追加生产失败补偿。搜索取消保留1.65m²已完成条带几何面积。
+组件未知结果保锁与实际飞行证据分开；旧初始碰撞/电池失效仍未归因，不
+因准备隔离PASS而宣称修复，也不扩展为RC/RTL/POSCTL或实机验收。

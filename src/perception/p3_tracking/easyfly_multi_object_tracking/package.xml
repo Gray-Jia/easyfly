@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>EasyFly M4: 多目标跟踪 (SORT: 卡尔曼滤波 + 匈牙利关联, 纯自实现)</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
-  <license>MIT</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

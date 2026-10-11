@@ -58,7 +58,7 @@ include_directories(
 )
 
 add_executable(ego_planner_node
-  src/ego_planner_node.cpp 
+  src/ego_planner_node.cpp
   src/ego_replan_fsm.cpp
   src/planner_manager.cpp
 )
@@ -101,6 +101,10 @@ install(DIRECTORY launch config
 
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME test_traj_shutdown_ros
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_traj_shutdown.py)
+  set_tests_properties(test_traj_shutdown_ros PROPERTIES TIMEOUT 45 LABELS "ros_network"
+    ENVIRONMENT "ROS_DOMAIN_ID=193")
   add_test(NAME test_initial_sampling
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_initial_sampling.py)
   add_test(NAME test_navigation_session_ros
@@ -109,6 +113,9 @@ if(BUILD_TESTING)
   add_test(NAME test_managed_navigation_fault_ros
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_managed_navigation_fault.py)
   set_tests_properties(test_managed_navigation_fault_ros PROPERTIES TIMEOUT 50 LABELS "ros_network")
+  add_test(NAME test_managed_refinement_ros
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_managed_refinement.py)
+  set_tests_properties(test_managed_refinement_ros PROPERTIES TIMEOUT 35 LABELS "ros_network")
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()

@@ -492,5 +492,17 @@ int main(int argc, char **argv)
   // ros::spin();
   rclcpp::spin(nh);
 
+  // Release ROS entities before static/default-context destruction. The global
+  // publishers otherwise outlive the middleware and can crash or hang on exit.
+  cmd_timer->cancel();
+  cmd_timer.reset();
+  bspline_sub.reset();
+  session_sub.reset();
+  trajectory_ack_pub.reset();
+  pos_cmd_pub.reset();
+  node_clock.reset();
+  nh.reset();
+  if (rclcpp::ok()) rclcpp::shutdown();
+
   return 0;
 }

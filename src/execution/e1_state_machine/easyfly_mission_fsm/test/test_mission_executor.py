@@ -11,9 +11,9 @@ import rclpy
 from rclpy.action import ActionClient, ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-from easyfly_msgs.action import ExecuteMission, Takeoff, Land, GoToWaypoint, NavigateTo, TrackTarget, SearchArea
+from easyfly_msgs.action import ExecuteMission, Takeoff, Land, GoToWaypoint, NavigateTo, TrackTarget, SearchArea, PrecisionLand
 from easyfly_msgs.msg import UAVState
-from easyfly_msgs.srv import GetActionOwnership
+from easyfly_msgs.srv import GetActionOwnership, SetFlightMode
 
 
 class MissionExecutorTest(unittest.TestCase):
@@ -29,11 +29,14 @@ class MissionExecutorTest(unittest.TestCase):
         cls.flight_mode = 3
         cls.position_z = 0.
         cls.battery = 1.
+        cls.battery_valid = True
+        cls.armed = False
+        cls.mode_calls = []
         cls.ownership = {}
         cls.cancel_calls = 0
         cls.servers = {}
         cls.ownership_services=[]
-        for endpoint in ('/navigation/ownership','/search/ownership'):
+        for endpoint in ('/navigation/ownership','/search/ownership','/precision_landing/ownership'):
             def query(request,response):
                 response.goal_id=request.goal_id
                 release_at=cls.ownership.get(request.goal_id)
@@ -41,12 +44,22 @@ class MissionExecutorTest(unittest.TestCase):
                 return response
             cls.ownership_services.append(cls.node.create_service(GetActionOwnership,endpoint,query))
         for action, name in ((Takeoff, 'takeoff'), (Land, 'land'), (GoToWaypoint, 'goto_waypoint'),
-                             (NavigateTo, 'navigate'), (TrackTarget, 'track_target'), (SearchArea, 'search_area')):
+                             (NavigateTo, 'navigate'), (TrackTarget, 'track_target'), (SearchArea, 'search_area'),
+                             (PrecisionLand, 'precision_land')):
             cls.add_server(action, name)
         cls.publisher = cls.node.create_publisher(UAVState, '/uav_state', 10)
 
+        def mode(request, response):
+            cls.mode_calls.append(request.flight_mode)
+            response.success = True
+            response.message = 'component backend acknowledged'
+            return response
+
+        cls.mode_service = cls.node.create_service(SetFlightMode, '/set_flight_mode', mode)
+
         def publish():
-            state = UAVState(connected=True, pose_valid=True, battery_valid=True,
+            state = UAVState(connected=True, pose_valid=True, battery_valid=cls.battery_valid,
+                             armed=cls.armed,
                              battery_remaining=cls.battery, flight_mode=cls.flight_mode,
                              position_z=cls.position_z)
             state.header.frame_id = 'odom'
@@ -97,7 +110,7 @@ class MissionExecutorTest(unittest.TestCase):
             for _ in range(5):
                 handle.publish_feedback(feedback)
                 time.sleep(.01)
-            if name=='navigate' and behavior=='managed_drain':
+            if name in ('navigate', 'precision_land') and behavior=='managed_drain':
                 cls.ownership[identity]=time.monotonic()+.6
                 handle.abort()
                 return action.Result(success=False,message='public_failure_still_owned')
@@ -142,6 +155,7 @@ class MissionExecutorTest(unittest.TestCase):
         for service in cls.ownership_services:
             cls.node.destroy_service(service)
         cls.client.destroy()
+        cls.node.destroy_service(cls.mode_service)
         cls.node.destroy_node()
         rclpy.shutdown()
         cls.temp.cleanup()
@@ -154,6 +168,9 @@ class MissionExecutorTest(unittest.TestCase):
         type(self).flight_mode = 3
         type(self).position_z = 0.
         type(self).battery = 1.
+        type(self).battery_valid = True
+        type(self).armed = False
+        self.mode_calls.clear()
         time.sleep(.25)
         self.calls.clear()
         self.feedback = []
@@ -196,6 +213,22 @@ class MissionExecutorTest(unittest.TestCase):
         self.assertEqual(result.status, 6)
         self.assertFalse(result.result.success)
         self.assertEqual(self.calls, ['takeoff'])
+
+    def test_precision_step_reports_true_terminal_without_extra_land(self):
+        result = self.result(self.goal('  - type: precision_land\n    tag_id: 7\n    timeout: 3\n'))
+        self.assertEqual(result.status, 4)
+        self.assertTrue(result.result.success)
+        self.assertEqual(self.calls, ['precision_land'])
+
+    def test_precision_public_failure_retains_recursive_owned_child(self):
+        type(self).behavior = 'managed_drain'
+        result = self.result(self.goal('  - type: precision_land\n    tag_id: 7\n    timeout: 3\n'))
+        self.assertEqual(result.status, 6)
+        self.assertFalse(result.result.success)
+        self.assertEqual(self.calls, ['precision_land'])
+        self.assertFalse(self.goal('  - type: hover\n    duration: 0.02\n').accepted)
+        time.sleep(.8)
+        self.assertTrue(self.result(self.goal('  - type: hover\n    duration: 0.02\n')).result.success)
 
     def test_timeout_keeps_fault_lock_until_real_late_cancel_terminal(self):
         type(self).behavior = 'late_accept'
@@ -283,6 +316,36 @@ class MissionExecutorTest(unittest.TestCase):
         self.assertIn('timeout',result.result.message)
         self.assertEqual(self.calls,['navigate'])
 
+    def test_invalid_battery_airborne_aborts_and_requests_rtl_once(self):
+        type(self).armed = True
+        type(self).position_z = 1.
+        time.sleep(.25)
+        handle = self.goal('  - type: hover\n    duration: 2\n  - type: land\n')
+        self.assertTrue(handle.accepted)
+        type(self).battery_valid = False
+        result = self.result(handle)
+        self.assertEqual(result.status, 6)
+        self.assertFalse(result.result.success)
+        self.assertEqual(result.result.message, 'battery_invalid_timeout')
+        time.sleep(.25)
+        self.assertEqual(self.mode_calls, [6])
+        self.assertFalse(self.calls)
+
+    def test_low_battery_airborne_aborts_and_requests_rtl_once(self):
+        type(self).armed = True
+        type(self).position_z = 1.
+        time.sleep(.25)
+        handle = self.goal('  - type: hover\n    duration: 2\n  - type: land\n')
+        self.assertTrue(handle.accepted)
+        type(self).battery = .1
+        result = self.result(handle)
+        self.assertEqual(result.status, 6)
+        self.assertFalse(result.result.success)
+        self.assertEqual(result.result.message, 'low_battery')
+        time.sleep(.25)
+        self.assertEqual(self.mode_calls, [6])
+        self.assertFalse(self.calls)
+
     def test_external_land_takeover_interrupts_hover(self):
         handle = self.goal('  - type: hover\n    duration: 2\n')
         self.assertTrue(handle.accepted)
@@ -295,8 +358,17 @@ class MissionExecutorTest(unittest.TestCase):
     def test_old_source_state_rejected_despite_new_receipts(self):
         type(self).source_old = True
         time.sleep(.2)
-        self.assertFalse(self.goal('  - type: hover\n    duration: 0.02\n').accepted)
+        handle = self.goal('  - type: hover\n    duration: 0.02\n')
+        self.assertFalse(handle.accepted)
         self.assertFalse(self.calls)
+        self.log.seek(0)
+        admission = [line for line in self.log.read().splitlines()
+                     if 'mission_admission reject=state_not_ready' in line]
+        self.assertTrue(admission)
+        self.assertIn('goal_uuid=' + bytes(handle.goal_id.uuid).hex(), admission[-1])
+        self.assertIn('fresh=0', admission[-1])
+        self.assertIn('receipt_fresh=1', admission[-1])
+        self.assertIn('source_time_valid=1', admission[-1])
 
     def test_missing_later_backend_is_detected_before_takeoff(self):
         self.servers.pop('search_area').destroy()

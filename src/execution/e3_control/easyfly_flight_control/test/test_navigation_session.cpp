@@ -27,7 +27,9 @@ class NavigationSessionTestPeer {
   static rclcpp_action::GoalResponse admit(FlightController &node, const std::string &session) {
     node.active_ = FlightController::HOVER;
     node.uav_.connected = node.uav_.armed = node.uav_.pose_valid = node.uav_.attitude_valid = true;
-    node.state_received_ = true;
+    node.uav_.flight_mode = 3;
+    node.uav_.header.stamp = node.now();
+    node.cb_uav_state(std::make_shared<easyfly_msgs::msg::UAVState>(node.uav_));
     auto goal = std::make_shared<FlightController::FollowTrajectory::Goal>();
     goal->target_z = 1.0;
     goal->navigation_session_id = session;

@@ -533,19 +533,48 @@ namespace ego_planner
 
       double ratio;
       bool flag_step_2_success = true;
-      if (!pos.checkFeasibility(ratio, false))
+      // Refinement changes control points, not only time.  Its collision-free
+      // output can violate dynamics again.  Managed navigation must recheck
+      // the final candidate, otherwise ten identical first-plan attempts can
+      // all succeed here and then fail the publication speed guard.
+      const int max_refinements = navigation_fixed_endpoint_ ? 5 : 1;
+      int refinement = 0;
+      pos.setPhysicalLimits(pp_.max_vel_, pp_.max_acc_, pp_.feasibility_tolerance_);
+      while (!pos.checkFeasibility(ratio, false))
       {
+        if (navigation_fixed_endpoint_) {
+          RCLCPP_INFO(rclcpp::get_logger("EGOPlannerManager"),
+                      "managed refine dynamics: attempt=%d ratio=%.9f speed_bound=%.9f "
+                      "axis_limit=%.9f interval=%.9f duration=%.9f",
+                      refinement, ratio, pos.getMaxVelocityBound(), pp_.max_vel_,
+                      ts, pos.getTimeSum());
+        }
+        if (refinement >= max_refinements || !std::isfinite(ratio) || ratio <= 1.0)
+        {
+          if (navigation_fixed_endpoint_) {
+            RCLCPP_WARN(rclcpp::get_logger("EGOPlannerManager"),
+                        "managed refinement remains dynamically infeasible after %d attempts",
+                        refinement);
+          }
+          flag_step_2_success = false;
+          break;
+        }
+        ++refinement;
         cout << "Need to reallocate time." << endl;
 
         Eigen::MatrixXd optimal_control_points;
         flag_step_2_success = refineTrajAlgo(pos, start_end_derivatives, ratio, ts, optimal_control_points);
-        if (flag_step_2_success)
-          pos = UniformBspline(optimal_control_points, 3, ts);
+        if (!flag_step_2_success) break;
+        pos = UniformBspline(optimal_control_points, 3, ts);
+        pos.setPhysicalLimits(pp_.max_vel_, pp_.max_acc_, pp_.feasibility_tolerance_);
+        // Preserve the legacy single-refinement policy outside managed mode.
+        if (!navigation_fixed_endpoint_) break;
       }
 
       if (!flag_step_2_success)
       {
-        printf("\033[34mThis refined trajectory hits obstacles. It doesn't matter if appeares occasionally. But if continously appearing, Increase parameter \"lambda_fitness\".\n\033[0m");
+        RCLCPP_WARN(rclcpp::get_logger("EGOPlannerManager"),
+                    "trajectory refinement rejected (collision, invalid data or dynamics)");
         continous_failures_count_++;
         return false;
       }
@@ -815,7 +844,7 @@ namespace ego_planner
     Eigen::MatrixXd ctrl_pts; // = traj.getControlPoint()
 
     // std::cout << "ratio: " << ratio << std::endl;
-    reparamBspline(traj, start_end_derivative, ratio, ctrl_pts, ts, t_inc);
+    if (!reparamBspline(traj, start_end_derivative, ratio, ctrl_pts, ts, t_inc)) return false;
     if (navigation_fixed_endpoint_ && !setFixedCubicEndpoint(
         ctrl_pts, ts, navigation_endpoint_, navigation_endpoint_velocity_)) return false;
 
@@ -851,13 +880,37 @@ namespace ego_planner
     local_data_.traj_id_ += 1;
   }
 
-  void EGOPlannerManager::reparamBspline(UniformBspline &bspline, vector<Eigen::Vector3d> &start_end_derivative, double ratio,
+  bool EGOPlannerManager::reparamBspline(UniformBspline &bspline, vector<Eigen::Vector3d> &start_end_derivative, double ratio,
                                          Eigen::MatrixXd &ctrl_pts, double &dt, double &time_inc)
   {
     double time_origin = bspline.getTimeSum();
     int seg_num = bspline.getControlPoint().cols() - 3;
     // double length = bspline.getLength(0.1);
     // int seg_num = ceil(length / pp_.ctrl_pt_dist);
+
+    if (!std::isfinite(time_origin) || time_origin <= 0.0 || seg_num < 4 ||
+        !std::isfinite(ratio) || ratio <= 1.0 ||
+        !std::isfinite(time_origin * ratio) || time_origin * ratio > 300.0) return false;
+
+    if (navigation_fixed_endpoint_) {
+      // The legacy lengthenTime stretches only middle knot spans.  On a short
+      // spline it changes much less than the requested feasibility ratio.
+      // Sample the old geometry on a uniformly scaled full time domain, then
+      // parameterize with the ORIGINAL boundary derivatives (do not silently
+      // divide the measured start velocity).  Refinement checks collisions
+      // again, and the caller rechecks dynamics on the resulting control points.
+      dt = time_origin * ratio / static_cast<double>(seg_num);
+      if (!std::isfinite(dt) || dt <= 1e-4 || dt > 10.0) return false;
+      time_inc = time_origin * (ratio - 1.0);
+      vector<Eigen::Vector3d> points;
+      points.reserve(seg_num + 1);
+      for (int i = 0; i <= seg_num; ++i) {
+        points.push_back(bspline.evaluateDeBoorT(
+          time_origin * static_cast<double>(i) / static_cast<double>(seg_num)));
+      }
+      UniformBspline::parameterizeToBspline(dt, points, start_end_derivative, ctrl_pts);
+      return ctrl_pts.cols() >= 7 && ctrl_pts.allFinite();
+    }
 
     bspline.lengthenTime(ratio);
     double duration = bspline.getTimeSum();
@@ -870,6 +923,7 @@ namespace ego_planner
       point_set.push_back(bspline.evaluateDeBoorT(time));
     }
     UniformBspline::parameterizeToBspline(dt, point_set, start_end_derivative, ctrl_pts);
+    return ctrl_pts.cols() >= 7 && ctrl_pts.allFinite();
   }
 
 } // namespace ego_planner

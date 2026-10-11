@@ -10,6 +10,8 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_shutdown test/test_shutdown.py TIMEOUT 45
+    ENV ROS_DOMAIN_ID=194 ROS_LOG_DIR=/tmp/easyfly_d4_perception_shutdown)
   ament_add_pytest_test(test_services test/test_services.py TIMEOUT 30
     ENV ROS_DOMAIN_ID=94 ROS_LOG_DIR=/tmp/easyfly_d2_perception
     APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})

@@ -1,6 +1,7 @@
 #pragma once
 #include <easyfly_msgs/action/takeoff.hpp>
 #include <easyfly_msgs/action/land.hpp>
+#include <easyfly_msgs/action/precision_land.hpp>
 #include <easyfly_msgs/action/go_to_waypoint.hpp>
 #include <easyfly_msgs/action/navigate_to.hpp>
 #include <easyfly_msgs/action/follow_trajectory.hpp>
@@ -81,6 +82,7 @@ class Client {
   bool close(double timeout_seconds = 0.0);
   std::shared_ptr<Operation> takeoff(const easyfly_msgs::action::Takeoff::Goal &);
   std::shared_ptr<Operation> land(const easyfly_msgs::action::Land::Goal &);
+  std::shared_ptr<Operation> precision_land(const easyfly_msgs::action::PrecisionLand::Goal &);
   std::shared_ptr<Operation> go_to(const easyfly_msgs::action::GoToWaypoint::Goal &);
   std::shared_ptr<Operation> navigate(const easyfly_msgs::action::NavigateTo::Goal &);
   std::shared_ptr<Operation> follow(const easyfly_msgs::action::FollowTrajectory::Goal &);

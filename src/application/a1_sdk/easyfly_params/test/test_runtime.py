@@ -1,3 +1,17 @@
+# Copyright 2026 EasyFly Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Typed ROS parameter services and legacy JSON compatibility."""
 import json
 import time
@@ -21,7 +35,10 @@ class RuntimeTest(unittest.TestCase):
         executor.add_node(manager)
         executor.add_node(node)
         query = node.create_client(QueryParams, '/platform/params/query')
-        typed = node.create_client(SetParametersAtomically, '/easyfly_params/set_parameters_atomically')
+        typed = node.create_client(
+            SetParametersAtomically,
+            '/easyfly_params/set_parameters_atomically',
+        )
         export = node.create_client(Trigger, '/platform/params/export')
 
         def call(client, request):
@@ -34,24 +51,75 @@ class RuntimeTest(unittest.TestCase):
             return future.result()
 
         try:
-            result = call(query, QueryParams.Request(param_name='operator_note'))
+            result = call(
+                query, QueryParams.Request(param_name='operator_note')
+            )
             self.assertTrue(result.success)
             self.assertEqual(json.loads(result.current_value), '')
-            result = call(query, QueryParams.Request(param_name='operator_note', param_value='"hello"'))
+            result = call(
+                query,
+                QueryParams.Request(
+                    param_name='operator_note', param_value='"hello"'
+                ),
+            )
             self.assertTrue(result.success)
-            result = call(query, QueryParams.Request(param_name='operator_note', param_value='""'))
-            self.assertTrue(result.success)  # JSON empty string writes; empty request reads.
-            result = call(query, QueryParams.Request(param_name='export_pretty', param_value='true'))
+            result = call(
+                query,
+                QueryParams.Request(
+                    param_name='operator_note', param_value='""'
+                ),
+            )
+            self.assertTrue(
+                result.success
+            )  # JSON empty string writes; empty request reads.
+            result = call(
+                query,
+                QueryParams.Request(
+                    param_name='export_pretty', param_value='true'
+                ),
+            )
             self.assertTrue(result.success)
-            self.assertFalse(call(query, QueryParams.Request(param_name='export_pretty', param_value='1')).success)
+            self.assertFalse(
+                call(
+                    query,
+                    QueryParams.Request(
+                        param_name='export_pretty', param_value='1'
+                    ),
+                ).success
+            )
             self.assertTrue(manager.get_parameter('export_pretty').value)
             for value in ('null', '{}', 'not-json', 'NaN'):
-                self.assertFalse(call(query, QueryParams.Request(param_name='operator_note', param_value=value)).success)
-            for name in ('planning_floor', 'profile', 'unknown', '/flight_control/max_altitude'):
-                self.assertFalse(call(query, QueryParams.Request(param_name=name, param_value='2')).success)
-            result = call(typed, SetParametersAtomically.Request(parameters=[
-                Parameter('operator_note', value='must not commit').to_parameter_msg(),
-                Parameter('export_pretty', value=1).to_parameter_msg()]))
+                self.assertFalse(
+                    call(
+                        query,
+                        QueryParams.Request(
+                            param_name='operator_note', param_value=value
+                        ),
+                    ).success
+                )
+            for name in (
+                'planning_floor',
+                'profile',
+                'unknown',
+                '/flight_control/max_altitude',
+            ):
+                self.assertFalse(
+                    call(
+                        query,
+                        QueryParams.Request(param_name=name, param_value='2'),
+                    ).success
+                )
+            result = call(
+                typed,
+                SetParametersAtomically.Request(
+                    parameters=[
+                        Parameter(
+                            'operator_note', value='must not commit'
+                        ).to_parameter_msg(),
+                        Parameter('export_pretty', value=1).to_parameter_msg(),
+                    ]
+                ),
+            )
             self.assertFalse(result.result.successful)
             self.assertEqual(manager.get_parameter('operator_note').value, '')
             self.assertTrue(manager.get_parameter('export_pretty').value)
@@ -59,7 +127,10 @@ class RuntimeTest(unittest.TestCase):
             self.assertTrue(result.success)
             effective = json.loads(result.message)
             self.assertEqual(effective['schema_version'], 1)
-            self.assertEqual(effective['launch_arguments']['navigation_strategy'], 'combined')
+            self.assertEqual(
+                effective['launch_arguments']['navigation_strategy'],
+                'combined',
+            )
             self.assertEqual(effective['contracts']['planning_ceiling'], 3.2)
         finally:
             executor.shutdown()

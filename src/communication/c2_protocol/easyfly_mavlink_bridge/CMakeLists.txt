@@ -43,7 +43,16 @@ install(DIRECTORY launch config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  ament_add_gtest(test_bridge_freshness
+    test/test_bridge_freshness.cpp src/mavlink_bridge.cpp TIMEOUT 40)
+  target_include_directories(test_bridge_freshness PRIVATE include)
+  ament_target_dependencies(test_bridge_freshness
+    rclcpp easyfly_msgs mavros_msgs geometry_msgs sensor_msgs)
+  set_tests_properties(test_bridge_freshness PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=197")
+  ament_add_pytest_test(test_bridge_shutdown test/test_bridge_shutdown.py TIMEOUT 20)
+  set_tests_properties(test_bridge_shutdown PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=195")
   add_test(
     NAME mavlink_bridge_sim_time_contract
     COMMAND ${Python3_EXECUTABLE}

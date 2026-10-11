@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+from easyfly_obstacle_classification.node import main
+main()

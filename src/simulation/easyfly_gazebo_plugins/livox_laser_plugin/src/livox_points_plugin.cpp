@@ -20,6 +20,7 @@
 
 #include "livox_laser_simulation/csv_reader.hpp"
 #include "livox_laser_simulation/livox_ode_multiray_shape.h"
+#include "livox_laser_simulation/ray_geometry.hpp"
 
 #ifndef SCAN_MODE_DIR
 #define SCAN_MODE_DIR "/opt/easyfly/scan_mode"
@@ -142,7 +143,7 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
         ignition::math::Quaterniond ray;
         ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith, rotate_info.azimuth));
         auto axis = offset.Rot() * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
-        start_point = minDist * axis + offset.Pos() - minDist * axis;
+        start_point = easyfly_livox::rayStart(offset.Pos(), axis, minDist);
         end_point = maxDist * axis + offset.Pos();
         rayShape->AddRay(start_point, end_point);
     }
@@ -185,7 +186,7 @@ void LivoxPointsPlugin::InitializeRays(std::vector<std::pair<int, AviaRotateInfo
         auto &rotate_info = aviaInfos[index];
         ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith, rotate_info.azimuth));
         auto axis = offset.Rot() * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
-        start_point = minDist * axis + offset.Pos() - minDist * axis;
+        start_point = easyfly_livox::rayStart(offset.Pos(), axis, minDist);
         end_point = maxDist * axis + offset.Pos();
         if (ray_index < ray_size) {
             rays[ray_index]->SetPoints(start_point, end_point);

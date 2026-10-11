@@ -94,7 +94,7 @@
             <stddev>0.007</stddev>
           </noise>
         </camera>
-        <plugin name='color_camera_plugin' filename='libgazebo_ros_camera.so'>
+        <plugin name='color_camera_plugin' filename='libeasyfly_gazebo_ros_camera.so'>
           <ros>
             <namespace>/camera</namespace>
           </ros>
@@ -125,7 +125,7 @@
             <stddev>0.007</stddev>
           </noise>
         </camera>
-        <plugin name='depth_camera_plugin' filename='libgazebo_ros_camera.so'>
+        <plugin name='depth_camera_plugin' filename='libeasyfly_gazebo_ros_camera.so'>
           <ros>
             <namespace>/camera</namespace>
           </ros>

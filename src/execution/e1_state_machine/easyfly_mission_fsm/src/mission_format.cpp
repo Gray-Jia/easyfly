@@ -74,7 +74,7 @@ MissionValidation yaml(const std::string & text) {
       {"navigate", {"x", "y", "z", "max_speed"}},
       {"track", {"target_id", "duration", "follow_distance", "follow_height"}},
       {"search", {"center_x", "center_y", "area_width", "area_height", "altitude", "max_speed", "pattern"}},
-      {"land", {}}};
+      {"land", {}}, {"precision_land", {"tag_id"}}};
     const auto spec = fields.find(step.type);
     require(spec != fields.end(), "unsupported step type: " + step.type);
     allowed.insert(spec->second.begin(), spec->second.end()); keys(node, allowed);
@@ -89,6 +89,8 @@ MissionValidation yaml(const std::string & text) {
         step.yaw = optional(node, "yaw", 0, -3.141592653589793, 3.141592653589793);
         step.acceptance_radius = optional(node, "acceptance_radius", .5, .05, 5);
       }
+    } else if (step.type == "precision_land") {
+      step.tag_id = integer(node["tag_id"], 0, 2147483647);
     } else if (step.type == "hover") {
       step.wait = number(node["duration"], 0, 3600);
       require(step.wait <= step.timeout, "hover duration exceeds timeout");

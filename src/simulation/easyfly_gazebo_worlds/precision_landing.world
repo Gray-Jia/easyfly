@@ -1,0 +1,345 @@
+<?xml version="1.0"?>
+<!-- Copyright 2026 EasyFly Project. SPDX-License-Identifier: Apache-2.0 -->
+<!-- D5 ONLY: static 36h11 ID 7, black-border size 0.2 m, 8 degree tilt.
+     Grid checked against installed OpenCV AprilTag dictionary; no texture path.
+     Simulation fixture, not a certified physical landing pad. -->
+<sdf version="1.6">
+  <world name="d5_precision_landing">
+    <!-- Deterministic first-version visual fixture, not a lighting robustness test. -->
+    <scene><shadows>false</shadows></scene>
+    <include><uri>model://sun</uri></include>
+    <include><uri>model://ground_plane</uri></include>
+    <physics type="ode"><max_step_size>0.004</max_step_size><real_time_update_rate>250</real_time_update_rate></physics>
+    <model name="static_tag_7">
+      <static>true</static>
+      <pose>0.15 0 0.02 0 0.13962634015954636 0</pose>
+      <link name="pad">
+        <visual name="white_margin">
+          <pose>0 0 -0.001 0 0 0</pose>
+          <geometry><box><size>0.26 0.26 0.002</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_0_0">
+          <pose>-0.08750 0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_0_1">
+          <pose>-0.06250 0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_0_2">
+          <pose>-0.03750 0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_0_3">
+          <pose>-0.01250 0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_0_4">
+          <pose>0.01250 0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_0_5">
+          <pose>0.03750 0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_0_6">
+          <pose>0.06250 0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_0_7">
+          <pose>0.08750 0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_1_0">
+          <pose>-0.08750 0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_1_1">
+          <pose>-0.06250 0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_1_2">
+          <pose>-0.03750 0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_1_3">
+          <pose>-0.01250 0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_1_4">
+          <pose>0.01250 0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_1_5">
+          <pose>0.03750 0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_1_6">
+          <pose>0.06250 0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_1_7">
+          <pose>0.08750 0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_2_0">
+          <pose>-0.08750 0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_2_1">
+          <pose>-0.06250 0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_2_2">
+          <pose>-0.03750 0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_2_3">
+          <pose>-0.01250 0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_2_4">
+          <pose>0.01250 0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_2_5">
+          <pose>0.03750 0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_2_6">
+          <pose>0.06250 0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_2_7">
+          <pose>0.08750 0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_3_0">
+          <pose>-0.08750 0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_3_1">
+          <pose>-0.06250 0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_3_2">
+          <pose>-0.03750 0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_3_3">
+          <pose>-0.01250 0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_3_4">
+          <pose>0.01250 0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_3_5">
+          <pose>0.03750 0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_3_6">
+          <pose>0.06250 0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_3_7">
+          <pose>0.08750 0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_4_0">
+          <pose>-0.08750 -0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_4_1">
+          <pose>-0.06250 -0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_4_2">
+          <pose>-0.03750 -0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_4_3">
+          <pose>-0.01250 -0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_4_4">
+          <pose>0.01250 -0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_4_5">
+          <pose>0.03750 -0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_4_6">
+          <pose>0.06250 -0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_4_7">
+          <pose>0.08750 -0.01250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_5_0">
+          <pose>-0.08750 -0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_5_1">
+          <pose>-0.06250 -0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_5_2">
+          <pose>-0.03750 -0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_5_3">
+          <pose>-0.01250 -0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_5_4">
+          <pose>0.01250 -0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_5_5">
+          <pose>0.03750 -0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_5_6">
+          <pose>0.06250 -0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_5_7">
+          <pose>0.08750 -0.03750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_6_0">
+          <pose>-0.08750 -0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_6_1">
+          <pose>-0.06250 -0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_6_2">
+          <pose>-0.03750 -0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_6_3">
+          <pose>-0.01250 -0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/White</name></script></material>
+        </visual>
+        <visual name="cell_6_4">
+          <pose>0.01250 -0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_6_5">
+          <pose>0.03750 -0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_6_6">
+          <pose>0.06250 -0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_6_7">
+          <pose>0.08750 -0.06250 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_7_0">
+          <pose>-0.08750 -0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_7_1">
+          <pose>-0.06250 -0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_7_2">
+          <pose>-0.03750 -0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_7_3">
+          <pose>-0.01250 -0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_7_4">
+          <pose>0.01250 -0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_7_5">
+          <pose>0.03750 -0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_7_6">
+          <pose>0.06250 -0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+        <visual name="cell_7_7">
+          <pose>0.08750 -0.08750 0.0005 0 0 0</pose>
+          <geometry><box><size>0.025 0.025 0.001</size></box></geometry>
+          <material><script><uri>file://media/materials/scripts/gazebo.material</uri><name>Gazebo/Black</name></script></material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

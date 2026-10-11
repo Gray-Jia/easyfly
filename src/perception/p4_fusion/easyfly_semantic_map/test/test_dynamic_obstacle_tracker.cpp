@@ -693,13 +693,18 @@ TEST(DynamicObstacleTrackerTest, FloatBoxAndTotalBudgetAreFailSafe)
   float sx = 0.0F;
   float sy = 0.0F;
   float sz = 0.0F;
-  EXPECT_TRUE(tryFiniteObstacleBox(1.0, 2.0, 3.0, 0.4, 0.5, 1.0,
-    cx, cy, cz, sx, sy, sz));
-  EXPECT_FALSE(tryFiniteObstacleBox(
-    std::numeric_limits<double>::max(), 2.0, 3.0, 0.4, 0.5, 1.0,
-    cx, cy, cz, sx, sy, sz));
-  EXPECT_FALSE(tryFiniteObstacleBox(1.0, 2.0, 3.0, -0.1, 0.5, 1.0,
-    cx, cy, cz, sx, sy, sz));
+  EXPECT_TRUE(
+    tryFiniteObstacleBox(
+      1.0, 2.0, 3.0, 0.4, 0.5, 1.0,
+      cx, cy, cz, sx, sy, sz));
+  EXPECT_FALSE(
+    tryFiniteObstacleBox(
+      std::numeric_limits<double>::max(), 2.0, 3.0, 0.4, 0.5, 1.0,
+      cx, cy, cz, sx, sy, sz));
+  EXPECT_FALSE(
+    tryFiniteObstacleBox(
+      1.0, 2.0, 3.0, -0.1, 0.5, 1.0,
+      cx, cy, cz, sx, sy, sz));
   EXPECT_EQ(boundedCompletePredictionPointCount(100, 200, 90), 90u);
   EXPECT_EQ(boundedCompletePredictionPointCount(198, 200, 9), 0u);
   EXPECT_EQ(boundedCompletePredictionPointCount(100, 200, 10), 0u);

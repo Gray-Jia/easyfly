@@ -95,6 +95,10 @@ PYBIND11_MODULE(easyfly_pybind, m) {
     .def("land", [](Client &self, double speed) {
       easyfly_msgs::action::Land::Goal g; g.landing_speed = speed; return self.land(g);
     }, py::arg("landing_speed") = 0.0)
+    .def("precision_land", [](Client &self, int tag_id, double timeout) {
+      easyfly_msgs::action::PrecisionLand::Goal g; g.tag_id=tag_id; g.timeout=timeout;
+      return self.precision_land(g);
+    }, py::arg("tag_id"), py::arg("timeout") = 120.0)
     .def("navigate", [](Client &self, double x, double y, double z, double speed) {
       easyfly_msgs::action::NavigateTo::Goal g; g.target_x=x; g.target_y=y; g.target_z=z; g.max_speed=speed;
       return self.navigate(g);

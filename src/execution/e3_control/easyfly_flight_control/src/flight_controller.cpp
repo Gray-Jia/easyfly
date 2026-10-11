@@ -8,6 +8,66 @@ namespace easyfly_flight_control
 using namespace std::placeholders;
 using namespace std::chrono_literals;
 
+namespace
+{
+struct ScopeExit
+{
+  std::function<void()> cleanup;
+  ~ScopeExit() {cleanup();}
+};
+template<typename ServiceT>
+bool call_service_bounded(
+  const typename rclcpp::Client<ServiceT>::SharedPtr & client,
+  const typename ServiceT::Request::SharedPtr & request,
+  const rclcpp::Context::SharedPtr & context,
+  const std::function<bool()> & guard,
+  const std::function<bool()> & before_send,
+  const std::function<void()> & uncertain,
+  std::recursive_mutex & flight_mutex)
+{
+  if (!rclcpp::ok(context)) return false;
+  bool request_attempted = false;
+  try {
+    const auto service_deadline = std::chrono::steady_clock::now() + 3s;
+    while (rclcpp::ok(context) && !client->service_is_ready()) {
+      if (guard && !guard()) return false;
+      if (std::chrono::steady_clock::now() >= service_deadline) return false;
+      std::this_thread::sleep_for(50ms);
+    }
+    std::unique_lock<std::recursive_mutex> send_lock(flight_mutex);
+    if (!rclcpp::ok(context)) return false;
+    if (guard && !guard()) return false;
+    if (before_send && !before_send()) return false;
+    if (!rclcpp::ok(context)) return false;
+    request_attempted = true;
+    auto future = client->async_send_request(request);
+    send_lock.unlock();
+    const auto response_deadline = std::chrono::steady_clock::now() + 5s;
+    while (rclcpp::ok(context) && std::chrono::steady_clock::now() < response_deadline) {
+      if (future.wait_for(50ms) == std::future_status::ready) {
+        const auto response = future.get();
+        if (response->message.rfind("command_result_unknown:", 0) == 0) {
+          uncertain();
+          return false;
+        }
+        return rclcpp::ok(context) && response->success;
+      }
+    }
+    client->remove_pending_request(future);
+    uncertain();
+    return false;
+  } catch (const std::exception &) {
+    if (request_attempted) {
+      uncertain();
+      return false;
+    }
+    // Shutdown may race middleware calls; do not hide errors in a live context.
+    if (rclcpp::ok(context)) throw;
+    return false;
+  }
+}
+}  // namespace
+
 // 注: PID 实现已移除 (Q1) — 控制策略为 setpoint 生成 + PX4 OFFBOARD 内环闭环,
 // 原 PID::update 从未被调用, 属死代码。
 
@@ -58,41 +118,42 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
   cli_arm_ = create_client<easyfly_msgs::srv::ArmMotors>("/arm_motors", rmw_qos_profile_services_default, cli_cb_group_);
   cli_mode_= create_client<easyfly_msgs::srv::SetFlightMode>("/set_flight_mode", rmw_qos_profile_services_default, cli_cb_group_);
 
+  action_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   as_takeoff_ = rclcpp_action::create_server<Takeoff>(this, "/takeoff",
     std::bind(&FlightController::handle_takeoff_goal,   this, _1, _2),
     std::bind(&FlightController::handle_takeoff_cancel, this, _1),
-    std::bind(&FlightController::handle_takeoff_accepted, this, _1));
+    std::bind(&FlightController::handle_takeoff_accepted, this, _1),
+    rcl_action_server_get_default_options(), action_cb_group_);
   as_land_ = rclcpp_action::create_server<Land>(this, "/land",
     std::bind(&FlightController::handle_land_goal,   this, _1, _2),
     std::bind(&FlightController::handle_land_cancel, this, _1),
-    std::bind(&FlightController::handle_land_accepted, this, _1));
+    std::bind(&FlightController::handle_land_accepted, this, _1),
+    rcl_action_server_get_default_options(), action_cb_group_);
   as_waypoint_ = rclcpp_action::create_server<GoToWaypoint>(this, "/goto_waypoint",
     std::bind(&FlightController::handle_waypoint_goal,   this, _1, _2),
     std::bind(&FlightController::handle_waypoint_cancel, this, _1),
-    std::bind(&FlightController::handle_waypoint_accepted, this, _1));
+    std::bind(&FlightController::handle_waypoint_accepted, this, _1),
+    rcl_action_server_get_default_options(), action_cb_group_);
   as_traj_ = rclcpp_action::create_server<FollowTrajectory>(this, "/follow_trajectory",
     std::bind(&FlightController::handle_traj_goal,   this, _1, _2),
     std::bind(&FlightController::handle_traj_cancel, this, _1),
-    std::bind(&FlightController::handle_traj_accepted, this, _1));
+    std::bind(&FlightController::handle_traj_accepted, this, _1),
+    rcl_action_server_get_default_options(), action_cb_group_);
 
   ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  initialize_precision_landing();
   timer_ctl_ = create_wall_timer(period, std::bind(&FlightController::control_loop, this), ctl_cb_group_);
   RCLCPP_INFO(get_logger(), "FlightController Start");
 }
 
 void FlightController::cb_uav_state(const easyfly_msgs::msg::UAVState::SharedPtr msg)
 {
-  if (!msg || !std::isfinite(msg->position_x) || !std::isfinite(msg->position_y) ||
-      !std::isfinite(msg->position_z) || !std::isfinite(msg->yaw) ||
-      !std::isfinite(msg->velocity_x) || !std::isfinite(msg->velocity_y) ||
-      !std::isfinite(msg->velocity_z)) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-      "拒绝无效 /uav_state: 位姿或速度包含非有限值");
-    return;
-  }
+  if (!msg) return;
   {  // Q9: 与 control_loop / 模式校验轮询的跨线程读写保护
     std::lock_guard<std::mutex> lk(state_mtx_);
     uav_ = *msg;
+    state_receipt_ = std::chrono::steady_clock::now();
+    ++state_sequence_;
   }
   state_received_ = true;
 }
@@ -174,9 +235,12 @@ void FlightController::cb_position_cmd(
   active_ = TRAJECTORY;
 }
 
-easyfly_msgs::msg::UAVState FlightController::get_uav() const
+easyfly_msgs::msg::UAVState FlightController::get_uav(
+  std::chrono::steady_clock::time_point * receipt, uint64_t * sequence) const
 {
   std::lock_guard<std::mutex> lk(state_mtx_);
+  if (receipt) *receipt = state_receipt_;
+  if (sequence) *sequence = state_sequence_;
   return uav_;
 }
 
@@ -184,7 +248,49 @@ void FlightController::control_loop()
 {
   if (!state_received_) return;
   std::lock_guard<std::recursive_mutex> state_lk(flight_mtx_);
-  const auto uav = get_uav();          // 快照, 本周期内一致
+  if (precision_control_loop()) return;
+  std::chrono::steady_clock::time_point receipt;
+  uint64_t sequence;
+  const auto uav = get_uav(&receipt, &sequence);
+  // Disarm confirmation completes only an existing Land transaction; it does
+  // not grant flight admission when pose validity has been lost.
+  if (active_ == LANDING && gh_land_ && land_disarm_confirmed(uav, receipt)) {
+    auto result = std::make_shared<Land::Result>();
+    result->success = true;
+    result->message = "land complete (fresh disarm confirmed)";
+    gh_land_->succeed(result);
+    gh_land_.reset();
+    active_ = NONE;
+    action_reserved_ = false;
+    return;
+  }
+  if (command_uncertain_ || !rclcpp::ok(get_node_base_interface()->get_context()) ||
+      !flight_state_ready(uav, receipt)) {
+    stop_owned_actions("flight state unavailable or stale; setpoint stream stopped");
+    return;
+  }
+  if (!takeoff_stop_reason_.empty() || !land_stop_reason_.empty()) return;
+  const bool land_taken_over =
+    (active_ == LAND_PREPARING && uav.flight_mode != 3 && uav.flight_mode != 7) ||
+    (active_ == LANDING && uav.flight_mode != 7) ||
+    (active_ == LAND_CANCELING && uav.flight_mode != 7 &&
+      !(land_cancel_offboard_requested_ && uav.flight_mode == 3));
+  if (land_taken_over) {
+    stop_owned_actions("external mode takeover during Land; setpoint stream stopped");
+    return;
+  }
+  const bool offboard_owned = active_ == TAKEOFF || active_ == WAYPOINT ||
+    active_ == HOVER || active_ == TRAJECTORY_WAIT || active_ == TRAJECTORY;
+  const bool preparing_takeover = active_ == TAKEOFF_PREPARING &&
+    uav.flight_mode != 3 &&
+    (takeoff_offboard_confirmed_ || uav.flight_mode != takeoff_baseline_mode_);
+  if ((offboard_owned && uav.flight_mode != 3) || preparing_takeover) {
+    stop_owned_actions("external mode takeover; setpoint stream stopped");
+    return;
+  }
+  if (active_ == TAKEOFF_PREPARING && uav.flight_mode == 3) {
+    takeoff_offboard_confirmed_ = true;
+  }
 
   // Q12: 实测周期 (替代固定 1/rate), 限幅防极端值 (调度抖动/时钟跳变)
   const auto t_now = now();
@@ -204,6 +310,9 @@ void FlightController::control_loop()
   // cancel callback 内同步调用 canceled()，否则会触发非法状态迁移并杀死节点。
   if ((active_ == TAKEOFF_PREPARING || active_ == TAKEOFF) &&
       gh_takeoff_ && gh_takeoff_->is_canceling()) {
+    // Keep this reservation until the accepted callback drains its issued
+    // service request. Do not hover, emit setpoints, or overlap another goal.
+    if (takeoff_preparation_running_) return;
     auto gh = gh_takeoff_;
     if (uav.armed) {
       enter_hover_at(
@@ -262,7 +371,7 @@ void FlightController::control_loop()
     cmd.position_x = hover_x_; cmd.position_y = hover_y_;
     cmd.position_z = hover_z_; cmd.yaw = hover_yaw_;
     pub_uav_cmd_->publish(cmd);
-    if (gh_land_ && gh_land_->is_canceling()) {
+    if (gh_land_ && gh_land_->is_canceling() && uav.flight_mode == 3) {
       auto gh = gh_land_;
       active_ = HOVER;
       action_reserved_ = false;
@@ -274,50 +383,6 @@ void FlightController::control_loop()
     return;
   }
 
-  // ---- 外部接管检测 (TAKEOFF/WAYPOINT/HOVER 通用; LANDING 除外—那是我们自己切的 AUTO.LAND) ----
-  // 场景: mission_fsm 低电量 RTL / 地面站手动切 RTL(6)/AUTO.LAND(7) / PX4 failsafe。
-  // 缺陷修复: 原检测仅在 HOVER 分支 — RTL 发生在航点/起飞中时, 节点会卡在该状态
-  // 直到 deadline 超时 (误导性日志 + 期间无法接受新 goal)。现在任何主动状态都检测。
-  // 1.5s 去抖: 模式反馈链 (PX4→mavros→bridge→uav_state) 有 ~1s 延迟,
-  // 取消降落等主动切回 OFFBOARD 的场景, 窗口期内 mode 仍读旧值, 不能误判接管
-  const bool takeover_candidate =
-    (active_ == TAKEOFF_PREPARING || active_ == TAKEOFF || active_ == WAYPOINT ||
-     active_ == HOVER || active_ == TRAJECTORY_WAIT || active_ == TRAJECTORY) &&
-    (uav.flight_mode == 6 || uav.flight_mode == 7);
-  // LAND_PREPARING 是 AUTO.LAND 请求/确认事务；mode=7 在此阶段是预期状态，
-  // 不能被通用 takeover 分支当作外部接管清掉 reservation。若此时转成 RTL，
-  // 则仍按外部接管中止该事务。
-  const bool land_preparing_takeover = active_ == LAND_PREPARING && uav.flight_mode == 6;
-  if (takeover_candidate || land_preparing_takeover) {
-      if (takeover_since_.nanoseconds() == 0) {
-        takeover_since_ = now();
-      } else if ((now() - takeover_since_).seconds() > 1.5) {
-        RCLCPP_WARN(get_logger(),
-          "检测到外部模式接管 (mode=%d, RTL/AUTO.LAND), 中止当前动作, 停止 setpoint",
-          static_cast<int>(uav.flight_mode));
-        // 终止当前 goal (如还在)
-        try {
-          if ((active_ == TAKEOFF_PREPARING || active_ == TAKEOFF) && gh_takeoff_) {
-            finish_takeoff_goal(gh_takeoff_, "external takeover (RTL/AUTO.LAND)");
-          } else if (active_ == WAYPOINT && gh_waypoint_) {
-            finish_waypoint_goal(gh_waypoint_, "external takeover (RTL/AUTO.LAND)");
-          } else if ((active_ == TRAJECTORY_WAIT || active_ == TRAJECTORY) && gh_traj_) {
-            finish_traj_goal(gh_traj_, "takeover");
-          } else if (active_ == LAND_PREPARING && gh_land_) {
-            finish_land_goal(gh_land_, "external takeover (RTL)", false);
-          }
-        } catch (const std::exception &) {}
-        if (active_ != LAND_PREPARING && active_ != LANDING) {
-          active_ = NONE;
-          action_reserved_ = false;
-        }
-        takeover_since_ = rclcpp::Time(0, 0, now().get_clock_type());
-      }
-  } else {
-    // AUTO.LAND confirmation is an expected mode transition, so it must not
-    // accumulate a takeover debounce window.
-    takeover_since_ = rclcpp::Time(0, 0, now().get_clock_type());
-  }
   if (active_ == LAND_PREPARING) {
     // AUTO.LAND 请求/确认期间仍保持锁存的 hover setpoint，直到 accepted
     // callback 确认 PX4 已进入 LANDING。这样模式服务阻塞或确认延迟时，
@@ -332,8 +397,9 @@ void FlightController::control_loop()
     if (active_ == LANDING && gh_land_) {
       auto fb = std::make_shared<Land::Feedback>();
       fb->current_altitude = uav.position_z; gh_land_->publish_feedback(fb);
-      const double t = (now() - land_start_time_).seconds();
-      if (!uav.armed) {
+      const double t = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - land_start_steady_).count();
+      if (land_disarm_confirmed(uav, receipt)) {
         auto r = std::make_shared<Land::Result>(); r->success = true;
         r->message = "landed"; gh_land_->succeed(r); gh_land_.reset();
         // 注: 不做模式清理 — PX4 降落后自行停留/回退模式 (OFFBOARD 等),
@@ -341,20 +407,13 @@ void FlightController::control_loop()
         active_ = NONE;
         action_reserved_ = false;
       } else if (t > land_timeout_) {
-        // Q6: 超时处理 — 只允许已落地(z<0.3)时 disarm;
-        // 空中强制 disarm = 电机停转 = 自由落体, 严禁!
-        if (uav.position_z < 0.3) {
-          call_arm(false);
-          auto r = std::make_shared<Land::Result>(); r->success = true;
-          r->message = "landed (timeout, on ground)"; gh_land_->succeed(r); gh_land_.reset();
-        } else {
-          RCLCPP_ERROR(get_logger(),
-            "Land timeout 但仍在空中 (z=%.2f) — 不 disarm, 交由 PX4 AUTO.LAND 继续降落",
-            uav.position_z);
-          auto r = std::make_shared<Land::Result>();
-          r->success = false; r->message = "land timeout (still airborne, AUTO.LAND continues)";
-          gh_land_->abort(r); gh_land_.reset();
-        }
+        // Local odometry Z is not ground clearance. Never infer landed or
+        // stop motors from it; leave PX4 AUTO.LAND unchanged on timeout.
+        RCLCPP_ERROR(get_logger(), "Land timeout: disarm not confirmed; AUTO.LAND continues");
+        auto r = std::make_shared<Land::Result>();
+        r->success = false;
+        r->message = "land timeout (disarm unconfirmed, AUTO.LAND continues)";
+        gh_land_->abort(r); gh_land_.reset();
         active_ = NONE;
         action_reserved_ = false;
       }
@@ -420,8 +479,11 @@ void FlightController::control_loop()
     //   ② 连续 5 帧 (0.25s) 反馈在验收半径内 (单帧毛刺尖峰被滤除)
     const bool ramp_done =
       (new_prog >= L - 1e-6) && std::abs(z_ramp_ - wp_target_z_) < 1e-6;
-    if (dist < wp_accept_radius_) ++wp_in_radius_frames_;
-    else                          wp_in_radius_frames_ = 0;
+    if (sequence != wp_counted_sequence_) {
+      wp_counted_sequence_ = sequence;
+      if (dist < wp_accept_radius_) ++wp_in_radius_frames_;
+      else                          wp_in_radius_frames_ = 0;
+    }
 
     if (gh_waypoint_ && ramp_done && wp_in_radius_frames_ >= 5) {
       auto r = std::make_shared<GoToWaypoint::Result>(); r->success = true;
@@ -586,8 +648,11 @@ void FlightController::control_loop()
         return;
       }
 
-      if (dist < traj_accept_radius_) ++traj_in_radius_frames_;
-      else                            traj_in_radius_frames_ = 0;
+      if (sequence != traj_counted_sequence_) {
+        traj_counted_sequence_ = sequence;
+        if (dist < traj_accept_radius_) ++traj_in_radius_frames_;
+        else                            traj_in_radius_frames_ = 0;
+      }
 
       if (traj_in_radius_frames_ >= 5) {
         RCLCPP_INFO(get_logger(), "FollowTrajectory 到达终点 (dist=%.2f)", dist);
@@ -605,19 +670,22 @@ void FlightController::control_loop()
 }
 
 rclcpp_action::GoalResponse FlightController::handle_takeoff_goal(
-  const rclcpp_action::GoalUUID &, std::shared_ptr<const Takeoff::Goal> g)
+  const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const Takeoff::Goal> g)
 {
   if (!std::isfinite(g->target_altitude) || !std::isfinite(g->climb_speed) ||
       g->target_altitude <= 0.0 || g->target_altitude > max_altitude_ ||
       g->climb_speed < 0.0 || g->climb_speed > max_horizontal_speed_) {
     return rclcpp_action::GoalResponse::REJECT;
   }
-  const auto uav = get_uav();
+  std::chrono::steady_clock::time_point receipt;
+  const auto uav = get_uav(&receipt);
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-  if (active_ != NONE || action_reserved_ || !flight_state_ready(uav) || uav.armed) {
+  if (command_uncertain_ || precision_reserved_ || active_ != NONE || action_reserved_ ||
+      !flight_state_ready(uav, receipt) || uav.armed || uav.flight_mode > 7) {
     return rclcpp_action::GoalResponse::REJECT;
   }
   action_reserved_ = true;
+  reserved_goal_id_ = uuid;
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -633,16 +701,23 @@ void FlightController::handle_takeoff_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<Takeoff>> gh)
 {
   auto g = gh->get_goal();
-  const auto uav = get_uav();
+  std::chrono::steady_clock::time_point receipt;
+  const auto uav = get_uav(&receipt);
   bool started = false;
   {
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-    if (action_reserved_ && active_ == NONE && (!gh_takeoff_ || gh_takeoff_ == gh)) {
+    if (!command_uncertain_ && action_reserved_ && reserved_goal_id_ == gh->get_goal_id() &&
+        active_ == NONE && (!gh_takeoff_ || gh_takeoff_ == gh) &&
+        flight_state_ready(uav, receipt) && !uav.armed && uav.flight_mode <= 7) {
       takeoff_target_z_=g->target_altitude;
       takeoff_speed_=(g->climb_speed>0)?g->climb_speed:1.0;
       takeoff_start_x_=uav.position_x; takeoff_start_y_=uav.position_y;
       takeoff_start_z_=uav.position_z; takeoff_start_yaw_=uav.yaw;
       takeoff_ramp_z_=uav.position_z;
+      takeoff_baseline_mode_ = uav.flight_mode;
+      takeoff_offboard_confirmed_ = uav.flight_mode == 3;
+      takeoff_preparation_running_ = true;
+      takeoff_stop_reason_.clear();
       gh_takeoff_=gh;
       active_=TAKEOFF_PREPARING;
       started = true;
@@ -652,6 +727,29 @@ void FlightController::handle_takeoff_accepted(
     finish_takeoff_goal(gh, "takeoff transaction was superseded");
     return;
   }
+  ScopeExit preparation_cleanup{[this, gh]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    if (gh_takeoff_ == gh && takeoff_preparation_running_) {
+      finish_takeoff_goal(gh, "takeoff preparation ended without confirmed control");
+    }
+  }};
+
+  const auto still_current = [this, &gh]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    std::chrono::steady_clock::time_point receipt;
+    const auto current = get_uav(&receipt);
+    return rclcpp::ok(get_node_base_interface()->get_context()) &&
+      action_reserved_ && gh_takeoff_ == gh && active_ == TAKEOFF_PREPARING &&
+      takeoff_stop_reason_.empty() &&
+      !gh->is_canceling() && flight_state_ready(current, receipt) &&
+      (current.flight_mode == 3 ||
+        (!takeoff_offboard_confirmed_ && !current.armed &&
+          current.flight_mode == takeoff_baseline_mode_));
+  };
+  const auto arm_allowed = [this, &still_current]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    return still_current() && get_uav().flight_mode == 3;
+  };
 
   // ---- "先建流, 后解锁" 流程 (修复降落后无法再次起飞) ----
   // 背景: PX4 降落后停留在 OFFBOARD 模式 (或 AUTO.LAND 残留), 而
@@ -665,13 +763,16 @@ void FlightController::handle_takeoff_accepted(
   stamp_command(ic);
   ic.position_x=uav.position_x; ic.position_y=uav.position_y;
   ic.position_z=uav.position_z; ic.yaw=takeoff_start_yaw_;
-  pub_uav_cmd_->publish(ic);
+  {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    if (!still_current()) {
+      finish_takeoff_goal(gh, "takeoff transaction interrupted before initial stream");
+      return;
+    }
+    pub_uav_cmd_->publish(ic);
+  }
   std::this_thread::sleep_for(std::chrono::milliseconds(500));  // 建流
 
-  const auto still_current = [this, &gh]() {
-    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-    return action_reserved_ && gh_takeoff_ == gh && active_ == TAKEOFF_PREPARING;
-  };
   const auto abort_preparing = [this, &gh](const std::string & message) {
     finish_takeoff_goal(gh, message);
   };
@@ -680,8 +781,8 @@ void FlightController::handle_takeoff_accepted(
     return;
   }
 
-  if (uav.flight_mode != 3) {            // 非 OFFBOARD (LOITER/AUTO.LAND 残留等) → 切入
-    if (!call_set_mode(3)) {
+  if (get_uav().flight_mode != 3) {
+    if (!call_set_mode(3, still_current)) {
       abort_preparing("cannot switch to OFFBOARD (setpoint stream active?)");
       return;
     }
@@ -693,17 +794,32 @@ void FlightController::handle_takeoff_accepted(
     finish_takeoff_goal(gh, "takeoff transaction interrupted");
     return;
   }
+  // Service success only acknowledges a command; establish actual fresh
+  // OFFBOARD before allowing any arm request.
+  if (!wait_mode_engaged(3, 3.0) || !arm_allowed()) {
+    abort_preparing("OFFBOARD not engaged before arming");
+    return;
+  }
+  {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    takeoff_offboard_confirmed_ = true;
+  }
   // arm 重试 ×5 间隔 2s (总窗口 10s) — 兜底两类瞬态拒绝:
   // ① 切 OFFBOARD 后 setpoint 未被处理注册 (offboardCheck data_is_recent)
   // ② EKF/GPS 收敛边缘 ("ekf2 missing data" → Ready for takeoff 之间的窗口)
   bool armed = false;
   for (int i = 0; i < 5 && !armed; ++i) {
-    if (!still_current()) {
+    if (!arm_allowed()) {
       finish_takeoff_goal(gh, "takeoff transaction interrupted");
       return;
     }
-    armed = call_arm(true);
-    if (!armed) std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    armed = call_arm(true, arm_allowed);
+    if (!armed) {
+      const auto retry_deadline = std::chrono::steady_clock::now() + 2s;
+      while (arm_allowed() && std::chrono::steady_clock::now() < retry_deadline) {
+        std::this_thread::sleep_for(50ms);
+      }
+    }
   }
   if (!armed) {
     RCLCPP_ERROR(get_logger(), "arm 失败 (已重试 5 次/10s, OFFBOARD 流活跃; 检查 EKF/GPS 是否收敛)");
@@ -711,17 +827,23 @@ void FlightController::handle_takeoff_accepted(
     return;
   }
   if (!still_current()) {
-    const auto state = get_uav();
-    if (state.armed && state.position_z < 0.3) call_arm(false);
     finish_takeoff_goal(gh, "takeoff transaction interrupted");
     return;
   }
   // Q9: 校验 PX4 真正切入 OFFBOARD (mode_sent 只代表命令已发出)
   if (!wait_mode_engaged(3, 3.0)) {
-    RCLCPP_ERROR(get_logger(), "OFFBOARD 未确认切入 (当前模式=%d), 起飞中止并上锁",
+    RCLCPP_ERROR(get_logger(), "OFFBOARD 未确认切入 (当前模式=%d), 起飞中止且不做飞行补偿",
       static_cast<int>(get_uav().flight_mode));
-    call_arm(false);  // 地面上锁安全
     abort_preparing("OFFBOARD not engaged");
+    return;
+  }
+  const auto arm_confirmation_deadline = std::chrono::steady_clock::now() + 3s;
+  while (arm_allowed() && !get_uav().armed &&
+    std::chrono::steady_clock::now() < arm_confirmation_deadline) {
+    std::this_thread::sleep_for(50ms);
+  }
+  if (!arm_allowed() || !get_uav().armed) {
+    abort_preparing("fresh armed feedback not confirmed; no automatic compensation");
     return;
   }
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
@@ -733,21 +855,28 @@ void FlightController::handle_takeoff_accepted(
   takeoff_deadline_ = now() + rclcpp::Duration::from_seconds(
     std::max(1.0, takeoff_target_z_ - takeoff_start_z_) / takeoff_speed_ * 3.0 + 10.0);
   active_=TAKEOFF;
+  takeoff_preparation_running_ = false;
 }
 
 rclcpp_action::GoalResponse FlightController::handle_land_goal(
-  const rclcpp_action::GoalUUID &, std::shared_ptr<const Land::Goal> g)
+  const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const Land::Goal> g)
 {
   if (!std::isfinite(g->landing_speed) || g->landing_speed != 0.0) {
     RCLCPP_WARN(get_logger(), "拒绝 Land: PX4 AUTO.LAND 暂不支持 landing_speed，必须为 0");
     return rclcpp_action::GoalResponse::REJECT;
   }
-  const auto uav = get_uav();
+  std::chrono::steady_clock::time_point receipt;
+  const auto uav = get_uav(&receipt);
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-  if (active_ != HOVER || action_reserved_ || !flight_state_ready(uav) || !uav.armed) {
+  if (!precision_land_authorized(g->precision_landing_session_id) ||
+      (precision_reserved_ && (!precision_child_admission_pending_ || precision_child_)) ||
+      (precision_reserved_ && !precision_handoff_ready()) ||
+      command_uncertain_ || active_ != HOVER || action_reserved_ ||
+      !flight_state_ready(uav, receipt) || !uav.armed || uav.flight_mode != 3) {
     return rclcpp_action::GoalResponse::REJECT;
   }
   action_reserved_ = true;
+  reserved_goal_id_ = uuid;
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -770,24 +899,66 @@ rclcpp_action::CancelResponse FlightController::handle_land_cancel(
     // LAND_PREPARING the accepted callback owns the mode transaction; waiting
     // for transaction_lk above lets it finish, after which this check sees
     // either LANDING (continue recovery) or HOVER (reject safely).
-    if (!gh_land_ || gh_land_ != gh || active_ != LANDING) {
+    std::chrono::steady_clock::time_point receipt;
+    const auto uav = get_uav(&receipt);
+    if (command_uncertain_ || !gh_land_ || gh_land_ != gh || active_ != LANDING ||
+        !flight_state_ready(uav, receipt) || !uav.armed || uav.flight_mode != 7) {
       return rclcpp_action::CancelResponse::REJECT;
     }
     active_ = LAND_CANCELING;
+    land_transaction_running_ = true;
+    land_stop_reason_.clear();
+    land_cancel_offboard_requested_ = false;
   }
+  ScopeExit cancellation_cleanup{[this, gh]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    if (gh_land_ == gh) {
+      land_transaction_running_ = false;
+      if (std::uncaught_exceptions() > 0) {
+        finish_land_goal(gh, "Land cancellation interrupted", false);
+      }
+    }
+  }};
+  const auto recovery_current = [this, gh]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    std::chrono::steady_clock::time_point receipt;
+    const auto uav = get_uav(&receipt);
+    return gh_land_ == gh && active_ == LAND_CANCELING && land_stop_reason_.empty() &&
+      flight_state_ready(uav, receipt) && uav.armed &&
+      (uav.flight_mode == 7 || (land_cancel_offboard_requested_ && uav.flight_mode == 3));
+  };
   // 先让 control_loop 连续建立一小段 OFFBOARD setpoint 流，再请求退出 AUTO.LAND。
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
-  if (!call_set_mode(3) || !wait_mode_engaged(3, 3.0)) {
+  if (!recovery_current()) {
+    finish_land_goal(gh, "Land cancellation recovery denied by current state", false);
+    return rclcpp_action::CancelResponse::REJECT;
+  }
+  const auto mark_request = [this, gh, &recovery_current]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    if (!recovery_current() || get_uav().flight_mode != 7) return false;
+    land_cancel_offboard_requested_ = true;
+    return true;
+  };
+  if (!call_set_mode(3, recovery_current, mark_request) || !wait_mode_engaged(3, 3.0) ||
+      !recovery_current()) {
     RCLCPP_ERROR(get_logger(),
       "取消降落: 切回 OFFBOARD 失败, PX4 将继续 AUTO.LAND 降落!");
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
     if (gh_land_ == gh && active_ == LAND_CANCELING) {
-      active_ = LANDING;
+      std::chrono::steady_clock::time_point receipt;
+      const auto uav = get_uav(&receipt);
+      if (flight_state_ready(uav, receipt) && uav.armed && uav.flight_mode == 7 &&
+          land_stop_reason_.empty()) {
+        active_ = LANDING;
+        land_cancel_offboard_requested_ = false;
+      } else {
+        finish_land_goal(gh, "Land cancellation not confirmed; control stream stopped", false);
+      }
     }
     return rclcpp_action::CancelResponse::REJECT;
   }
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-  if (!gh_land_ || gh_land_ != gh || active_ != LAND_CANCELING) {
+  if (!recovery_current()) {
     return rclcpp_action::CancelResponse::REJECT;
   }
   return rclcpp_action::CancelResponse::ACCEPT;
@@ -805,9 +976,18 @@ void FlightController::handle_land_accepted(
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
     // 先登记 handle 并进入准备态，再执行可能阻塞的 mode service；这样
     // cancel/takeover 在 AUTO.LAND 确认窗口内也能找到并收尾该 goal。
-    if (action_reserved_ && active_ == HOVER && (!gh_land_ || gh_land_ == gh)) {
+    std::chrono::steady_clock::time_point receipt;
+    const auto uav = get_uav(&receipt);
+    if (precision_land_authorized(gh->get_goal()->precision_landing_session_id) &&
+        (!precision_reserved_ || precision_handoff_ready()) &&
+        !command_uncertain_ && action_reserved_ && reserved_goal_id_ == gh->get_goal_id() &&
+        active_ == HOVER && (!gh_land_ || gh_land_ == gh) &&
+        flight_state_ready(uav, receipt) && uav.armed && uav.flight_mode == 3) {
       gh_land_ = gh;
       active_ = LAND_PREPARING;
+      land_transaction_running_ = true;
+      land_stop_reason_.clear();
+      land_cancel_offboard_requested_ = false;
       started = true;
     }
   }
@@ -815,8 +995,31 @@ void FlightController::handle_land_accepted(
     finish_land_goal(gh, "land transaction was superseded", true);
     return;
   }
+  ScopeExit land_cleanup{[this, gh]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    if (gh_land_ == gh && land_transaction_running_) {
+      land_transaction_running_ = false;
+      if (active_ == LAND_PREPARING) {
+        finish_land_goal(gh, "Land preparation ended without confirmed mode", false);
+      }
+    }
+  }};
+  const auto still_preparing_owned = [this, gh]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    std::chrono::steady_clock::time_point receipt;
+    const auto uav = get_uav(&receipt);
+    return gh_land_ == gh && active_ == LAND_PREPARING && land_stop_reason_.empty() &&
+      flight_state_ready(uav, receipt) && uav.armed &&
+      (uav.flight_mode == 3 || uav.flight_mode == 7);
+  };
 
-  if (!call_set_mode(7) || !wait_mode_engaged(7, 3.0)) {
+  const auto handoff_before_send = [this, gh]() {
+    std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+    return gh->get_goal()->precision_landing_session_id.empty() ||
+           precision_handoff_ready();
+  };
+  if (!call_set_mode(7, still_preparing_owned, handoff_before_send) ||
+      !wait_mode_engaged(7, 3.0)) {
     RCLCPP_ERROR(get_logger(), "AUTO.LAND 切换未确认，保持 OFFBOARD 悬停并中止 Land");
     finish_land_goal(gh, "AUTO.LAND not engaged", true);
     return;
@@ -824,9 +1027,13 @@ void FlightController::handle_land_accepted(
   bool still_preparing = false;
   {
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-    if (gh_land_ == gh && action_reserved_ && active_ == LAND_PREPARING) {
+    std::chrono::steady_clock::time_point receipt;
+    const auto uav = get_uav(&receipt);
+    if (gh_land_ == gh && action_reserved_ && active_ == LAND_PREPARING &&
+        land_stop_reason_.empty() && flight_state_ready(uav, receipt) && uav.flight_mode == 7) {
       active_ = LANDING;
-      land_start_time_ = now();
+      land_transaction_running_ = false;
+      land_start_steady_ = std::chrono::steady_clock::now();
       still_preparing = true;
     }
   }
@@ -847,7 +1054,7 @@ void FlightController::handle_land_accepted(
 }
 
 rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
-  const rclcpp_action::GoalUUID &, std::shared_ptr<const GoToWaypoint::Goal> g)
+  const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const GoToWaypoint::Goal> g)
 {
   const bool yaw_ok = std::isfinite(g->target_yaw) || std::isnan(g->target_yaw);
   if (!std::isfinite(g->target_x) || !std::isfinite(g->target_y) ||
@@ -857,7 +1064,8 @@ rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
       g->max_speed > max_horizontal_speed_ || g->acceptance_radius < 0.0) {
     return rclcpp_action::GoalResponse::REJECT;
   }
-  const auto uav = get_uav();
+  std::chrono::steady_clock::time_point receipt;
+  const auto uav = get_uav(&receipt);
   const double distance = std::hypot(
     g->target_x - uav.position_x, g->target_y - uav.position_y);
   if (!std::isfinite(max_goal_distance_) || max_goal_distance_ <= 0.0 ||
@@ -868,10 +1076,12 @@ rclcpp_action::GoalResponse FlightController::handle_waypoint_goal(
     return rclcpp_action::GoalResponse::REJECT;
   }
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-  if (active_ != HOVER || action_reserved_ || !flight_state_ready(uav) || !uav.armed) {
+  if (command_uncertain_ || precision_reserved_ || active_ != HOVER || action_reserved_ ||
+      !flight_state_ready(uav, receipt) || !uav.armed || uav.flight_mode != 3) {
     return rclcpp_action::GoalResponse::REJECT;
   }
   action_reserved_=true;
+  reserved_goal_id_ = uuid;
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -887,12 +1097,16 @@ void FlightController::handle_waypoint_accepted(
   const std::shared_ptr<rclcpp_action::ServerGoalHandle<GoToWaypoint>> gh)
 {
   auto g=gh->get_goal();
-  const auto uav = get_uav();
+  std::chrono::steady_clock::time_point receipt;
+  uint64_t sequence;
+  const auto uav = get_uav(&receipt, &sequence);
   bool started = false;
   {
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-    if (action_reserved_ && active_ == HOVER &&
-        (!gh_waypoint_ || gh_waypoint_ == gh)) {
+    if (!command_uncertain_ && action_reserved_ && reserved_goal_id_ == gh->get_goal_id() &&
+        active_ == HOVER &&
+        (!gh_waypoint_ || gh_waypoint_ == gh) && flight_state_ready(uav, receipt) &&
+        uav.armed && uav.flight_mode == 3) {
       wp_target_x_=g->target_x; wp_target_y_=g->target_y; wp_target_z_=g->target_z;
       wp_target_yaw_=std::isfinite(g->target_yaw)?g->target_yaw:uav.yaw;
       wp_max_speed_=(g->max_speed>0)?g->max_speed:2.0;
@@ -903,6 +1117,7 @@ void FlightController::handle_waypoint_accepted(
       wp_start_x_ = uav.position_x; wp_start_y_ = uav.position_y;
       x_ramp_ = uav.position_x; y_ramp_ = uav.position_y; z_ramp_ = uav.position_z;
       wp_in_radius_frames_ = 0;            // Q16: 完成判定去抖计数清零
+      wp_counted_sequence_ = sequence;
       // Q5: 超时 = 名义飞行时间 × 3 + 15s 余量
       wp_deadline_ = now() + rclcpp::Duration::from_seconds(
         wp_start_dist_ / std::max(wp_max_speed_, 0.1) * 3.0 + 15.0);
@@ -920,7 +1135,7 @@ void FlightController::handle_waypoint_accepted(
 // ================================================================
 
 rclcpp_action::GoalResponse FlightController::handle_traj_goal(
-  const rclcpp_action::GoalUUID &, std::shared_ptr<const FollowTrajectory::Goal> g)
+  const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const FollowTrajectory::Goal> g)
 {
   if (g->navigation_session_id.size() > 128 ||
       !std::isfinite(g->target_x) || !std::isfinite(g->target_y) ||
@@ -930,7 +1145,8 @@ rclcpp_action::GoalResponse FlightController::handle_traj_goal(
     return rclcpp_action::GoalResponse::REJECT;
   }
   // 仅 HOVER 可进入 (与既有单动作槽互斥); 需已 arm
-  const auto uav = get_uav();
+  std::chrono::steady_clock::time_point receipt;
+  const auto uav = get_uav(&receipt);
   const double distance = std::hypot(
     g->target_x - uav.position_x, g->target_y - uav.position_y);
   if (!std::isfinite(max_goal_distance_) || max_goal_distance_ <= 0.0 ||
@@ -941,7 +1157,8 @@ rclcpp_action::GoalResponse FlightController::handle_traj_goal(
     return rclcpp_action::GoalResponse::REJECT;
   }
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-  if (active_ != HOVER || action_reserved_ || !uav.armed || !flight_state_ready(uav)) {
+  if (command_uncertain_ || precision_reserved_ || active_ != HOVER || action_reserved_ || !uav.armed ||
+      !flight_state_ready(uav, receipt) || uav.flight_mode != 3) {
     return rclcpp_action::GoalResponse::REJECT;
   }
   // 与单动作槽 reservation 在同一把锁下锁存，确保 goal 之后到达的
@@ -950,6 +1167,7 @@ rclcpp_action::GoalResponse FlightController::handle_traj_goal(
   traj_session_id_ = g->navigation_session_id;
   traj_goal_pending_ = true;
   action_reserved_=true;
+  reserved_goal_id_ = uuid;
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -969,7 +1187,12 @@ void FlightController::handle_traj_accepted(
   double timeout = 120.0;
   {
     std::lock_guard<std::recursive_mutex> state_lk(flight_mtx_);
-    if (action_reserved_ && active_ == HOVER && (!gh_traj_ || gh_traj_ == gh)) {
+    std::chrono::steady_clock::time_point receipt;
+    uint64_t sequence;
+    const auto uav = get_uav(&receipt, &sequence);
+    if (!command_uncertain_ && action_reserved_ && reserved_goal_id_ == gh->get_goal_id() &&
+        active_ == HOVER && (!gh_traj_ || gh_traj_ == gh) &&
+        flight_state_ready(uav, receipt) && uav.armed && uav.flight_mode == 3) {
       traj_target_x_ = g->target_x;
       traj_target_y_ = g->target_y;
       traj_target_z_ = g->target_z;
@@ -984,6 +1207,7 @@ void FlightController::handle_traj_accepted(
       traj_accept_time_ = now();
       traj_deadline_ = now() + rclcpp::Duration::from_seconds(timeout);
       traj_in_radius_frames_ = 0;
+      traj_counted_sequence_ = sequence;
       traj_active_id_ = 0;
       gh_traj_ = gh;
       traj_goal_pending_ = false;
@@ -992,16 +1216,6 @@ void FlightController::handle_traj_accepted(
     }
   }
   if (!started) {
-    {
-      std::lock_guard<std::recursive_mutex> state_lk(flight_mtx_);
-      // 若 response/accepted 期间发生外部接管，释放本次 pending reservation，
-      // 避免后续 goal 永久被 action_reserved_ 卡住。
-      if (traj_goal_pending_) {
-        traj_goal_pending_ = false;
-        traj_session_id_.clear();
-        action_reserved_ = false;
-      }
-    }
     finish_traj_goal(gh, "trajectory transaction was superseded");
     return;
   }
@@ -1010,9 +1224,40 @@ void FlightController::handle_traj_accepted(
     traj_target_x_, traj_target_y_, traj_target_z_, traj_accept_radius_, timeout);
 }
 
+void FlightController::stop_owned_actions(const std::string & reason)
+{
+  std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+  if (gh_takeoff_ && takeoff_preparation_running_) {
+    takeoff_stop_reason_ = reason;
+    return;
+  }
+  if (gh_land_ && land_transaction_running_) {
+    land_stop_reason_ = reason;
+    return;
+  }
+  if (gh_takeoff_) finish_takeoff_goal(gh_takeoff_, reason);
+  if (gh_land_) finish_land_goal(gh_land_, reason, false);
+  if (gh_waypoint_) finish_waypoint_goal(gh_waypoint_, reason);
+  if (gh_traj_) finish_traj_goal(gh_traj_, reason);
+  active_ = NONE;
+  action_reserved_ = false;
+  traj_goal_pending_ = false;
+  traj_session_id_.clear();
+  land_cancel_offboard_requested_ = false;
+  wp_in_radius_frames_ = traj_in_radius_frames_ = 0;
+}
+
 void FlightController::enter_hover_at(double x, double y, double z, double yaw)
 {
   std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+  std::chrono::steady_clock::time_point receipt;
+  const auto uav = get_uav(&receipt);
+  if (!rclcpp::ok(get_node_base_interface()->get_context()) ||
+      !flight_state_ready(uav, receipt) || !uav.armed || uav.flight_mode != 3) {
+    active_ = NONE;
+    action_reserved_ = false;
+    return;
+  }
   hover_x_ = x; hover_y_ = y; hover_z_ = z; hover_yaw_ = yaw;
   // 立即发布一条 setpoint: 恢复/保持 OFFBOARD 数据流 (bridge 1s 无指令即停流)
   easyfly_msgs::msg::UAVCommand cmd;
@@ -1032,15 +1277,18 @@ void FlightController::finish_takeoff_goal(
   {
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
     if (gh_takeoff_ == gh ||
-        (!gh_takeoff_ && (active_ == TAKEOFF_PREPARING || active_ == TAKEOFF))) {
+        (action_reserved_ && reserved_goal_id_ == gh->get_goal_id())) {
       gh_takeoff_.reset();
+      takeoff_preparation_running_ = false;
+      takeoff_stop_reason_.clear();
       active_ = NONE;
       action_reserved_ = false;
     }
   }
   auto result = std::make_shared<Takeoff::Result>();
   result->success = false;
-  result->message = message;
+  result->message = command_uncertain_ ?
+    "command_result_unknown: flight fault latch set; manual audit required" : message;
   try {
     if (gh->is_canceling()) gh->canceled(result);
     else gh->abort(result);
@@ -1057,10 +1305,15 @@ void FlightController::finish_land_goal(
   {
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
     if (gh_land_ == gh ||
-        (!gh_land_ && (active_ == LAND_PREPARING || active_ == LANDING ||
-                       active_ == LAND_CANCELING))) {
+        (action_reserved_ && reserved_goal_id_ == gh->get_goal_id())) {
       gh_land_.reset();
-      active_ = keep_hover ? HOVER : NONE;
+      land_transaction_running_ = false;
+      land_stop_reason_.clear();
+      land_cancel_offboard_requested_ = false;
+      std::chrono::steady_clock::time_point receipt;
+      const auto uav = get_uav(&receipt);
+      active_ = keep_hover && !command_uncertain_ && flight_state_ready(uav, receipt) &&
+        uav.armed && uav.flight_mode == 3 ? HOVER : NONE;
       action_reserved_ = false;
     }
   }
@@ -1082,9 +1335,10 @@ void FlightController::finish_waypoint_goal(
   if (!gh) return;
   {
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-    if (gh_waypoint_ == gh || (!gh_waypoint_ && active_ == WAYPOINT)) {
+    if (gh_waypoint_ == gh ||
+        (action_reserved_ && reserved_goal_id_ == gh->get_goal_id())) {
       gh_waypoint_.reset();
-      active_ = HOVER;
+      active_ = NONE;
       action_reserved_ = false;
     }
   }
@@ -1107,10 +1361,11 @@ void FlightController::finish_traj_goal(
   {
     std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
     if (gh_traj_ == gh ||
-        (!gh_traj_ && (active_ == TRAJECTORY_WAIT || active_ == TRAJECTORY))) {
+        (action_reserved_ && reserved_goal_id_ == gh->get_goal_id())) {
       gh_traj_.reset();
+      traj_goal_pending_ = false;
       traj_session_id_.clear();
-      active_ = HOVER;
+      active_ = NONE;
       action_reserved_ = false;
     }
   }
@@ -1132,11 +1387,32 @@ void FlightController::stamp_command(easyfly_msgs::msg::UAVCommand & cmd)
 }
 
 bool FlightController::flight_state_ready(
-  const easyfly_msgs::msg::UAVState & uav) const
+  const easyfly_msgs::msg::UAVState & uav,
+  std::chrono::steady_clock::time_point receipt) const
 {
-  return state_received_ && uav.connected && uav.pose_valid && uav.attitude_valid &&
+  return state_evidence_fresh(uav, receipt) && uav.pose_valid && uav.attitude_valid &&
     std::isfinite(uav.position_x) && std::isfinite(uav.position_y) &&
-    std::isfinite(uav.position_z) && std::isfinite(uav.yaw);
+    std::isfinite(uav.position_z) && std::isfinite(uav.yaw) &&
+    std::isfinite(uav.velocity_x) && std::isfinite(uav.velocity_y) &&
+    std::isfinite(uav.velocity_z);
+}
+
+bool FlightController::state_evidence_fresh(
+  const easyfly_msgs::msg::UAVState & uav,
+  std::chrono::steady_clock::time_point receipt) const
+{
+  const auto age = std::chrono::steady_clock::now() - receipt;
+  if (!state_received_ || !uav.connected || !rclcpp::ok(get_node_options().context()) ||
+      command_uncertain_ || uav.header.stamp.sec < 0 ||
+      uav.header.stamp.nanosec >= 1000000000U ||
+      (uav.header.stamp.sec == 0 && uav.header.stamp.nanosec == 0) ||
+      receipt == std::chrono::steady_clock::time_point{} ||
+      age < std::chrono::steady_clock::duration::zero() || age > 1s) return false;
+  const auto current = now();
+  if (current.nanoseconds() <= 0) return false;
+  const double source_age =
+    (current - rclcpp::Time(uav.header.stamp, current.get_clock_type())).seconds();
+  return source_age >= -0.2 && source_age <= 1.0;
 }
 
 // Q4: 反馈值毛刺守卫 — 与渐近值偏差 <3m (正常飞行中飞机紧跟 ramp) 才采信,
@@ -1148,30 +1424,50 @@ double FlightController::safe_axis(double fb, double ramp)
 
 bool FlightController::wait_mode_engaged(uint8_t mode, double timeout_s)
 {
-  const auto t0 = now();
-  while ((now() - t0).seconds() < timeout_s) {
-    if (get_uav().flight_mode == mode) return true;
+  if (!std::isfinite(timeout_s) || timeout_s < 0.0) return false;
+  const auto deadline = std::chrono::steady_clock::now() +
+    std::chrono::duration<double>(timeout_s);
+  const auto context = get_node_base_interface()->get_context();
+  while (rclcpp::ok(context) && std::chrono::steady_clock::now() < deadline) {
+    std::chrono::steady_clock::time_point receipt;
+    const auto uav = get_uav(&receipt);
+    if (!flight_state_ready(uav, receipt)) return false;
+    if (uav.flight_mode == mode) return rclcpp::ok(context);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
-  return get_uav().flight_mode == mode;
+  std::chrono::steady_clock::time_point receipt;
+  const auto uav = get_uav(&receipt);
+  return rclcpp::ok(context) && flight_state_ready(uav, receipt) && uav.flight_mode == mode;
 }
 
-bool FlightController::call_arm(bool arm)
+bool FlightController::land_disarm_confirmed(
+  const easyfly_msgs::msg::UAVState & uav,
+  std::chrono::steady_clock::time_point receipt) const
 {
-  if (!cli_arm_->wait_for_service(3s)) return false;
+  return state_evidence_fresh(uav, receipt) && !uav.armed;
+}
+
+bool FlightController::call_arm(bool arm, const std::function<bool()> & guard)
+{
+  if (command_uncertain_) return false;
   auto r=std::make_shared<easyfly_msgs::srv::ArmMotors::Request>(); r->arm=arm;
-  auto f=cli_arm_->async_send_request(r);
-  if (f.wait_for(5s)!=std::future_status::ready) return false;
-  return f.get()->success;
+  return call_service_bounded<easyfly_msgs::srv::ArmMotors>(
+    cli_arm_, r, get_node_base_interface()->get_context(), guard, {}, [this]() {
+      command_uncertain_ = true;
+      RCLCPP_ERROR(get_logger(), "Arm command outcome uncertain: flight fault latch set; manual audit required");
+    }, flight_mtx_);
 }
 
-bool FlightController::call_set_mode(uint8_t m)
+bool FlightController::call_set_mode(uint8_t m, const std::function<bool()> & guard,
+  const std::function<bool()> & before_send)
 {
-  if (!cli_mode_->wait_for_service(3s)) return false;
+  if (command_uncertain_) return false;
   auto r=std::make_shared<easyfly_msgs::srv::SetFlightMode::Request>(); r->flight_mode=m;
-  auto f=cli_mode_->async_send_request(r);
-  if (f.wait_for(5s)!=std::future_status::ready) return false;
-  return f.get()->success;
+  return call_service_bounded<easyfly_msgs::srv::SetFlightMode>(
+    cli_mode_, r, get_node_base_interface()->get_context(), guard, before_send, [this]() {
+      command_uncertain_ = true;
+      RCLCPP_ERROR(get_logger(), "Mode command outcome uncertain: flight fault latch set; manual audit required");
+    }, flight_mtx_);
 }
 
 }  // namespace easyfly_flight_control

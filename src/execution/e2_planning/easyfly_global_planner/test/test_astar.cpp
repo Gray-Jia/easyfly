@@ -54,6 +54,29 @@ TEST(AStar, EmptyGridDirectPath)
   EXPECT_NEAR(pathLength(r.waypoints), 10.0, 0.3);
 }
 
+TEST(AStar, PreservesExactRequestedGoalInsteadOfCellCenter)
+{
+  auto g = emptyGrid();
+  const double x = 1.957055851817131, y = 0.006087067071348429;
+  const auto r = planPath(g, -0.042944148182869, y, x, y);
+  ASSERT_TRUE(r.ok);
+  ASSERT_GE(r.waypoints.size(), 2u);
+  EXPECT_DOUBLE_EQ(r.waypoints.back().first, x);
+  EXPECT_DOUBLE_EQ(r.waypoints.back().second, y);
+}
+
+TEST(AStar, SameCellRetainsRealStartAndExactGoal)
+{
+  auto g = emptyGrid();
+  const auto r = planPath(g, 0.01, 0.02, 0.18, 0.19);
+  ASSERT_TRUE(r.ok);
+  ASSERT_EQ(r.waypoints.size(), 2u);
+  EXPECT_DOUBLE_EQ(r.waypoints.front().first, 0.01);
+  EXPECT_DOUBLE_EQ(r.waypoints.front().second, 0.02);
+  EXPECT_DOUBLE_EQ(r.waypoints.back().first, 0.18);
+  EXPECT_DOUBLE_EQ(r.waypoints.back().second, 0.19);
+}
+
 TEST(AStar, DetoursAroundBlockingBox)
 {
   auto g = emptyGrid();

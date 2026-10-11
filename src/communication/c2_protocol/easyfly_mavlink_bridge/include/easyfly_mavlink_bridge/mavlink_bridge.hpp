@@ -3,6 +3,8 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include <chrono>
+#include <atomic>
 #include <mutex>
 
 #include <easyfly_msgs/msg/uav_state.hpp>
@@ -37,6 +39,7 @@ namespace easyfly_mavlink_bridge
  */
 class MavlinkBridge : public rclcpp::Node
 {
+  friend class BridgeFreshnessTestPeer;
 public:
   explicit MavlinkBridge(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
@@ -93,6 +96,7 @@ private:
   // ---- mavros 客户端 (预创建，避免每次回调重建) ----
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr client_arming_;
   rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr     client_set_mode_;
+  std::atomic<bool> command_fault_{false};  // 已发送请求结果未知，人工核查后重启复位。
 
   // ---- 独立 callback group (service 与 client 分离，避免死锁) ----
   rclcpp::CallbackGroup::SharedPtr srv_cb_group_;
@@ -107,6 +111,7 @@ private:
 
   // ---- Q17: RC 掉线检测 ----
   rclcpp::Time last_rc_time_;          // 最近一次收到 RCIn 的时刻 (0=从未收到)
+  std::chrono::steady_clock::time_point last_rc_receipt_{};
   static constexpr double RC_TIMEOUT_S = 1.0;  // 超过此时长无 RC 数据视为断连
 
   // ---- encoder 缓存 ----
@@ -115,6 +120,7 @@ private:
   mutable std::mutex command_mtx_;
   easyfly_msgs::msg::UAVCommand last_cmd_;
   rclcpp::Time last_cmd_time_;
+  std::chrono::steady_clock::time_point last_cmd_receipt_{};
   bool     cmd_received_    {false};
   double   setpoint_timeout_{1.0};   // 超时秒数，超时后停止发 setpoint (via param)
 
@@ -128,13 +134,19 @@ private:
   bool rcvd_bat_          {false};
   bool rcvd_rc_           {false};
 
-  // 各遥测最后接收时间；用节点 ROS clock，避免把默认数值误认为有效数据。
+  // 同锁记录两种接收时刻：ROS检测时间回退，steady防止暂停时旧数据续命。
   rclcpp::Time last_state_time_;
   rclcpp::Time last_pose_time_;
   rclcpp::Time last_velocity_time_;
   rclcpp::Time last_imu_time_;
   rclcpp::Time last_battery_time_;
   rclcpp::Time last_gps_time_;
+  std::chrono::steady_clock::time_point last_state_receipt_{};
+  std::chrono::steady_clock::time_point last_pose_receipt_{};
+  std::chrono::steady_clock::time_point last_velocity_receipt_{};
+  std::chrono::steady_clock::time_point last_imu_receipt_{};
+  std::chrono::steady_clock::time_point last_battery_receipt_{};
+  std::chrono::steady_clock::time_point last_gps_receipt_{};
   double motion_freshness_s_{1.0};
   double slow_sensor_freshness_s_{5.0};
 };

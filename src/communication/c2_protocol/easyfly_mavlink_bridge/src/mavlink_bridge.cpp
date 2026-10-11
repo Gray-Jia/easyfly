@@ -2,11 +2,49 @@
 
 #include <cmath>
 #include <initializer_list>
+#include <stdexcept>
+#include <thread>
 
 namespace easyfly_mavlink_bridge
 {
 
 using namespace std::placeholders;
+
+namespace
+{
+// A timeout does not cancel a remote ROS service. Distinguish unavailable
+// (never sent) from an ambiguous request, and bound shutdown with steady time.
+template<typename ServiceT>
+typename ServiceT::Response::SharedPtr request_bounded(
+  const typename rclcpp::Client<ServiceT>::SharedPtr & client,
+  const typename ServiceT::Request::SharedPtr & request,
+  const rclcpp::Context::SharedPtr & context, bool & uncertain)
+{
+  using namespace std::chrono_literals;
+  uncertain = false;
+  if (!rclcpp::ok(context)) return nullptr;
+  bool sent = false;
+  try {
+    const auto discovery_deadline = std::chrono::steady_clock::now() + 3s;
+    while (rclcpp::ok(context) && !client->service_is_ready()) {
+      if (std::chrono::steady_clock::now() >= discovery_deadline) return nullptr;
+      std::this_thread::sleep_for(50ms);
+    }
+    if (!rclcpp::ok(context)) return nullptr;
+    sent = true;  // A send exception cannot prove no remote request exists.
+    auto future = client->async_send_request(request);
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (rclcpp::ok(context) && std::chrono::steady_clock::now() < deadline) {
+      if (future.wait_for(50ms) == std::future_status::ready) return future.get();
+    }
+    client->remove_pending_request(future);
+  } catch (const std::exception &) {
+    // No automatic compensating command: it could race the original request.
+  }
+  uncertain = sent;
+  return nullptr;
+}
+}  // namespace
 
 // ---- 四元数 → yaw (绕 Z 轴旋转) ----
 double MavlinkBridge::quat_to_yaw(double x, double y, double z, double w)
@@ -29,6 +67,13 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   // ---- 参数 ----
   double publish_rate = declare_parameter("publish_rate", 20.0);
   setpoint_timeout_   = declare_parameter("setpoint_timeout", 1.0);
+  motion_freshness_s_ = declare_parameter("motion_freshness_s", 1.0);
+  slow_sensor_freshness_s_ = declare_parameter("slow_sensor_freshness_s", 5.0);
+  for (const double timeout : {setpoint_timeout_, motion_freshness_s_, slow_sensor_freshness_s_}) {
+    if (!std::isfinite(timeout) || timeout <= 0.0) {
+      throw std::invalid_argument("bridge freshness/watchdog timeouts must be finite and positive");
+    }
+  }
 
   auto period_ms = std::chrono::milliseconds(static_cast<int>(1000.0 / publish_rate));
 
@@ -122,9 +167,6 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   uav_.flight_mode = 0;
   uav_.flight_mode_name = "";
 
-  motion_freshness_s_ = declare_parameter("motion_freshness_s", 1.0);
-  slow_sensor_freshness_s_ = declare_parameter("slow_sensor_freshness_s", 5.0);
-
   last_cmd_time_ = now();
 
   RCLCPP_INFO(get_logger(),
@@ -164,6 +206,7 @@ void MavlinkBridge::cb_state(const mavros_msgs::msg::State::SharedPtr msg)
 
   rcvd_armed_ = true;
   last_state_time_ = now();
+  last_state_receipt_ = std::chrono::steady_clock::now();
 }
 
 void MavlinkBridge::cb_local_pose(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -174,6 +217,7 @@ void MavlinkBridge::cb_local_pose(const geometry_msgs::msg::PoseStamped::SharedP
   uav_.position_z = msg->pose.position.z;
   rcvd_pose_ = true;
   last_pose_time_ = now();
+  last_pose_receipt_ = std::chrono::steady_clock::now();
 }
 
 void MavlinkBridge::cb_local_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
@@ -184,6 +228,7 @@ void MavlinkBridge::cb_local_velocity(const geometry_msgs::msg::TwistStamped::Sh
   uav_.velocity_z = msg->twist.linear.z;
   rcvd_vel_ = true;
   last_velocity_time_ = now();
+  last_velocity_receipt_ = std::chrono::steady_clock::now();
 }
 
 void MavlinkBridge::cb_imu(const sensor_msgs::msg::Imu::SharedPtr msg)
@@ -215,6 +260,7 @@ void MavlinkBridge::cb_imu(const sensor_msgs::msg::Imu::SharedPtr msg)
 
   rcvd_imu_ = true;
   last_imu_time_ = now();
+  last_imu_receipt_ = std::chrono::steady_clock::now();
 }
 
 void MavlinkBridge::cb_altitude(const mavros_msgs::msg::Altitude::SharedPtr msg)
@@ -234,6 +280,7 @@ void MavlinkBridge::cb_global_position(const sensor_msgs::msg::NavSatFix::Shared
   uav_.epv       = static_cast<double>(msg->position_covariance[8]);
   rcvd_gps_ = true;
   last_gps_time_ = now();
+  last_gps_receipt_ = std::chrono::steady_clock::now();
 }
 
 void MavlinkBridge::cb_battery(const sensor_msgs::msg::BatteryState::SharedPtr msg)
@@ -243,6 +290,7 @@ void MavlinkBridge::cb_battery(const sensor_msgs::msg::BatteryState::SharedPtr m
   uav_.battery_remaining = msg->percentage;
   rcvd_bat_ = true;
   last_battery_time_ = now();
+  last_battery_receipt_ = std::chrono::steady_clock::now();
 }
 
 void MavlinkBridge::cb_rc_in(const mavros_msgs::msg::RCIn::SharedPtr msg)
@@ -250,7 +298,10 @@ void MavlinkBridge::cb_rc_in(const mavros_msgs::msg::RCIn::SharedPtr msg)
   std::lock_guard<std::mutex> lk(state_mtx_);
   // 只要收到 RC 数据就认为遥控器连接 (Q17: 记录时刻, 掉线由 publish_state 超时判定)
   uav_.rc_connected = !msg->channels.empty();
-  if (uav_.rc_connected) last_rc_time_ = now();
+  if (uav_.rc_connected) {
+    last_rc_time_ = now();
+    last_rc_receipt_ = std::chrono::steady_clock::now();
+  }
   rcvd_rc_ = true;
 }
 
@@ -266,27 +317,31 @@ void MavlinkBridge::publish_state()
     std::lock_guard<std::mutex> lk(state_mtx_);
     uav_.header.stamp = stamp;
 
-    const auto fresh = [&stamp](bool received, const rclcpp::Time & last, double limit) {
+    const auto wall_now = std::chrono::steady_clock::now();
+    const auto fresh = [&stamp, wall_now](bool received, const rclcpp::Time & last,
+      std::chrono::steady_clock::time_point receipt, double limit) {
       if (!received || last.nanoseconds() == 0) return false;
       const double age = (stamp - last).seconds();
-      return age >= 0.0 && age <= limit;
+      const double wall_age = std::chrono::duration<double>(wall_now - receipt).count();
+      return receipt != std::chrono::steady_clock::time_point{} &&
+        age >= 0.0 && age <= limit && wall_age >= 0.0 && wall_age <= limit;
     };
     uav_.connected = uav_.connected &&
-      fresh(rcvd_armed_, last_state_time_, slow_sensor_freshness_s_);
-    uav_.pose_valid = fresh(rcvd_pose_, last_pose_time_, motion_freshness_s_) &&
+      fresh(rcvd_armed_, last_state_time_, last_state_receipt_, slow_sensor_freshness_s_);
+    uav_.pose_valid = fresh(rcvd_pose_, last_pose_time_, last_pose_receipt_, motion_freshness_s_) &&
       std::isfinite(uav_.position_x) && std::isfinite(uav_.position_y) &&
       std::isfinite(uav_.position_z);
-    uav_.velocity_valid = fresh(rcvd_vel_, last_velocity_time_, motion_freshness_s_) &&
+    uav_.velocity_valid = fresh(rcvd_vel_, last_velocity_time_, last_velocity_receipt_, motion_freshness_s_) &&
       std::isfinite(uav_.velocity_x) && std::isfinite(uav_.velocity_y) &&
       std::isfinite(uav_.velocity_z);
-    uav_.attitude_valid = fresh(rcvd_imu_, last_imu_time_, motion_freshness_s_) &&
+    uav_.attitude_valid = fresh(rcvd_imu_, last_imu_time_, last_imu_receipt_, motion_freshness_s_) &&
       std::isfinite(uav_.roll) && std::isfinite(uav_.pitch) && std::isfinite(uav_.yaw) &&
       std::isfinite(uav_.rollspeed) && std::isfinite(uav_.pitchspeed) &&
       std::isfinite(uav_.yawspeed);
-    uav_.battery_valid = fresh(rcvd_bat_, last_battery_time_, slow_sensor_freshness_s_) &&
+    uav_.battery_valid = fresh(rcvd_bat_, last_battery_time_, last_battery_receipt_, slow_sensor_freshness_s_) &&
       std::isfinite(uav_.battery_voltage) && std::isfinite(uav_.battery_remaining) &&
       uav_.battery_remaining >= 0.0 && uav_.battery_remaining <= 1.0;
-    uav_.gps_valid = fresh(rcvd_gps_, last_gps_time_, slow_sensor_freshness_s_) &&
+    uav_.gps_valid = fresh(rcvd_gps_, last_gps_time_, last_gps_receipt_, slow_sensor_freshness_s_) &&
       std::isfinite(uav_.latitude) && std::isfinite(uav_.longitude) &&
       uav_.latitude >= -90.0 && uav_.latitude <= 90.0 &&
       uav_.longitude >= -180.0 && uav_.longitude <= 180.0;
@@ -294,8 +349,7 @@ void MavlinkBridge::publish_state()
     // Q17: RC 掉线检测 — 超过 1s 未收到 RCIn 则视为遥控器断连
     // (仿真无遥控器: 从未收到 → last_rc_time_=0 → 恒为 false, 语义正确)
     if (uav_.rc_connected &&
-        (last_rc_time_.nanoseconds() == 0 ||
-         (stamp - last_rc_time_).seconds() > RC_TIMEOUT_S))
+        !fresh(rcvd_rc_, last_rc_time_, last_rc_receipt_, RC_TIMEOUT_S))
     {
       uav_.rc_connected = false;
     }
@@ -312,6 +366,7 @@ void MavlinkBridge::publish_state()
 
 void MavlinkBridge::cb_uav_command(const easyfly_msgs::msg::UAVCommand::SharedPtr msg)
 {
+  if (command_fault_) return;
   if (msg->header.frame_id != "odom") {
     RCLCPP_ERROR_THROTTLE(
       get_logger(), *get_clock(), 1000,
@@ -367,6 +422,7 @@ void MavlinkBridge::cb_uav_command(const easyfly_msgs::msg::UAVCommand::SharedPt
     std::lock_guard<std::mutex> lk(command_mtx_);
     last_cmd_      = *msg;
     last_cmd_time_ = now();
+    last_cmd_receipt_ = std::chrono::steady_clock::now();
     cmd_received_  = true;
   }
 
@@ -381,23 +437,30 @@ void MavlinkBridge::cb_uav_command(const easyfly_msgs::msg::UAVCommand::SharedPt
 
 void MavlinkBridge::publish_setpoint()
 {
+  if (command_fault_ || !rclcpp::ok(get_node_base_interface()->get_context())) return;
   // 只在这里做一个短快照；ROS publish 必须在释放 command_mtx_ 后执行，
   // 否则 command callback/timer/service 会被慢 DDS 发布阻塞。
   easyfly_msgs::msg::UAVCommand cmd_snapshot;
   rclcpp::Time cmd_time;
+  std::chrono::steady_clock::time_point receipt;
   bool command_received = false;
   {
     std::lock_guard<std::mutex> lk(command_mtx_);
     cmd_snapshot = last_cmd_;
     cmd_time = last_cmd_time_;
+    receipt = last_cmd_receipt_;
     command_received = cmd_received_;
   }
 
   // 超时保护：超过 setpoint_timeout_ 秒无新指令则停止发布。set_mode 服务
   // 不会触碰 cmd_time；旧命令必须自然过期，不能被模式切换续命。
   const auto elapsed = (now() - cmd_time).seconds();
-  if (!command_received || elapsed > setpoint_timeout_) {
-    return;  // 不发 setpoint，PX4 会在 OFFBOARD 模式下自动切回 POSITION
+  const double wall_elapsed = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - receipt).count();
+  if (!command_received || receipt == std::chrono::steady_clock::time_point{} ||
+      elapsed < 0.0 || elapsed > setpoint_timeout_ ||
+      wall_elapsed < 0.0 || wall_elapsed > setpoint_timeout_) {
+    return;  // 停流，由 PX4 已配置的 OFFBOARD-loss 行为处理，不假定某个模式。
   }
 
   switch (cmd_snapshot.control_mode) {
@@ -520,24 +583,25 @@ void MavlinkBridge::cb_arm_motors(
   std::shared_ptr<easyfly_msgs::srv::ArmMotors::Response>       res)
 {
   RCLCPP_INFO(get_logger(), "cb_arm_motors CALLED arm=%d", req->arm);
+  if (command_fault_) {
+    res->success = false;
+    res->message = "command_result_unknown: bridge fault locked; inspect remote state before restart";
+    return;
+  }
 
   auto mav_req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
   mav_req->value = req->arm;
 
-  if (!client_arming_->wait_for_service(std::chrono::seconds(3))) {
+  bool uncertain = false;
+  const auto mav_res = request_bounded<mavros_msgs::srv::CommandBool>(
+    client_arming_, mav_req, get_node_base_interface()->get_context(), uncertain);
+  if (!mav_res) {
+    if (uncertain) command_fault_.store(true);
     res->success = false;
-    res->message = "mavros /cmd/arming unavailable";
+    res->message = uncertain ? "command_result_unknown: MAVROS arming response unconfirmed" :
+      "mavros /cmd/arming unavailable or context stopped before send";
     return;
   }
-  auto future = client_arming_->async_send_request(mav_req);
-
-  if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-    res->success = false;
-    res->message = "arm/disarm request timed out";
-    return;
-  }
-
-  auto mav_res = future.get();
   res->success = mav_res->success;
   res->message = req->arm ? "armed" : "disarmed";
   RCLCPP_INFO(get_logger(), "Arm=%s → success=%d", req->arm?"true":"false", mav_res->success);
@@ -547,6 +611,11 @@ void MavlinkBridge::cb_set_flight_mode(
   const std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Request>  req,
   std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Response>       res)
 {
+  if (command_fault_) {
+    res->success = false;
+    res->message = "command_result_unknown: bridge fault locked; inspect remote state before restart";
+    return;
+  }
   auto mav_req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
 
   switch (req->flight_mode) {
@@ -564,20 +633,16 @@ void MavlinkBridge::cb_set_flight_mode(
       return;
   }
 
-  if (!client_set_mode_->wait_for_service(std::chrono::seconds(3))) {
+  bool uncertain = false;
+  const auto mav_res = request_bounded<mavros_msgs::srv::SetMode>(
+    client_set_mode_, mav_req, get_node_base_interface()->get_context(), uncertain);
+  if (!mav_res) {
+    if (uncertain) command_fault_.store(true);
     res->success = false;
-    res->message = "mavros /set_mode unavailable";
+    res->message = uncertain ? "command_result_unknown: MAVROS mode response unconfirmed" :
+      "mavros /set_mode unavailable or context stopped before send";
     return;
   }
-  auto future = client_set_mode_->async_send_request(mav_req);
-
-  if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-    res->success = false;
-    res->message = "set_mode request timed out";
-    return;
-  }
-
-  auto mav_res = future.get();
   res->success = mav_res->mode_sent;
   res->message = "mode=" + mav_req->custom_mode;
   RCLCPP_INFO(get_logger(), "SetMode → %s (success=%d)",

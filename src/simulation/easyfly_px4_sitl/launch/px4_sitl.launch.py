@@ -12,17 +12,15 @@ px4_sitl.launch.py — 启动 Gazebo Classic + PX4 SITL
   px4 (simulator_mavlink ↔ Gazebo mavlink_interface plugin via TCP 4560)
 
 环境要求:
-  - PX4-Autopilot 已编译 (默认按 ~/PX4-Autopilot-1.16.2、
-    ~/PX4-Autopilot-1.16.1、~/PX4-Autopilot 的顺序选择，可用 PX4_DIR 覆盖)
+  - 先显式运行 prepare_px4_hrt，生成项目局部仿真兼容版；缺少或指纹不匹配拒绝启动
+  - PX4_DIR 可指定已校验兼容输入或私有 staging，不允许静默回退未修补版本
   - Gazebo Classic 11 已安装 (gzserver / gzclient)
   - easyfly_gazebo_plugins 已编译 (MID-360 仿真插件 liblivox_laser_simulation.so)
 """
 
 import os
-from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
@@ -31,20 +29,13 @@ from launch.actions import (
 )
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
+from easyfly_px4_sitl.session_guard import guarded_launch
+from easyfly_px4_sitl.hrt_compatibility import select_px4_directory
 
 
 def _resolve_px4_dir():
-    """按 PX4_DIR > ~/PX4-Autopilot-1.16.2 > ~/PX4-Autopilot-1.16.1 >
-    ~/PX4-Autopilot 选择目录。"""
-    env = os.environ.get("PX4_DIR", "").strip()
-    if env:
-        return Path(env).expanduser()
-    for candidate in ("PX4-Autopilot-1.16.2", "PX4-Autopilot-1.16.1",
-                      "PX4-Autopilot"):
-        default = Path.home() / candidate
-        if default.exists():
-            return default
-    return Path.home() / "PX4-Autopilot"
+    """Use only the reviewed local compatibility build or its verified private staging."""
+    return select_px4_directory(os.environ.get("PX4_DIR", "").strip() or None)
 
 
 def generate_launch_description():
@@ -61,7 +52,8 @@ def generate_launch_description():
     pkg_px4_sitl      = get_package_share_directory("easyfly_px4_sitl")
     pkg_gazebo_models = get_package_share_directory("easyfly_gazebo_models")
     pkg_gazebo_worlds = get_package_share_directory("easyfly_gazebo_worlds")
-    pkg_gazebo_plugins = get_package_share_directory("easyfly_gazebo_plugins")
+    gazebo_plugins_lib = get_package_prefix("easyfly_gazebo_plugins") + "/lib"
+    gazebo_server = gazebo_plugins_lib + "/easyfly_gazebo_plugins/easyfly_gzserver"
 
     px4_dir = _resolve_px4_dir()
     px4_build = str(px4_dir / "build" / "px4_sitl_default")
@@ -72,7 +64,10 @@ def generate_launch_description():
     # launch 生成期抛 "can only concatenate str (not LaunchConfiguration)" (回归测试发现)
     world_file  = PathJoinSubstitution([pkg_gazebo_worlds, world_name])
     model_name  = "easyfly_iris"
-    model_sdf   = model_dir + "/" + model_name + "/" + model_name + ".sdf"
+    model_sdf_arg = DeclareLaunchArgument(
+        "model_sdf", default_value=model_dir + "/" + model_name + "/" + model_name + ".sdf",
+        description="Explicit simulation fixture SDF; default production Iris unchanged")
+    model_sdf = LaunchConfiguration("model_sdf")
 
     # ---- GAZEBO_MODEL_PATH ----
     px4_models_dir = str(
@@ -93,7 +88,7 @@ def generate_launch_description():
     # /opt/ros/humble/lib 必须包含: libgazebo_ros_init.so / libgazebo_ros_camera.so 等系统插件
     set_plugin_path = SetEnvironmentVariable(
         "GAZEBO_PLUGIN_PATH",
-        gazebo_plugin_dir + ":" + pkg_gazebo_plugins + "/lib:/opt/ros/humble/lib:" + os.environ.get("GAZEBO_PLUGIN_PATH", ""))
+        gazebo_plugin_dir + ":" + gazebo_plugins_lib + ":/opt/ros/humble/lib:" + os.environ.get("GAZEBO_PLUGIN_PATH", ""))
     # PX4 gazebo 插件依赖 libmav_msgs.so / libsensor_msgs.so 等, 位于 PX4 build_gazebo-classic
     set_ld_library_path = SetEnvironmentVariable(
         "LD_LIBRARY_PATH",
@@ -102,7 +97,7 @@ def generate_launch_description():
     # ---- 2. gzserver ----
     # -s libgazebo_ros_init.so: 加载 ROS2 时钟插件(SystemPlugin, 发布 /clock), 必须用 -s 方式加载
     gzserver = ExecuteProcess(
-        cmd=["gzserver", "--verbose", "-s", "libgazebo_ros_init.so", world_file],
+        cmd=[gazebo_server, "--verbose", "-s", "libgazebo_ros_init.so", world_file],
         output="screen",
         name="gzserver",
     )
@@ -112,7 +107,7 @@ def generate_launch_description():
     spawn_model = ExecuteProcess(
         cmd=[
             "gz", "model",
-            "--spawn-file=" + model_sdf,
+            ["--spawn-file=", model_sdf],
             "--model-name=" + model_name,
             "-x", "0.0",
             "-y", "0.0",
@@ -162,8 +157,9 @@ def generate_launch_description():
         actions=[gzclient, px4_sitl],
     )
 
-    return LaunchDescription([
+    actions = [
         world_arg,
+        model_sdf_arg,
         gzclient_arg,
         set_model_path,
         set_plugin_path,
@@ -171,4 +167,7 @@ def generate_launch_description():
         gzserver,
         spawn_delayed,
         gui_and_px4,
-    ])
+    ]
+    return guarded_launch(actions, {
+        gzserver: "Gazebo", px4_sitl: "PX4", spawn_model: "model spawn",
+    })

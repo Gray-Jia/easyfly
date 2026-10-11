@@ -1,0 +1,14 @@
+# Copyright 2026 EasyFly Project
+# SPDX-License-Identifier: Apache-2.0
+gimbal_control:
+  ros__parameters:
+    rate_deg_s: 45.0
+    pitch_min_deg: -90.0
+    pitch_max_deg: 90.0
+    yaw_min_deg: -180.0
+    yaw_max_deg: 180.0
+    roll_min_deg: -45.0
+    roll_max_deg: 45.0
+    observation_timeout_s: 0.5
+    connection_timeout_s: 0.5
+    update_rate_hz: 50.0

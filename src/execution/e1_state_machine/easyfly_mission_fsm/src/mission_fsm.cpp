@@ -16,7 +16,7 @@ static uint8_t phase(const std::string &type) {
   if(type=="hover") return MS::HOVER;
   if(type=="track") return MS::TRACK;
   if(type=="search") return MS::SEARCH;
-  if(type=="land") return MS::LAND;
+  if(type=="land" || type=="precision_land") return MS::LAND;
   return MS::WAYPOINT;
 }
 MissionFSM::MissionFSM(const rclcpp::NodeOptions &options):Node("mission_fsm",options) {
@@ -56,8 +56,8 @@ MissionFSM::~MissionFSM() {
   if(worker_.joinable()) worker_.join();
   sdk_->close(0); // unresolved remote ownership remains in SDK's self-owned drain
 }
-bool MissionFSM::state_ready() const {
-  const auto s=sdk_->state(); const auto &u=s.value;
+bool MissionFSM::state_ready(const easyfly_core::StateSnapshot &s) const {
+  const auto &u=s.value;
   return s.fresh && u.connected && u.pose_valid && u.battery_valid &&
     u.flight_mode!=6 && u.flight_mode!=7 &&
     std::isfinite(u.position_x) && std::isfinite(u.position_y) && std::isfinite(u.position_z) &&
@@ -89,7 +89,8 @@ void MissionFSM::safety_check() {
   }
   // LAND is expected only while executing our own land action.
   bool owned_land=false;
-  { std::lock_guard<std::mutex> lock(step_mtx_); owned_land=current_type_=="land"; }
+  { std::lock_guard<std::mutex> lock(step_mtx_);
+    owned_land=current_type_=="land" || current_type_=="precision_land"; }
   if(u.flight_mode==6) {stop("external_rtl_takeover"); cancel_current_step();}
   if(u.flight_mode==7 && !owned_land) {stop("external_land_takeover"); cancel_current_step();}
   if(!u.battery_valid || !std::isfinite(u.battery_remaining) || u.battery_remaining<0 || u.battery_remaining>1) {
@@ -110,12 +111,35 @@ void MissionFSM::safety_check() {
   }
 }
 rclcpp_action::GoalResponse MissionFSM::handle_mission_goal(
-  const rclcpp_action::GoalUUID &,std::shared_ptr<const ExecuteMission::Goal> goal) {
-  if(mission_active_ || shutdown_ || !state_ready()) return rclcpp_action::GoalResponse::REJECT;
+  const rclcpp_action::GoalUUID &uuid,std::shared_ptr<const ExecuteMission::Goal> goal) {
+  const auto identity=easyfly_core::goalIdentity(uuid);
+  if(mission_active_ || shutdown_) {
+    RCLCPP_WARN(get_logger(),"mission_admission reject=busy_or_shutdown goal_uuid=%s",identity.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  const auto snapshot=sdk_->state();
+  if(!state_ready(snapshot)) {
+    const auto &u=snapshot.value;
+    RCLCPP_WARN(get_logger(),
+      "mission_admission reject=state_not_ready goal_uuid=%s received=%d fresh=%d receipt_fresh=%d "
+      "source_time_valid=%d receipt_age=%.9f source_age=%.9f connected=%d pose_valid=%d "
+      "battery_valid=%d battery=%.9f mode=%u position_finite=%d",
+      identity.c_str(),snapshot.received,snapshot.fresh,snapshot.receipt_fresh,snapshot.source_time_valid,
+      snapshot.receipt_age_seconds,snapshot.source_age_seconds,u.connected,u.pose_valid,
+      u.battery_valid,static_cast<double>(u.battery_remaining),static_cast<unsigned>(u.flight_mode),
+      std::isfinite(u.position_x) && std::isfinite(u.position_y) && std::isfinite(u.position_z));
+    return rclcpp_action::GoalResponse::REJECT;
+  }
   const auto validation=validateMissionFile(goal->mission_file);
-  if(!validation.valid()) return rclcpp_action::GoalResponse::REJECT;
+  if(!validation.valid()) {
+    RCLCPP_WARN(get_logger(),"mission_admission reject=invalid_mission_file goal_uuid=%s",identity.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
   std::lock_guard<std::mutex> lock(mission_mtx_);
-  if(mission_active_.exchange(true)) return rclcpp_action::GoalResponse::REJECT;
+  if(mission_active_.exchange(true)) {
+    RCLCPP_WARN(get_logger(),"mission_admission reject=concurrent_goal goal_uuid=%s",identity.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
   accepted_steps_=validation.steps; stop_reason_.clear();
   cancel_requested_=false; rtl_triggered_=false; steps_completed_=0;
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
@@ -234,6 +258,9 @@ bool MissionFSM::execute_step(const MissionStep &s,int index,int total,std::shar
     g.center_x=s.center_x;g.center_y=s.center_y;g.area_width=s.area_width;g.area_height=s.area_height;
     g.search_altitude=s.altitude;g.search_speed=s.max_speed;g.search_pattern=s.search_pattern;
     operation=sdk_->search(g);
+  } else if(s.type=="precision_land") {
+    easyfly_msgs::action::PrecisionLand::Goal g; g.tag_id=s.tag_id; g.timeout=s.timeout;
+    operation=sdk_->precision_land(g);
   } else if(s.type=="land") operation=sdk_->land(easyfly_msgs::action::Land::Goal{});
   else {stop("unsupported_step"); return false;}
   {std::lock_guard<std::mutex> lock(step_mtx_);current_=operation;}
@@ -248,7 +275,9 @@ bool MissionFSM::execute_step(const MissionStep &s,int index,int total,std::shar
        (snapshot.action_terminal_received && snapshot.status!=Status::Succeeded)) break;
     if(snapshot.local_status!=easyfly_core::LocalStatus::Active) {stop("child_local_fault");break;}
     const auto u=sdk_->state().value;
-    if(u.flight_mode==7 && s.type!="land") {stop("external_land_takeover");break;}
+    if(u.flight_mode==7 && s.type!="land" && s.type!="precision_land") {
+      stop("external_land_takeover");break;
+    }
     if(s.type=="track" && s.duration>0 && accepted_at!=Clock::time_point{} &&
        std::chrono::duration<double>(Clock::now()-accepted_at).count()>=s.duration) {
       duration_cancel=true; operation->cancel(); break;

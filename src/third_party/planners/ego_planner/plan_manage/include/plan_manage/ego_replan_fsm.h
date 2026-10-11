@@ -87,6 +87,7 @@ namespace ego_planner
     std::string trajectory_ack_topic_{"trajectory_ack"};
     bool navigation_managed_{false};
     std::string navigation_session_id_;
+    std::string navigation_trajectory_session_id_;
     double navigation_max_velocity_{0.0};
     double original_manager_velocity_{0.0}, original_optimizer_velocity_{0.0};
     double navigation_requested_speed_{0.0};

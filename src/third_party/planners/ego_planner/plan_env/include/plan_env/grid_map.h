@@ -194,6 +194,7 @@ struct MappingData {
 };
 
 class PLAN_ENV_PUBLIC GridMap {
+  friend class GridMapDepthProjectionTestPeer;
 public:
   PLAN_ENV_PUBLIC GridMap() {}
   PLAN_ENV_PUBLIC ~GridMap() {}

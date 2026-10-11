@@ -16,6 +16,7 @@ struct MissionStep {
   double x{0.0}, y{0.0}, z{0.0}, yaw{0.0}, max_speed{2.0}, wait{0.0};
   double timeout{120.0}, duration{0.0}, acceptance_radius{0.5};
   int target_id{-1}, search_pattern{1};
+  int tag_id{-1};  // Formal YAML only; legacy grammar is unchanged.
   double follow_distance{2.0}, follow_height{0.0};
   double center_x{0.0}, center_y{0.0}, area_width{0.0}, area_height{0.0};
 };

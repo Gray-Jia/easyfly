@@ -1,7 +1,7 @@
 // EasyFly E2: 2D 栅格 A* + 视线剪枝 (M4.2, 纯逻辑 header, 无 ROS 依赖)
 //
 // 输入: 占据栅格 (来自 /occupancy_grid, 已含 semantic_map 的约 0.7m 安全膨胀)
-// 输出: 世界坐标航点序列 (odom 系, 元素为格子中心)
+// 输出: 世界坐标航点序列 (odom 系, 保留真实起点及精确目标, 中间点为格子中心)
 //
 // 设计:
 //   - 8 连通, 移动代价 1/√2, 欧氏启发式 (可采纳, 保证最优)
@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
+#include <limits>
 #include <queue>
 #include <utility>
 #include <vector>
@@ -197,6 +198,13 @@ inline AStarResult planPath(const OccupancyGrid2d & g,
   }
   std::reverse(raw.begin(), raw.end());
   raw[0] = {start_x, start_y};  // 首点用真实起点 (脱困偏移不回传)
+  // Keep the free goal-cell center as a safe approach, then include the exact
+  // requested endpoint BEFORE LOS pruning. Do not mutate a checked shortcut
+  // afterwards. The final within-cell segment stays inside the free goal cell.
+  // A same-cell path still needs both endpoints (and a real altitude action).
+  if (raw.size() == 1 || raw.back() != std::make_pair(goal_x, goal_y)) {
+    raw.emplace_back(goal_x, goal_y);
+  }
 
   // ---- 视线剪枝 (贪婪) ----
   std::vector<std::pair<double, double>> smooth;

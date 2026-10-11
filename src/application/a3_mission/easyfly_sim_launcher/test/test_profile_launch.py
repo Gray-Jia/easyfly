@@ -1,12 +1,13 @@
 """Expand profile launch actions without starting PX4, Gazebo or any node."""
 
 import importlib.util
+import inspect
 from pathlib import Path
 
 import pytest
 import launch.logging
 from launch import LaunchContext
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, IncludeLaunchDescription, TimerAction, OpaqueFunction
 from launch.utilities import normalize_to_list_of_substitutions, perform_substitutions
 from launch_ros.actions import Node
 from launch_ros.utilities import evaluate_parameters
@@ -83,6 +84,13 @@ def nested_entities(entities):
             yield from nested_entities(entity.actions)
         elif isinstance(entity, GroupAction):
             yield from nested_entities(entity.get_sub_entities())
+        elif isinstance(entity, OpaqueFunction):
+            # Inspect only our reservation closure. Never execute it: that would
+            # acquire a live lock and return real process-starting actions.
+            function = entity._OpaqueFunction__function
+            if function.__module__ == "easyfly_px4_sitl.session_guard":
+                actions = inspect.getclosurevars(function).nonlocals["actions"]
+                yield from nested_entities(actions)
 
 
 def expand_include(include, context):

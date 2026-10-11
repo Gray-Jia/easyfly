@@ -9,9 +9,14 @@
     + 2D 占据栅格 /occupancy_grid (供 M4.2 全局规划) + RViz markers。
   </description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
-  <license>MIT</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
@@ -31,6 +36,10 @@
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>rosgraph_msgs</test_depend>
+  <test_depend>sensor_msgs_py</test_depend>
+  <test_depend>gdb</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

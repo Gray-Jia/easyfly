@@ -31,6 +31,11 @@ ros2 launch easyfly_sim_launcher profile.launch.py profile:=navigation_dev
 - FollowTrajectory Goal、Bspline、TrajectoryAck、PositionCommand均追加 `navigation_session_id`。飞控在推进轨迹ID水位前检查会话一致；ACK也关联会话。空字符串仅用于未受管旧调试链，正常平台受管模式不接受空流。
 - EGO本次请求的速度保守换算成逐轴限值，并扣除既有可行性容差，作用于manager、optimizer和B-spline物理约束，使三维指令速度范数不超过请求值；高于配置上限或过小的请求拒绝，非正 `/navigate.max_speed` 使用2m/s默认。这不保证实际PX4反馈速度无超调。
 - STOP不绕过已有急停状态/ACK恢复门。急停后新START提供新的目标世代，但仍需重新确认匹配会话的停轨迹ACK、新鲜odom/cloud、稳定低速和保持时间。
+- EGO实时odom/可信cloud订阅只保留最新一帧（SensorDataQoS KEEP_LAST(1)），不
+  将可靠历史积压当作当前控制观测。源/接收新鲜度及丢流失败关闭不放宽。
+- STOP保留规划ID单调性，但清除本地已发布曲线的会话归属；新START不能将旧
+  非活动曲线当作正在执行的轨迹进行runtime扫描。新曲线仍过完整规划碰撞验证，
+  发布后恢复runtime检查；新鲜地图/odom失效检查及急停ACK规则保持启用。
 - `/planning/navigation_fault`发布关联会话的急停通知；协调器只终止匹配任务，公开结果为ABORTED / `planner_emergency_stop`，不等待EGO自行恢复后误报到达。
 - 受管模式强制禁用预设航点路径。局部终点位置/速度固定，refine后重新固定，仍执行原碰撞检查及最终三维速度上限检查；不通过放宽到达半径掩盖终点偏差。
 
@@ -51,3 +56,8 @@ ros2 launch easyfly_sim_launcher profile.launch.py profile:=navigation_dev
 ## 验证范围
 
 组件测试与短程软件闭环是D1开发验证，不能代替PX4动力学、真实定位、传感器噪声或G9–G11验收。具体实际命令、结果与未完成项以 `schedule-v4.md` 为准。
+
+2026-10-07追加真实PX4/Gazebo验收入口，支持三策略短程导航、运动中精确取消与
+再导航、地图生产者丢失，以及任务/区域搜索内层导航排空。调用和证据规则见
+[导航SITL说明](navigation-sitl.md)，逐场景结果见 `schedule-v4.md` 第20节。
+这是有界仿真补充，不是G9–G11、复杂障碍绕行或实机安全签收。

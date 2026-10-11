@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+from easyfly_lidar_camera_fusion.node import main
+main()

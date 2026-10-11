@@ -61,3 +61,11 @@ install(TARGETS livox_laser_simulation
 install(DIRECTORY scan_mode/
   DESTINATION share/${PROJECT_NAME}/livox_laser_plugin/scan_mode
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_livox_ray_geometry test/test_ray_geometry.cpp TIMEOUT 15)
+  target_include_directories(test_livox_ray_geometry PRIVATE include)
+  ament_target_dependencies(test_livox_ray_geometry gazebo_dev)
+  target_link_libraries(test_livox_ray_geometry ${GAZEBO_LIBRARIES})
+endif()

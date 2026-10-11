@@ -128,6 +128,54 @@ TEST_F(SdkTest, SearchUsesRealEndpointAndReportsTruthfulResult) {
   EXPECT_DOUBLE_EQ(operation->snapshot().feedback.numbers.at("targets_found"),3);
   EXPECT_TRUE(client.close(3));
 }
+TEST_F(SdkTest, PrecisionLandingWaitsForExactRecursiveRelease) {
+  using Precision = easyfly_msgs::action::PrecisionLand;
+  using Ownership = easyfly_msgs::srv::GetActionOwnership;
+  std::atomic<bool> released{false};
+  auto service = node->create_service<Ownership>("/precision_landing/ownership",
+    [&released](Ownership::Request::SharedPtr request, Ownership::Response::SharedPtr response) {
+      response->goal_id = request->goal_id;
+      response->state = released ? 2 : 1;
+    });
+  extra_servers.push_back(rclcpp_action::create_server<Precision>(node, "/precision_land",
+    [](const auto &, auto) {return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;},
+    [](auto) {return rclcpp_action::CancelResponse::ACCEPT;},
+    [this](auto handle) {
+      auto ticks = std::make_shared<int>(0);
+      auto timer = std::make_shared<rclcpp::TimerBase::SharedPtr>();
+      *timer = node->create_wall_timer(20ms, [handle, ticks, timer] {
+        auto f = std::make_shared<Precision::Feedback>();
+        f->phase = "land_handoff"; f->target_valid = true;
+        f->horizontal_error_m = .05; f->height_above_target_m = .3;
+        handle->publish_feedback(f);
+        if (++*ticks < 5) return;
+        auto result = std::make_shared<Precision::Result>();
+        result->success = false; result->message = "public_failure_child_pending";
+        handle->abort(result); (*timer)->cancel(); timer->reset();
+      });
+      timers.push_back(*timer);
+    }));
+  easyfly_core::ClientOptions options; options.require_managed_ownership = true;
+  easyfly_core::Client client(options);
+  for (int i = 0; i < 300 && !client.server_ready("precision_land"); ++i)
+    std::this_thread::sleep_for(10ms);
+  ASSERT_TRUE(client.server_ready("precision_land"));
+  Precision::Goal goal; goal.tag_id = 7; goal.timeout = 5;
+  auto op = client.precision_land(goal);
+  for (int i = 0; i < 300 && !op->snapshot().action_terminal_received; ++i)
+    std::this_thread::sleep_for(10ms);
+  ASSERT_TRUE(op->snapshot().action_terminal_received);
+  EXPECT_EQ(op->snapshot().status, Status::Failed);
+  EXPECT_FALSE(op->snapshot().success);
+  EXPECT_TRUE(op->snapshot().remote_execution_pending);
+  EXPECT_EQ(op->snapshot().feedback.strings.at("phase"), "land_handoff");
+  EXPECT_TRUE(op->snapshot().feedback.flags.at("target_valid"));
+  EXPECT_FALSE(op->wait(.05));
+  released = true;
+  ASSERT_TRUE(op->wait(3));
+  EXPECT_FALSE(op->snapshot().remote_execution_pending);
+  EXPECT_TRUE(client.close(3));
+}
 TEST_F(SdkTest, ManagedOwnershipRequiresExactReleaseAfterRealActionTerminal) {
   using Ownership=easyfly_msgs::srv::GetActionOwnership;
   std::atomic<bool> released{false}, wrong_echo{true};

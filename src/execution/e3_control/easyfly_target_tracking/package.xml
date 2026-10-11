@@ -9,7 +9,7 @@
     控制通道复用 flight_control 全部安全链 (渐近 setpoint/超时保护/接管检测)。
   </description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
-  <license>MIT</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

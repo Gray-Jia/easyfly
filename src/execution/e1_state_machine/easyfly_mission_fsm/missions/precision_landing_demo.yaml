@@ -1,0 +1,16 @@
+# Explicit D5 simulation configuration and valid fixed-camera tag are required.
+schema_version: 1
+frame_id: odom
+units: {position: m, angle: rad, time: s}
+failure_policy: abort
+steps:
+  - type: takeoff
+    altitude: 1.0
+    climb_speed: 0.3
+    timeout: 60
+  - type: hover
+    duration: 15
+    timeout: 20
+  - type: precision_land
+    tag_id: 7
+    timeout: 120

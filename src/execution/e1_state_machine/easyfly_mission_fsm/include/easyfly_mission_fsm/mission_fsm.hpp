@@ -31,7 +31,7 @@ class MissionFSM : public rclcpp::Node {
   void publish_status(uint8_t, const std::string &, int, int, float,
     bool success = false, const std::string &message = "");
   void feedback(uint8_t, const std::string &, int, int, float, std::shared_ptr<Handle>);
-  bool state_ready() const;
+  bool state_ready(const easyfly_core::StateSnapshot &) const;
   void stop(const std::string &reason);
   std::string reason() const;
   std::unique_ptr<easyfly_core::Client> sdk_;

@@ -1,0 +1,320 @@
+# D5：云台与精准降落
+
+范围：固定下视相机＋静止 AprilTag 36h11 板；独立模拟云台。没有实机、移动板、
+动态云台相机外参或 G9–G11 验收。用户确认的安全策略与实际验证见
+[schedule-v4 第11节](../../schedule-v4.md)。
+
+## 接口与所有权
+
+| 接口 | 语义 |
+|---|---|
+| `/gimbal/set_angle` | FLU角度，单位度；成功仅表示接受，真实运动看 `/gimbal/state` |
+| `/gimbal/set_tracking` | 显式目标ID，odom目标结合新鲜UAV姿态转FLU；只控制云台 |
+| `/gimbal/simulate_connection` | 仅模拟故障注入；恢复不复活旧命令 |
+| `/landing/guidance_target` | 原图像源时间、odom板中心/法向、标签ID与尺寸；仅观测，不是命令 |
+| `/precision_land` | PrecisionLand Action，tag_id＋steady总期限；真实阶段反馈/取消/终态 |
+| `/precision_landing/ownership` | 精确UUID，只有RELEASED代表动作槽排空，未知保持锁 |
+| `/trigger_landing` | 兼容启动入口，accepted不等于降落成功；不支持有限XY或自定速度 |
+
+飞控持有整个精准降落动作槽，拒绝重叠普通起降/航点/轨迹；不会用几个航点的间隙
+交出控制权。专用包的策略不发布setpoint；唯一 `/uav_command` 出口仍为飞控。
+稳定对准且实际高度进入显式收尾区间后，父动作提交带自己会话ID的真实普通Land子Goal。
+准入、接收及副作用前再次检查目标/状态/身份/取消。该内部会话字段是可信ROS图内
+协议，不是安全认证；不要让外部客户端伪造。
+
+取消只取消所属子Goal并等真实排空；拒绝取消、迟到准入、丢失结果不会假装释放。
+handoff后沿用普通Land取消：仅确认仍拥有新鲜AUTO.LAND时恢复OFFBOARD悬停；
+外部接管不抢回。已发送模式请求结果不明时停流、保留全局故障锁；动作ownership
+RELEASED不代表远端MAVROS命令结果已知。人工核查后重启，不自动重试/盲降/返航/上锁。
+
+## 几何、时间与配置
+
+LandingTarget沿链保留标签边长；检测、转换与飞控期望值必须一致。板中心使用完整
+`T_odom_base * T_base_optical * p_tag`，包含相机杆臂与飞机roll/pitch/yaw。
+光学Z不是离地高度；实际飞机相对板中心的odom Z差才用于下降/收尾。板法向由
+标签局部Z转换；允许法向符号相反，但要求单位法向和绝对倾角符合边界。首版不对齐飞机yaw。
+
+源图像与UAV状态按有限时间间隔配对；原源header/frame保持，不给旧观测重新打时间戳。
+若对应状态尚未到达，按用户确认的优化保留最多32帧有界待配对历史，每帧保留首次
+接收时刻；选择原有效期内且满足原状态配对窗口的最新可配帧，不外推车辆姿态。
+状态迟到后仍须满足原源年龄、原接收TTL及配对间隔；过期或失效立即清除，不能复活。
+等待期间不产生有效新目标；已有有效目标也只存活至原TTL，不续期。
+源时间必须为正；ROS源年龄与steady接收TTL都检查。飞控允许最多
+`min(0.2, target_max_age)` 秒小幅future，不允许回放/重复源时间推进稳定计数。
+冻结/回退/过期时间、无效状态和标签缺失传播invalid，不能用缓存继续下降。
+
+用户确认重复传输例外：仅对原始图像时间戳、frame、尺寸、编码、步长与像素数据
+完全一致，且原接收TTL/源年龄/时钟/标定仍有效的重复输入静默忽略。不发布新观测、
+不刷新原接收时刻、不推进稳定帧；同源异内容、倒序、过期或已失效上下文仍失效。
+诊断哈希不是生产准入的等值判据，生产使用完整字段与数据比较。
+
+无配置默认不可用。尺寸/ID/光学frame、单位相机四元数与FLU平移、静态plane Z、
+横向/下降速度、对准容差、收尾高度、最大高度/半径必须显式有效；readonly启动配置，
+D2参数服务不开放任意写入。显式 `d5_simulation.yaml` 只是仿真例子，launch检查
+跨节点一致性，各节点检查数值范围；启动不发Goal，也不默认启动第二个飞控。
+旧landing_dev仍是准备配置，不自动开启下降。
+
+用户追加确认显式收尾高度区间：`precision_handoff_height` 是实测交接门槛，
+`precision_descent_floor_height` 是下降指令目标下限，必须有限且
+`0.15 ≤ floor < handoff ≤ 1.0`，缺失任一边界拒绝启用。捆绑仿真例子为0.6/0.5m。
+该相机/板配置的floor视野检查包含白边、对准容差、标签倾角及边缘余量；旧0.3/0.2m
+存在画面裁切反例，不再作为当前例子。该检查不保证任意机体姿态或实际高度误差。
+避免把交接门槛同时当目标下限而依赖闭环误差穿越门槛。
+floor不保证实际飞机不下穿，捕获实测悬停与普通Land收尾也不是同一目标下限约束。
+新增参数需同步配置旧显式D5消费者；普通未启用飞控不受影响。
+
+获取→对准→连续新观测稳定→有条件下降→真实普通Land收尾。标签丢失立即停止下降，
+仍可信且拥有OFFBOARD时锁定首次失标的实测悬停点。重获必须连续五个独立有效观测，
+重复源时间不计数，失效打断连续计数；确认前不横移、不下降，也不重设悬停点或续期。
+丢失期限从首次失标计时，连续不稳定到期失败；确认后另需重新对准的独立观测。
+飞机状态
+失效/接管则停流，恢复反馈不复活旧动作。静止板位置与首次锚点比较，防止小步漂移累积。
+
+## 使用与迁移
+
+Python SDK新增 `precision_land(tag_id, timeout)`；C++为
+`precision_land(const PrecisionLand::Goal&)`。正式schema_version=1任务
+新增 `precision_land`＋显式tag_id，严格顺序/失败即终止。示例为
+`easyfly_mission_fsm/missions/precision_landing_demo.yaml`；不会成功后再额外追加Land。
+legacy任务语法不扩展。TriggerLanding有限XY/非默认速度拒绝，不静默忽略请求字段。
+
+新增PrecisionLand、LandingGuidanceTarget、SetGimbalTracking，以及Land Goal内部会话
+字段和LandingTarget尺寸元数据，需要同步重新编译easyfly_msgs及所有受影响客户端/服务端；
+普通Land字段默认空、原 `/navigate` 公共字段不变。
+
+## 验证分层
+
+2026-10-08电池专项后，D5仿真入口统一选择并验证项目局部PX4 HRT兼容版，
+缺少构建或指纹不匹配拒绝启动，不回退原安装；原私有rootfs保持隔离。
+见[电池专项构建说明](battery-sitl.md)。本次仅回归配置/隔离构建测试，
+不将此前使用原PX4的完整精降飞行结果追认成兼容版的全矩阵验收。
+
+2026-10-09当前版本的生命周期矩阵入口新增显式`--scenario`：
+`loss-recover`、`loss-persistent`、`cancel-descent`、`cancel-handoff`、
+`external-takeover`，全部必须同时给`--direct-action`；默认`nominal`
+不注入，默认启动仍不发送Goal。正常正式任务继续用`--mission`。
+
+每项使用新空目录、独立rootfs和既有DDS profile，串行执行，不与组件
+压力回归并行。失标夹具通过独立测试话题转发未改动的真实相机消息，再
+停止/恢复转发；检测/转换/飞控继续真实运行，不伪造目标，不改stamp、
+TTL或安全阈值。这验证观测断流，不是光照/真实遮挡鲁棒性。
+
+取消只取消当前精确handle；收尾取消还要唯一内部Land真CANCELED、父
+ownership同UUID RELEASED及新鲜OFFBOARD。外部接管仅在仿真实际下降
+后经MAVROS请求AUTO.LAND，须同时有mode ACK/新鲜模式反馈/精降ABORTED、
+父释放与上下游停流；不是生产指令旁路或RC/未知命令结果全矩阵。
+负向场景预期CANCELED/ABORTED不能写成降落成功，不自动追加Land/返航。
+持续失标的保持命令按真实lost_hold至最后保持反馈核对，动作失败后
+重新捕获安全悬停点另属终态处理，不把ownership查询等待并入失标窗口。
+
+```bash
+# 先创建新的空证据目录；此命令明确发起仿真飞行动作。
+ros2 run easyfly_sim_launcher d5_simulation \
+  --directory /绝对路径/新的空证据目录 \
+  --px4-dir /home/jia/PX4-Autopilot-1.16.2 \
+  --use-bundled-dds-profile --direct-action --scenario cancel-handoff
+```
+
+具体PASS/FAIL、入口运行版差异及未覆盖边界以schedule-v4第25节为准，
+不以之后通过删除并发组件回归期间的原输入时序FAIL。源码、飞控/PX4
+指纹及所属PID/start_ticks记录保留；新`passed`字段还要求子进程/残留
+检查，不能只看预期动作终态。历史semantic退出专项继续暂缓，不自动取栈。
+
+`--observer-rmw-diagnostics`仅记录observer原生接收/take与原始几何证据，
+不启用transform/flight的诊断日志，与`--transform-diagnostics`独立且
+默认关闭。camera/CameraInfo/tag及landing/guidance/state的wall时间只用于
+同机阶段归因，不参与飞行准入。开启后会改变观察者时序，不能以通过
+证明普通失败已修复；缺失/无效native字段保持未知。
+
+纯几何/策略、真实ROS进程、SDK/任务及mock MAVROS父子生命周期回归不能冒充完整
+图像飞行验收。真实图像SITL必须同时看到有效ID7标签、有效odom观测、对准/下降/
+handoff反馈、真实PrecisionLand成功与新鲜disarmed反馈。launch父进程0还须核对
+子节点异常日志、GDB、强制终止、残留与端口。单次仿真不认证实机精度或历史偶发退出故障。
+
+仿真夹具使用独立world和另生成的Iris下视相机，不覆写生产机型。标签为代码原生64格
+36h11 ID7，显式尺寸0.2m；相机安装/外参同步。使用现有PX4二进制，只读复用插件和
+启动脚本，必须显式 `px4 -w` 隔离rootfs，单改PX4_DIR不够。测试原始证据在本地
+artifacts归档，验收结果与失败过程登记在schedule-v4，不做系统升级。
+
+SMOKE支持 `--fixture-scale 2 --handoff-height 0.6 --descent-floor-height 0.5`，只放大
+生成的标签world和一致配置（0.4m黑边），同步倾斜板高于地面及预期odom平面；
+交接与floor必须同时显式给出。源world/生产机型保持不变。理想光照禁用阴影，
+不作为光照/遮挡/小标签鲁棒性证明；默认0.2m板配置不能由另一尺寸场景自动签收。
+
+诊断选项 `--unused-camera-rate 1` 仅将生成副本中未参与D5的前视彩色/深度相机
+降至1Hz；默认仍为30Hz，下视相机仍30Hz。保留全部物理结构、惯量、杆臂与激光雷达。
+它不修改生产机型或时间/安全门槛；该配置的通过不代表全传感器负载通过。
+SMOKE结果保留至多10000条观测时序（原source、ROS clock、steady elapsed），
+用于区分源过期、实际检测缺失与异步配对，记录不驱动飞机。
+
+正式任务验证使用 `--mission`：启动实际mission_fsm，正式YAML经SDK执行起飞、
+15秒hover、精准降落。计时hover不是稳定证据；测试另检查实测稳定状态。验收要求
+真实成功、3步complete、同一精降UUID的下降/交接、精确任务UUID RELEASED和新鲜disarmed。
+
+同机仿真需显式 `--dds-profile` 指向 `config/d5_fastdds.xml`：FastDDS SHM 64MiB，
+最大消息4MiB，保留UDPv4。测试启动前冻结profile并记录hash，整棵隔离进程树使用
+同一副本，不修改系统环境、QoS或源时间。此选项不是生产/跨机配置默认。
+转换时序诊断 `--transform-diagnostics` 默认关闭，只记录，不改变时间/准入门槛。
+
+当前签收：SITL23使用0.2m板/.6/.5m区间、三台相机原30Hz、显式DDS，正式任务
+完整链成功，3步完成、精确排空、新鲜disarmed及全部进程正常退出。精降至交接的
+222条观测全部有效；收尾及启动阶段仍有无效观测，不宣称全时段零失效。
+最终相对初始观测水平误差约.159m仅观测参考，非ground-truth精度。
+SITL14降负载通过、15/17传输失败、21时序滞后和22裁切失败等原始证据继续保留；
+21唯一根因未闭环。全算法负载/光照遮挡鲁棒性/长期稳定性及实机均未验收。
+详情与失败过程见schedule-v4第11节；真实设备暂缓，不自动进入D6。
+
+## 后续优化：统一入口与时序诊断（2026-10-06）
+
+安装入口为 `ros2 run easyfly_sim_launcher d5_simulation`，实际参数示例见
+[包README](../../src/execution/e3_control/easyfly_precision_landing/README.md)。
+默认仅启动，不发飞行Goal；`--mission` 或 `--direct-action` 才显式运动。
+必须给现存空证据目录、真实编译PX4源目录或带manifest的隔离staging，以及
+`--use-bundled-dds-profile` 或明确profile路径。`--prepare-only` 只准备输入，
+不启动Gazebo/PX4/ROS节点；源脚本和安装入口共享同一Python引擎，不再有两套参数逻辑。
+旧手工wrapper没有manifest，需重新准备，不能靠目录内有名为px4的文件绕过隔离检查。
+
+生成独立rootfs，实际wrapper显式-w/-s；源PX4参数不复制、不改写，共享启动脚本与
+插件仅作输入约定，不宣称OS只读挂载。跨节点配置先验证；DDS按语义/预算校验并冻结。
+拥有新仿真进程的独占预留marker、新clock之后才启动桥接/飞控，发现旧图则拒绝。
+防重失败实际只启动失败的simulation组，未启动第二套桥接/飞控；锁不是认证或跨UID保护。
+D5_READY只表示本轮地面启动状态可信，不代表全部感知或飞行准入已满足。
+
+SIGINT正常停启动模式；SIGTERM始终报告中止，二者均走有界清理及子进程退出检查。
+运动阶段尝试精确取消所属Goal并等待真实终态/ownership；不能因进程退出假定远端已停。
+实际S31悬停步骤SIGTERM确认所属任务CANCELED/status5、同UUID RELEASED，未追加Land。
+这不是handoff中断、准入未知或永久无回应的完整实飞覆盖；原组件取消反例仍保留。
+服务管理器应启动安装后的原生入口，或向其进程组发信号，不依赖ros2 run包装PID转发。
+
+时序诊断默认关闭，使用本机Humble原生一次take的RMW信息；只区分软件发布→接收→
+取出、回调耗时及车辆配对等待。ROS源年龄/steady TTL/配对窗口/失标门槛不变。
+系统wall时间不进入任何飞行判断，异常时间差为未知，不作为硬件采集时间。
+S24/S30正式任务成功且未重现S21；新增证据缩小本轮范围，但S21根因尚未闭环。
+不为了消除报错而改QoS、扩大有效期或重打源时间戳。后续定向复现应保留此诊断和旧证据。
+
+新增逐帧诊断（2026-10-07）：上述选项同时在生成配置中启用飞控只读
+`precision_timing_diagnostics`（生产默认false）。转换端记录原源stamp、generation、
+首次receipt、native take/回调入口、pending/selected配对、状态源及receipt、无效原因、
+实际publish起止和succeeded；飞控端记录原guidance源、RMW接收信息、回调入口、
+flight mutex等待、准入结果、session active/UUID。飞控入口不冒充native take，
+飞控generation为当前代、callback_generation为回调所属reader捕获代，保留退休边界。
+ready_at_exit不冒充控制循环实际使用。采集端保留receipt steady时间。
+
+两端事件环均硬上限256，累计dropped_events可见；Python采用1.05秒刷新周期，
+仍保留至少1秒间隔检查，退出时强制排空尾段，避免整秒定时器轻微提前导致跳过一轮。
+飞控退出前未刷新尾段可缺失。缺失/不支持/时间回退/有歧义的段落保持未知，不能填0；
+同源时间可能在clock回退后重用，关联还需generation、first receipt及事件顺序。
+跨进程steady差值仅在确认同机同时间原点时使用；接收可先于publish返回，
+采集端减publish_end可能为负，不表示负网络延迟。全部为诊断，不进入飞行准入。
+
+本轮组件22项观测CTest/9项飞控CTest通过，新增7组非飞行时序实验通过；但唯一
+带逐帧诊断的正式任务frame-mission.Drz8q5失败于landing_target_lost，未重试。
+精降窗口tag array184帧均detected，其中15个选定pose无效；指导132valid、37几何
+拒绝。132valid全部有完整转换及同一active动作的飞控接收链，源年龄-.088至.016秒、
+publish最大.118毫秒、飞控回调延迟小；这些有效帧没有复现旧有效流迟到现象。
+整轮转换事件drop1416/飞控0，不能声称无效帧与全轮trace完整。下一步需离线检查
+具体pose/平面拒绝原因，不放宽门槛；本次不签收模拟鲁棒性、不追认S21。完整失败、
+精确释放和正常清理结果见schedule-v4第16.1节及artifacts/d5-frame-timing-20261006/。
+
+## 本地观测队列超限恢复（2026-10-06）
+
+用户确认采用自动重建观测订阅，不采用需人工重启的观测故障锁。真实ROS定向测试
+复现了慢仿真时钟下callback receipt不含DDS取出前等待的缺口：阻塞.45秒，
+ROS源年龄约.045秒，旧目标原先仍可输出valid。修复不把RMW系统wall时间用于准入。
+
+state、target、watchdog入口均检查本地steady处理连续性；超过原source-age预算
+（默认.3秒）或steady时间倒退时，拒绝触发样本，清车辆历史、pending、last_good与
+receipt，保留已处理源stamp水位，发布invalid并重建两个显式VOLATILE reader。
+原depth10/1和可靠性不变，generation封装使已调度旧回调不能污染新证据；不用可能
+排队的ROS now建立虚假的采集屏障。查询不会续处理期限，新reader重新配对才恢复。
+
+控制层原失标停下降、首次失标位置保持、5帧重获和持续失标失败策略不变。
+持续处理超限可能导致保守失标/失败，不能用扩大TTL消除。该保护只覆盖本地处理
+中断后的队列隔离，不证明上游采集时钟或任意传输延迟安全，也未证明S21唯一根因。
+本轮只运行合成观测/真实ROS节点及组件回归，不启动PX4/Gazebo；组件Action用例
+使用合成反馈，不执行SITL或实机飞行。
+验收及修复前后证据见schedule-v4第13节，真实设备、UI及G9–G11继续暂缓。
+
+## 下游guidance接收与失标恢复链（2026-10-06）
+
+真实飞控＋DDS定向反例确认下游同类边界：接收callback group阻塞.45秒、ROS时钟
+只推进.045秒时，原guidance callback给旧目标重新设置steady receipt并判ready。
+按已确认自动恢复策略，飞控同接收组增加50ms处理进度watchdog，guidance callback
+及watchdog均在取得flight mutex后检查steady间隔。超原target_max_age（默认.3秒）
+先清valid/receipt，再重建原可靠depth1、显式VOLATILE guidance reader；退休generation
+不影响新证据，保留source水位、Policy及首次失标期限。仅控制timer继续运行不能
+掩盖reader组阻塞。重建异常清证据后传播、停止节点，不把它当正常重获。
+
+真实transform＋飞控＋显式合成反馈链已验证失标停止下降、首次悬停点不漂移；
+1–4个新独立帧保持reacquire_hold，第5个确认重获转align但仍不下降，之后重新
+满足独立对准帧数才恢复下降。持续失标得到真实ABORTED与匹配Goal UUID的RELEASED。
+没有盲降或追加Land/上锁。合成反馈不是飞机动力学或实机验证。
+同组进度保护不覆盖“组持续运行、某个topic单独饥饿”的任意延迟，也不证明上游
+采集或整个遥测链时间可信；S21唯一根因仍未闭环。组件及短时联调结果见schedule-v4
+第14节；不恢复UI、实机或G9长稳循环。
+
+本批新增保护后的一次同配置短时SITL正式任务失败于
+`landing_target_reacquisition_timeout`，未进入下降/普通Land收尾。失败窗口原始标签
+有效但guidance有效与过期交替；两端没有reader重建warning，不能直接归因于新增保护。
+所属任务精确释放且所有本轮进程正常退出，但这不是集成通过。下一项需定位源时间/
+车辆配对与过期交替，不扩大TTL或重获期限；原历史SITL23/30成功记录不替代本轮结果。
+
+## 有界安全配对优化（2026-10-06）
+
+用户已确认将最新单槽改为最多32帧短历史，原source/首次steady TTL（默认.3秒）和
+state_pair_gap（默认.1秒）不变。输入水位防重、独立输出水位防倒序；每次选择最新
+安全配对，发布后删掉所有更旧候选，保留更新待配帧。单条过期只剔除该条；非法新
+观测/状态、世界几何失败、clock失效或reader重建清历史，不通过旧帧回退绕过失效。
+图像尺寸/质量/光学姿态在入历史前检查；不修改飞控5帧重获后再次对准的规则。
+原latest_only测试迁移为经用户批准的新语义，保留原stamp、TTL和源单调保护。
+受控迟到流修复前0/90有效输出，修复后59/90，普通/诊断executor一致；这确认局部
+持续覆盖问题修复，不证明旧SITL过期交替或S21的唯一根因。组件与联调结果见
+schedule-v4第15节后续记录，不用一次诊断开启的成功覆盖历史失败。
+
+改后新增14项history边界/6项实际持续流回归通过，观测20项与飞控9项CTest通过。
+诊断默认关闭、原三相机30Hz/0.2m板/.6/.5m的一次正式任务SITL成功完成3步及
+align→descend→Land收尾，同UUID RELEASED和新鲜disarmed，所有所属进程正常退出。
+本轮控制窗口228个guidance均有效；这只是本轮短时仿真签收，不证明旧失败唯一
+根因、S21、上游采集、长期鲁棒性或实机全部闭环。完整证据见schedule-v4 §15.1。
+
+## 仿真高度基准修复与当前签收（2026-10-07）
+
+第16节FAIL的离线取证发现高度拒绝；统一仿真入口原先假定world→odom z=-.10m，
+但模型碰撞几何给base_link接地高度.055m，独立Gazebo真值实际约.054m，且PX4 odom
+起始高度会变。现在从完整已解析collision/include资产推算upright接地位置，并在
+disarmed/静止/新鲜状态下与独立world实体配对十个严格推进样本，至少1.8steady秒、
+offset span≤.03m、world ground span≤.005m，冻结median(odom_z-world_z)。标签平面
+采用倾斜cell顶部中心而非model原点；随后同步生成transform/flight参数并验证，才
+启动精降节点。原质量/几何/TTL/失标边界不改，不使用tag结果拟合平面，不在飞行
+过程中追随或重校准。未知或失效状态/查询、时钟回退、非静置模型拒绝启动。
+
+该校准只属于隔离统一仿真入口；单独launch和真实设备仍必须显式提供实际odom平面、
+外参和安全边界，不把仿真真值引入设备飞行。碰撞工具限定已知primitive/显式URI，
+未知include、mesh、frame、scale/非零included-model pose拒绝；不宣称通用SDF解析。
+`--prepare-only`的地面零odom配置仍是名义准备产物，不代表运行时reference通过。
+
+当前组件观测26项CTest通过（cppcheck2.7工具skip3项），飞控第一轮queue测试timeout
+已定位为测试夹具cancel先于worker实际spin的竞态；新增is_spinning同步及120ms延迟
+启动case后全9项通过，生产飞控逻辑不变。两轮正式任务均完成三步/精确RELEASED/
+新鲜disarmed/四组exit0及子失败空：诊断开启OXqqor控制guidance229valid+1倾角拒绝+
+1过期，无持续失标；默认关闭YT7636控制tag/raw/guidance各240帧全valid，无lost。
+不以再运行覆盖原FAIL或降低三相机30Hz/.2m板负载，也不把本轮签收追认成S21唯一
+原因、全负载长期鲁棒性或实机验收。完整原始证据与结果见schedule-v4第17节。
+
+## 原生输入时序诊断（默认关闭）
+
+隔离仿真入口可显式指定 `--ingress-timing-diagnostics`，仅为原
+landing_detection订阅/发布链保留最后8192条事件，退出后写入本次
+证据目录 `landing-ingress.tsv`。不在回调内写盘，不新增订阅或改变QoS；
+文件已存在则拒绝覆盖，元数据说明截断数。正常析构才保证落盘。
+该开关独立于 `--transform-diagnostics` 和 `--observer-rmw-diagnostics`，
+不隐含飞行授权；观测DDS出口仍需显式启用observer开关。wall时间只与
+wall比较，ROS源年龄只与同域ROS时间比较；native字段为0或时钟跳变时
+不能给出传输时延结论。MissionFSM准入拒绝日志使用实际决策快照，
+不把外部observer就绪或固定等待当内部SDK就绪证明。
+
+观察节点收到 SIGINT/SIGTERM 时仅请求退出当前单线程executor，回调
+返回后再停止executor、销毁节点、关闭context；两种诊断配置的次序
+一致。不会捕获或忽略正常执行的RuntimeError。真实native typed take
+紧邻两种信号的测试验证转换期间context有效；这只验证退出顺序，
+不代表已解决间歇观测延迟、所有历史退出故障或完整D5长期鲁棒性。

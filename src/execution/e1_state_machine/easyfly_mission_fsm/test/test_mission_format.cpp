@@ -40,3 +40,14 @@ TEST(MissionFormat, BudgetsAndStepCountAreBounded) {
   EXPECT_FALSE(validateMissionText(text + "- {type: land}\n").valid());
   EXPECT_FALSE(validateMissionText(prefix + "- {type: land, timeout: 3600}\n- {type: land, timeout: 3600}\n- {type: land}\n").valid());
 }
+TEST(MissionFormat, PrecisionLandingRequiresExplicitTagAndKeepsLegacyGrammar) {
+  auto value = validateMissionText(prefix + "- {type: precision_land, tag_id: 7, timeout: 30}\n");
+  ASSERT_TRUE(value.valid()) << value.error;
+  EXPECT_EQ(value.steps[0].tag_id, 7);
+  EXPECT_EQ(value.steps[0].timeout, 30);
+  for (const auto &bad : {"- {type: precision_land}\n",
+      "- {type: precision_land, tag_id: -1}\n", "- {type: precision_land, tag_id: 1.5}\n",
+      "- {type: precision_land, tag_id: 7, landing_speed: 1}\n"})
+    EXPECT_FALSE(validateMissionText(prefix + bad).valid());
+  EXPECT_FALSE(validateMissionText("type=precision_land\ntag_id=7\n").valid());
+}

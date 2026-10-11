@@ -1,0 +1,7 @@
+# Explicit identity; tracking drives only the gimbal, never the aircraft.
+bool enabled
+int32 target_id
+---
+# Acceptance, not proof that the device has reached the requested angle.
+bool success
+string message

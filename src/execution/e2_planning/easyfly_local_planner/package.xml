@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>E2: EGO-Planner 适配/编排 (M4.3) — launch 接线第三方 EGO 到 easyfly 数据链</description>
   <maintainer email="dev@easyfly.org">EasyFly Team</maintainer>
-  <license>MIT</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

@@ -12,11 +12,12 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchContext
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterFile
 from launch.utilities import perform_substitutions
@@ -70,11 +71,18 @@ def _load_entrypoint(path, module_name):
 
 
 def _iter_launch_entities(entities):
-    """Walk top-level and TimerAction-contained entities."""
+    """Inspect construction only; never execute returned simulator actions."""
     for entity in entities:
         yield entity
         if isinstance(entity, TimerAction):
             yield from _iter_launch_entities(entity.actions)
+        elif isinstance(entity, OpaqueFunction):
+            # The SITL reservation now precedes all real launch actions.
+            # Only materialize its description for this static clock-contract
+            # check: no lock, port probes, timers, or processes are executed.
+            with patch('easyfly_px4_sitl.session_guard.SessionReservation.acquire'):
+                returned = entity.execute(LaunchContext())
+            yield from _iter_launch_entities(returned or [])
 
 
 def _source_location(include):
