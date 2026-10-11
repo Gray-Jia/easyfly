@@ -54,7 +54,7 @@ from rclpy.parameter import Parameter
 from rclpy.signals import SignalHandlerOptions
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
-from easyfly_msgs.srv import GetActionOwnership
+from easyfly_msgs.srv import GetActionOwnership, GetCapabilities
 from gazebo_msgs.srv import GetEntityState
 from PIL import Image as CameraImage
 import yaml
@@ -117,7 +117,7 @@ def pose_details(pose):
 
 
 def geometry_details(message, selected_tag_id):
-    """Snapshot bounded calibration/selected-pose evidence only when requested."""
+    """Preserve bounded observer evidence, even without native timing diagnostics."""
     if isinstance(message, CameraInfo):
         return {"camera_info": {
             "frame_id": message.header.frame_id,
@@ -166,6 +166,36 @@ def exact_released(response, identity):
         and response.goal_id == identity
         and response.state == GetActionOwnership.Response.RELEASED
     )
+
+
+def takeoff_readiness_current(response, ros_now, query_elapsed):
+    """Require current read-only evidence, never a reservation or goal retry."""
+    if response is None or response.names != ['takeoff'] or response.implemented != [True]:
+        return False
+    if response.ready != [True] or len(response.details) != 1:
+        return False
+    header = response.header
+    source = header.stamp.sec * 1000000000 + header.stamp.nanosec
+    if (header.frame_id != 'odom' or header.stamp.sec < 0
+            or not 0 <= header.stamp.nanosec < 1000000000 or source <= 0 or ros_now <= 0
+            or not -.2 <= (ros_now - source) * 1e-9 <= 1.
+            or not 0 <= query_elapsed <= .3):
+        return False
+    try:
+        detail = json.loads(response.details[0])
+    except (ValueError, TypeError):
+        return False
+    return (isinstance(detail, dict) and detail.get('reason') == 'ready'
+            and detail.get('ready') is True and detail.get('flight_ready') is True
+            and detail.get('state_received') is True
+            and detail.get('clock_ns') == source
+            and type(detail.get('state_sequence')) is int
+            and detail['state_sequence'] > 0
+            and type(detail.get('state_source_ns')) is int
+            and detail['state_source_ns'] > 0
+            and -.2 <= (ros_now - detail['state_source_ns']) * 1e-9 <= 1.
+            and isinstance(detail.get('receipt_age_s'), (int, float))
+            and 0 <= detail['receipt_age_s'] + query_elapsed <= 1.)
 
 
 def complete_precision_chain(feedback):
@@ -419,6 +449,7 @@ def main():
         "motion_requested": not startup_only,
         "command_samples": [],
         "observation_samples": [],
+        "observation_geometry_details": True,
         "fixture": {
             "scale": args.fixture_scale,
             "transform_diagnostics": args.transform_diagnostics,
@@ -566,6 +597,8 @@ def main():
                 scenario.command(message)
             elif topic == "/uav_state":
                 scenario.state(message)
+            elif topic == "/flight_status":
+                scenario.flight_status(message)
         if topic == "/uav_state":
             ground_states.append((message, receipts[topic]))
         if topic == "/flight_status":
@@ -655,11 +688,10 @@ def main():
                 report["observation_samples"][-1]["rmw_timing"] = dict(
                     observer_timing[topic]
                 )
-            if observer_diagnostics:
-                report["observation_samples"][-1].update(
-                    geometry_details(message, config["landing_detection"][
-                        "ros__parameters"]["selected_tag_id"])
-                )
+            report["observation_samples"][-1].update(
+                geometry_details(message, config["landing_detection"][
+                    "ros__parameters"]["selected_tag_id"])
+            )
             if topic == "/camera_down/color/image_raw":
                 report["observation_samples"][-1][
                     "image_sha256"
@@ -710,6 +742,8 @@ def main():
         client = ActionClient(node, kind, name)
         try:
             wait(client.server_is_ready, 15)
+            if name in ("/takeoff", "/execute_mission"):
+                wait_takeoff_readiness()
 
             def feedback(event):
                 if hasattr(event.feedback, "phase"):
@@ -790,6 +824,37 @@ def main():
                 raise RuntimeError(name + ": real action did not succeed")
         finally:
             client.destroy()
+
+    def wait_takeoff_readiness():
+        client = node.create_client(GetCapabilities, "/platform/flight_control/capabilities")
+        samples = report.setdefault("takeoff_readiness_samples", [])
+        try:
+            wait(client.service_is_ready, 15)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                began = time.monotonic()
+                future = client.call_async(GetCapabilities.Request())
+                wait(future.done, min(3, max(.001, deadline - time.monotonic())))
+                response = future.result()
+                ended = time.monotonic()
+                clock = node.get_clock().now().nanoseconds
+                if len(samples) >= 1000:
+                    raise RuntimeError("takeoff readiness recorder capacity exhausted")
+                current = takeoff_readiness_current(response, clock, ended - began)
+                samples.append({
+                    "elapsed_s": ended - started, "clock_ns": clock,
+                    "query_elapsed_s": ended - began, "current_ready": current,
+                    "names": list(response.names) if response is not None else [],
+                    "ready": list(response.ready) if response is not None else [],
+                    "details": list(response.details) if response is not None else [],
+                })
+                if current and preflight_ready():
+                    report["takeoff_internal_ready"] = samples[-1]
+                    return
+                wait(lambda: time.monotonic() - ended >= .02, 1)
+            raise TimeoutError("flight controller internal Takeoff readiness not confirmed")
+        finally:
+            node.destroy_client(client)
 
     def wait_mission_release(handle):
         client = node.create_client(GetActionOwnership, "/mission/ownership")
@@ -976,10 +1041,8 @@ def main():
             precision_command,
         )
         wait(preflight_ready, 80)
-        # Ensure observer readiness is not mistaken for flight node DDS readiness.
-        end = time.monotonic() + 1.0
-        while time.monotonic() < end:
-            spin_once()
+        # Actual internal readiness is queried immediately before one goal send.
+        # Observer readiness and endpoint discovery alone are not that evidence.
         state = latest["/uav_state"]
         report["preflight"] = {
             "mode": state.flight_mode_name,

@@ -14,6 +14,7 @@
 #include "easyfly_flight_control/flight_controller.hpp"
 #include <cmath>
 #include <chrono>
+#include <sstream>
 #include <thread>
 
 namespace easyfly_flight_control
@@ -165,6 +166,13 @@ FlightController::FlightController(const rclcpp::NodeOptions & options)
 
   ctl_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   initialize_precision_landing();
+  srv_flight_capabilities_ = create_service<easyfly_msgs::srv::GetCapabilities>(
+    "/platform/flight_control/capabilities", [this](
+      easyfly_msgs::srv::GetCapabilities::Request::SharedPtr,
+      easyfly_msgs::srv::GetCapabilities::Response::SharedPtr response) {
+      std::lock_guard<std::recursive_mutex> lock(flight_mtx_);
+      *response = takeoff_readiness();
+    });
   timer_ctl_ = create_wall_timer(
     period, std::bind(
       &FlightController::control_loop,
@@ -712,18 +720,24 @@ void FlightController::control_loop()
 rclcpp_action::GoalResponse FlightController::handle_takeoff_goal(
   const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const Takeoff::Goal> g)
 {
+  std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
+  const auto readiness = takeoff_readiness();
   if (!std::isfinite(g->target_altitude) || !std::isfinite(g->climb_speed) ||
     g->target_altitude <= 0.0 || g->target_altitude > max_altitude_ ||
     g->climb_speed < 0.0 || g->climb_speed > max_horizontal_speed_)
   {
+    RCLCPP_WARN(
+      get_logger(),
+      "Takeoff admission rejected goal_uuid=%s reason=invalid_goal altitude=%.17g "
+      "climb_speed=%.17g snapshot=%s",
+      rclcpp_action::to_string(uuid).c_str(), g->target_altitude, g->climb_speed,
+      readiness.details.front().c_str());
     return rclcpp_action::GoalResponse::REJECT;
   }
-  std::chrono::steady_clock::time_point receipt;
-  const auto uav = get_uav(&receipt);
-  std::lock_guard<std::recursive_mutex> lk(flight_mtx_);
-  if (command_uncertain_ || precision_reserved_ || active_ != NONE || action_reserved_ ||
-    !flight_state_ready(uav, receipt) || uav.armed || uav.flight_mode > 7)
-  {
+  if (!readiness.ready.front()) {
+    RCLCPP_WARN(
+      get_logger(), "Takeoff admission rejected goal_uuid=%s snapshot=%s",
+      rclcpp_action::to_string(uuid).c_str(), readiness.details.front().c_str());
     return rclcpp_action::GoalResponse::REJECT;
   }
   action_reserved_ = true;
@@ -1480,6 +1494,76 @@ bool FlightController::state_evidence_fresh(
   const double source_age =
     (current - rclcpp::Time(uav.header.stamp, current.get_clock_type())).seconds();
   return source_age >= -0.2 && source_age <= 1.0;
+}
+
+easyfly_msgs::srv::GetCapabilities::Response FlightController::takeoff_readiness() const
+{
+  std::chrono::steady_clock::time_point receipt;
+  uint64_t sequence;
+  const auto uav = get_uav(&receipt, &sequence);
+  const bool flight_ready = flight_state_ready(uav, receipt);
+  const auto clock = now();
+  const auto steady = std::chrono::steady_clock::now();
+  const bool received = state_received_.load();
+  const bool fault = command_uncertain_.load();
+  const bool context_ok = rclcpp::ok(get_node_options().context());
+  const bool stamp_valid = uav.header.stamp.sec >= 0 &&
+    uav.header.stamp.nanosec < 1000000000U &&
+    (uav.header.stamp.sec != 0 || uav.header.stamp.nanosec != 0);
+  const int64_t source = static_cast<int64_t>(uav.header.stamp.sec) * 1000000000LL +
+    uav.header.stamp.nanosec;
+  const double source_age = static_cast<double>(clock.nanoseconds() - source) * 1e-9;
+  const bool receipt_present = receipt != std::chrono::steady_clock::time_point{};
+  const double receipt_age = receipt_present ?
+    std::chrono::duration<double>(steady - receipt).count() : -1.0;
+  const bool numeric_valid = std::isfinite(uav.position_x) &&
+    std::isfinite(uav.position_y) && std::isfinite(uav.position_z) &&
+    std::isfinite(uav.yaw) && std::isfinite(uav.velocity_x) &&
+    std::isfinite(uav.velocity_y) && std::isfinite(uav.velocity_z);
+  const bool ready = !fault && !precision_reserved_ && active_ == NONE &&
+    !action_reserved_ && flight_ready && !uav.armed && uav.flight_mode <= 7;
+  const char * reason = "ready";
+  if (fault) {reason = "command_uncertain";} else if (precision_reserved_) {
+    reason = "precision_reserved";
+  } else if (active_ != NONE || action_reserved_) {reason = "busy";} else if (!flight_ready) {
+    if (!received) {reason = "state_not_received";} else if (!context_ok) {
+      reason = "context_unavailable";
+    } else if (!uav.connected) {reason = "disconnected";} else if (!stamp_valid) {
+      reason = "source_stamp_invalid";
+    } else if (!receipt_present || receipt_age < 0.0 || receipt_age > 1.0) {
+      reason = "receipt_stale_or_missing";
+    } else if (clock.nanoseconds() <= 0) {reason = "clock_not_initialized";} else if (
+      source_age < -0.2 || source_age > 1.0)
+    {
+      reason = "source_stale_or_future";
+    } else if (!uav.pose_valid || !uav.attitude_valid) {
+      reason = "pose_or_attitude_invalid";
+    } else if (!numeric_valid) {
+      reason = "nonfinite_state";
+    } else {reason = "flight_state_not_ready";}
+  } else if (uav.armed) {reason = "already_armed";} else if (uav.flight_mode > 7) {
+    reason = "unsupported_mode";
+  }
+  std::ostringstream details;
+  details << std::boolalpha << "{\"reason\":\"" << reason << "\",\"ready\":" << ready
+          << ",\"flight_ready\":" << flight_ready << ",\"state_received\":" << received
+          << ",\"state_sequence\":" << sequence << ",\"state_source_ns\":" << source
+          << ",\"clock_ns\":" << clock.nanoseconds() << ",\"source_age_s\":" << source_age
+          << ",\"receipt_age_s\":" << receipt_age << ",\"connected\":" << uav.connected
+          << ",\"pose_valid\":" << uav.pose_valid << ",\"attitude_valid\":" << uav.attitude_valid
+          << ",\"numeric_valid\":" << numeric_valid << ",\"armed\":" << uav.armed
+          << ",\"mode\":" << static_cast<int>(uav.flight_mode) << ",\"active\":" << active_
+          << ",\"action_reserved\":" << action_reserved_
+          << ",\"precision_reserved\":" << precision_reserved_
+          << ",\"command_uncertain\":" << fault << ",\"context_ok\":" << context_ok << "}";
+  easyfly_msgs::srv::GetCapabilities::Response response;
+  response.header.stamp = clock;
+  response.header.frame_id = "odom";
+  response.names = {"takeoff"};
+  response.implemented = {true};
+  response.ready = {ready};
+  response.details = {details.str()};
+  return response;
 }
 
 // Q4: 反馈值毛刺守卫 — 与渐近值偏差 <3m (正常飞行中飞机紧跟 ramp) 才采信,

@@ -95,15 +95,40 @@ legacy任务语法不扩展。TriggerLanding有限XY/非默认速度拒绝，不
 `external-takeover`，全部必须同时给`--direct-action`；默认`nominal`
 不注入，默认启动仍不发送Goal。正常正式任务继续用`--mission`。
 
+新增其它模式的显式场景：`external-posctl-descent`、
+`external-posctl-handoff`、`external-rtl-descent`、`external-rtl-handoff`。
+分别在真实descend/OFFBOARD或land_handoff/AUTO.LAND且唯一内部Land
+Executing时请求POSCTL/AUTO.RTL；同样必须指定`--direct-action`。
+实现及各场景实际PASS/FAIL以schedule-v4第33节为准，入口存在不代表
+已验收全部场景。不会改变生产飞控模式切换、安全阈值或追加恢复动作。
+
 每项使用新空目录、独立rootfs和既有DDS profile，串行执行，不与组件
 压力回归并行。失标夹具通过独立测试话题转发未改动的真实相机消息，再
 停止/恢复转发；检测/转换/飞控继续真实运行，不伪造目标，不改stamp、
 TTL或安全阈值。这验证观测断流，不是光照/真实遮挡鲁棒性。
 
+飞行入口在发现Action服务后、唯一Goal提交前查询飞控自己的
+`/platform/flight_control/capabilities`，保留内部就绪快照及查询时延；
+外部状态、固定等待和服务发现不再作为飞控内部首帧/clock的证明。
+响应与原始状态必须新鲜，查询超时则不提交Goal；不重发被拒绝或
+结果不明的飞行Goal。查询不占用控制权，实际Takeoff准入仍重新校验。
+
+2026-10-11第34节接续：真实ROS反例验证缺state／clock仍拒绝、查询
+无指令副作用、旧源新receipt不续期；新就绪流程已跨过真实起飞
+准备阻断。AUTO.RTL下降与普通Land收尾两阶段真实SITL及独立审计
+通过，精确父释放／子真ABORTED结果／新鲜独立模式／上下游停流／
+进程清理均核对。这是接管负向验收，不是返航降落成功或实机验收。
+POSCTL因仿真没有有效manual输入被PX4临时拒绝，按用户决定暂缓，
+不注入手动流、不改参数或关闭保护；原FAIL保留。间歇失标仍未关闭。
+
 取消只取消当前精确handle；收尾取消还要唯一内部Land真CANCELED、父
-ownership同UUID RELEASED及新鲜OFFBOARD。外部接管仅在仿真实际下降
-后经MAVROS请求AUTO.LAND，须同时有mode ACK/新鲜模式反馈/精降ABORTED、
-父释放与上下游停流；不是生产指令旁路或RC/未知命令结果全矩阵。
+ownership同UUID RELEASED及新鲜OFFBOARD。原外部接管场景在仿真实际
+下降后经MAVROS请求AUTO.LAND；其它模式场景还覆盖普通Land收尾。
+`SetMode.mode_sent`只是MAVROS已发送SET_MODE，不是FCU COMMAND_ACK。
+必须独立原始FlightStatus与UAVState均新鲜且匹配请求模式，原始模式
+源比注入前推进，精降真ABORTED、精确父释放及上下游停流；收尾还要
+唯一内部Land精确UUID的GetResult返回ABORTED/false及接管原因。
+不是生产指令旁路或RC/未知命令结果全矩阵。
 负向场景预期CANCELED/ABORTED不能写成降落成功，不自动追加Land/返航。
 持续失标的保持命令按真实lost_hold至最后保持反馈核对，动作失败后
 重新捕获安全悬停点另属终态处理，不把ownership查询等待并入失标窗口。
@@ -369,6 +394,15 @@ cpplint/uncrustify/cppcheck，GoogleTest宏使用系统库配置解析，
 schedule-v4第31节。这不代表全仓lint或长期鲁棒性完成。
 
 ## 原生输入时序诊断（默认关闭）
+
+仿真观察器的普通记录现在也保留所选标签的独立valid/reason、
+最多两个所选标签的位姿、LandingTarget位姿和CameraInfo标定；
+`observation_geometry_details=true`标识该记录版本。数组的detected
+不代表所选标签位姿可信。仍复用原订阅及10000条记录上限，
+不自动开启以下原生诊断、不改变飞行准入；这些是observer所见，
+不能重建控制端实际接收次序或转换选中的状态配对。
+第32节两次任务约8.30/8.40s进入交接、均未复现间歇失标，
+只证明本轮通过及记录生效，不证明历史问题消失或性能修复。
 
 隔离仿真入口可显式指定 `--ingress-timing-diagnostics`，仅为原
 landing_detection订阅/发布链保留最后8192条事件，退出后写入本次

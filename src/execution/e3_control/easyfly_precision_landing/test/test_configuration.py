@@ -105,6 +105,82 @@ def test_diagnostic_selected_tag_validity_is_not_array_validity():
     assert geometry_details(camera, 7)["camera_info"]["k"] == list(camera.k)
 
 
+def test_observer_geometry_snapshot_is_bounded_and_detached():
+    """Retain rejection evidence without altering input or accepting duplicate tags."""
+    from easyfly_precision_landing.simulation import geometry_details
+    from easyfly_msgs.msg import LandingTarget, TagObservation, TagObservationArray
+    from sensor_msgs.msg import Image
+
+    array = TagObservationArray(valid=True, reason="detected")
+    array.observations = [
+        TagObservation(tag_id=7, valid=False, reason="pose_ambiguous")
+        for _ in range(3)
+    ] + [TagObservation(tag_id=8, valid=True, reason="pose_valid")]
+    details = geometry_details(array, 7)
+    assert details["selected_tag_count"] == 3
+    assert len(details["selected_tags"]) == 2
+    assert geometry_details(array, 9) == {"selected_tag_count": 0, "selected_tags": []}
+    array.observations[0].reason = "changed"
+    array.observations[0].pose.position.z = 3.0
+    assert details["selected_tags"][0]["reason"] == "pose_ambiguous"
+    assert details["selected_tags"][0]["position"][2] == 0.0
+    target = LandingTarget(valid=False, reason="tag_pose_invalid", tag_id=7)
+    assert geometry_details(target, 7)["landing_pose"]["tag_id"] == 7
+    assert not target.valid
+    assert geometry_details(Image(), 7) == {}
+
+
+@pytest.mark.parametrize('fault', [
+    'none', 'not_ready', 'wrong_name', 'unimplemented', 'old_response', 'late_query',
+    'zero_clock', 'wrong_frame', 'bad_stamp', 'bad_json', 'missing_state', 'zero_source',
+    'clock_mismatch', 'negative_query', 'old_state_source', 'old_internal_receipt',
+])
+def test_takeoff_requires_current_internal_response(fault):
+    """Discovery, delayed replies and malformed readiness cannot authorize a goal."""
+    import json
+    from easyfly_msgs.srv import GetCapabilities
+    from easyfly_precision_landing.simulation import takeoff_readiness_current
+
+    response = GetCapabilities.Response(names=['takeoff'], implemented=[True], ready=[True])
+    response.header.frame_id = 'odom'
+    response.header.stamp.sec = 10
+    detail = {'reason': 'ready', 'ready': True, 'flight_ready': True, 'state_received': True,
+              'clock_ns': 10000000000, 'state_sequence': 2, 'state_source_ns': 9900000000,
+              'receipt_age_s': .01}
+    ros_now, elapsed = 10000000000, .01
+    if fault == 'not_ready':
+        response.ready = [False]
+    elif fault == 'wrong_name':
+        response.names = ['precision_landing']
+    elif fault == 'unimplemented':
+        response.implemented = [False]
+    elif fault == 'old_response':
+        ros_now += 1100000000
+    elif fault == 'late_query':
+        elapsed = .31
+    elif fault == 'zero_clock':
+        ros_now = 0
+    elif fault == 'wrong_frame':
+        response.header.frame_id = 'world'
+    elif fault == 'bad_stamp':
+        response.header.stamp.nanosec = 1000000000
+    elif fault == 'missing_state':
+        detail['state_received'] = False
+    elif fault == 'zero_source':
+        detail['state_source_ns'] = 0
+    elif fault == 'clock_mismatch':
+        detail['clock_ns'] += 1
+    elif fault == 'negative_query':
+        elapsed = -.01
+    elif fault == 'old_state_source':
+        detail['state_source_ns'] = 8000000000
+    elif fault == 'old_internal_receipt':
+        detail['receipt_age_s'] = 1.
+    response.details = ['bad' if fault == 'bad_json' else json.dumps(detail)]
+    assert takeoff_readiness_current(response, ros_now, elapsed) is (fault == 'none')
+    assert not takeoff_readiness_current(None, ros_now, elapsed)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

@@ -19,6 +19,17 @@ Humble's slow-version override is scoped to this small cppcheck test, so an
 installed cppcheck 2.x is checked rather than silently counted as skipped.
 This is not a whole-workspace lint certification.
 
+## Takeoff readiness
+
+`/platform/flight_control/capabilities` is a read-only Takeoff readiness query.
+Its existing GetCapabilities response names `takeoff`; `details[0]` retains a
+JSON decision snapshot (original state source/receipt, clock, validity and locks).
+It uses the same state/ownership predicate as Takeoff admission, but does not
+validate a specific goal, reserve control, clear faults or send flight commands.
+The actual goal and accepted handler still recheck current evidence. A ready
+response is not permission to bypass them. Rejected Takeoff requests log their
+UUID and actual decision snapshot, including invalid goal parameters.
+
 ## Precision landing configuration
 
 Precision landing is disabled by default. Enable only an explicitly configured

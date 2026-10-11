@@ -4047,3 +4047,283 @@ current_two_scenario_regression_passed=true，missing_formal_cases=[]，
 第30节第1项在桥接/飞控两包C++范围关闭，不声称全仓全部lint清零。
 下一项可安排精降间歇失标/耗时定位，但本轮没有自动开始。未提交
 或推送新git，用户的.codex三文件及codex_cli.sh删除保持原样。
+
+## 32. 精准降落间歇失标与耗时定位（进行中，2026-10-11）
+
+用户要求提交第31节并开始下一项；第31节已提交db96a96，未push，
+用户.codex/CLI改动排除。当前专项仅主agent，证据根
+artifacts/d5-stability-20261011.MoZmPh/。目标：按实际图像/源时间/
+转换/飞控接收/控制阶段区分失效原因与等待时长，再选择有证据的
+改进；不先验认定PID不足，不开发独立控制器或接入加速度前馈，
+不放宽TTL/.1s配对/五帧重获/2s失标/.08m对准等既有门槛。
+
+验收标准：先保存普通诊断关闭记录的精降阶段指标、间歇invalid
+及上下游关联；独立诊断须记录开关/运行指纹、是否截断及可观察
+边界，不能把observer先后当作控制端已收到。若发现确定软件缺口，
+先建立组件反例后修复，补安全负向与普通诊断关闭仿真对照；若
+不能复现或缺关键证据，保留未知，不无限盲复跑或宣称修复。
+旧Gazebo/EGO/semantic崩溃、UI、实机与G9后复验继续暂缓。
+
+初步：第31节普通任务从align到首次交接约24.85s（非第29节另一
+轮的34.8s）。约46.8–52.4s阶段反复lost_hold/reacquire_hold，
+之后多次在handoff_wait_mode与align间切换，63.38s交接。这个
+阶段耗时不能全算模式等待；需分别核对观测失效、实际横向误差
+与模式源屏障重置。原普通轮无几何/原生诊断，暂不判断唯一原因。
+
+32.1 历史离线定位：最近普通轮24.8519s中align16.5017s、
+descend5.0503s、handoff_wait_mode.9501s、lost_hold.7000s、
+reacquire_hold1.6498s；另一原版本普通轮34.7993s，不能混作当前
+重复试验。两轮失标附近数组常仍detected，但landing_target出现
+tag_pose_invalid、guidance出现geometry_or_plane_invalid；需要
+区分所选标签位姿拒绝与实际板高/法向拒绝，不能以数组valid作
+位姿可信证明。缓存清空后source=0的expired_or_clock_invalid也
+不能单独证明DDS传输过期。保存baseline-analysis.json及脚本。
+
+32.2 全时序诊断一次：mission-diagnostic，生产飞控/桥接/转换/
+感知/PX4指纹与第31节一致，三诊断显式开启；任务
+04c3ed306d964e75bb76f424efe68d51真4/true/三步完成，精降
+d3879a6ea82345646b676f2870efc413精确释放；新鲜disarmed，
+4组exit0、child失败空、leftovers空。align至首次Land交接
+8.2973s，无lost/reacquire；交接前observer未见所选标签位姿拒绝
+或几何拒绝。两生产时序环均0dropped、转换0reset，未截断。
+现有frame分析工具窗口含交接后的反馈，其212条完整匹配链的
+源年龄最大52ms、publish结束到flight入口最大.233ms；这些数
+不追认为历史FAIL的延迟原因，也不把交接后的no_tags算成下降失标。
+
+离线重放历史46张约每秒留一张的PNG，复用当前真实tag_core helper，
+生产SUBPIX模式32个有标签样本位姿有效，未复现pose/geometry拒绝；
+其余帧没有标签。未细化角点的反例有重投影/倾角拒绝，因此不移除
+已有SUBPIX。标定来自32.2另一轮CameraInfo，明确非原轮标定认证；
+配对状态也只是稀疏近邻假设。PNG没有捕获每个失效帧，不能据此
+认定历史拒绝错误或整个原轮位姿都有效。
+
+32.3 修补可观察性缺口：原普通记录把数组detected与所选标签
+pose状态混淆，详细标签原因/位姿及CameraInfo只在原生诊断时保存。
+现改为原有仿真observer默认保留geometry_details：所选总数、最多
+两个所选标签valid/reason/size/reprojection/pose，以及LandingTarget
+位姿、CameraInfo；标记observation_geometry_details=true。
+订阅数量、QoS、10000上限、PNG抽样及生产控制均不变。组件补验
+detected但pose_ambiguous、重复标签不截断计数、只保存两个详细
+样本、无选中标签及快照不改变原消息；相关89项pytest通过，改动
+Python flake8/pep257通过，包构建通过。
+
+普通三诊断关闭的一次验证mission-observer-details：observer新源码
+0653cab973dc83c3fc8ad0b63b594d8e093c1233e1ece82e286fc6c264dd64c2，
+生产二进制/转换仍原指纹；任务c635e1a6f7e5412d9e96e60badbd0da0
+真4/true/三步完成，精降d14eb7d0f876bd55a7640558300206a2
+精确释放，新鲜disarmed源年龄.1s/receipt.0478s，4组exit0、
+child失败及leftovers空。8.3997s交接（align2.8499/descend5.2500/
+mode_wait.2999），无lost/reacquire、无交接前标签或几何拒绝；
+5574条观测未达上限，实测标定/所选位姿默认留存生效。
+final-audit.json独立复核两轮精确终态/释放/参数/指纹/所属PID与
+start_ticks全部消失。该轮与部分组件CTest同时运行，主机负载不是
+与历史等条件对照；不能以8.40s比24.85s宣称性能优化已完成。
+
+32.4 回归发现与处理：首次全包CTest 28/29，队列测试
+test_reader_queue_age_and_burst[1-.45-False-True]在注入阻塞前失败，
+inputs空，实际日志只有state入口、无target入口。原失败log与
+evidence.json另存timing-queue-original-failure，未删除；单独未改版
+复验6个场景通过。无法唯一判断底层丢帧时机，但测试准备确有
+“graph discovery后一个best-effort样本必达”的不成立假设。
+仅将测试基线准备改为有总期限的持续新鲜观测，收到实际有效源
+再注入阻塞，并保存readiness_sources及baseline_confirmed_sources。
+正式阻塞仍严格发送1或8个源，原过期/停顿/最新帧/恢复断言保留，
+不重试飞行动作、不修改生产节点或放宽测试期限。
+
+修正后串行CTest的21项行为测试全部通过（含6个队列参数场景），
+另6项实际lint通过；本agent新加嵌套函数缺少空行导致flake8一次
+FAIL，原日志保留，补空行后全包flake8及三改动Python的flake8/
+pep257复验通过。cppcheck CTest返回0但XML有3项skip（本包仍是
+原版本慢检查跳过配置），不计为实际静态分析通过，不扩大第31节
+桥接/飞控两包已清零的范围。第二轮原console完整保留在
+precision-tests-after-readiness.log，最终lint结果另存flake8-final.log
+和changed-python-lint-final.log，不覆盖任何先前FAIL。
+
+另有一次入口命令因证据子目录未预建而FileNotFoundError，发生在
+启动任何仿真进程之前；原console日志保留，创建新空目录后才执行
+上述唯一普通飞行，不将入口准备失败统计成飞行FAIL或自动重试。
+
+当前结论：可观察性及测试准备缺口已改善，历史间歇失标/耗时
+尚未复现及唯一归因，不关闭该性能问题。暂不引入滤波、放宽位姿
+歧义/板面/对准阈值或改控制器；不继续无差别飞行复跑。下次普通
+验证若再发生，可直接按所选pose原因和源关联选择有反例的修复。
+本项新改动尚未提交/push，用户.codex与CLI改动保持原样。
+
+## 33. 精准降落 POSCTL／AUTO.RTL 外部接管矩阵（进行中，2026-10-11）
+
+用户批准开始第30节第3项中的其它外部模式接管，顺序为POSCTL下降、
+POSCTL普通Land收尾，再AUTO.RTL两阶段。仅主agent，新证据根
+artifacts/d5-takeover-matrix-20261011.P2jWfb/。第32节未提交改动
+保留；不恢复历史崩溃、UI、实机、G9后复验，不扩展未知命令结果
+或复杂障碍专项。精降间歇失标仍未关闭，沿用新增默认观测记录。
+
+目标与验收：真实新鲜阶段/精确UUID/armed/可信位置及独立模式
+证据准入后，仅一次MAVROS SetMode请求；mode_sent只是SET_MODE
+已发送，不是FCU COMMAND_ACK，须新鲜原始FlightStatus与聚合UAVState
+共同确认请求模式，原始模式源比注入前推进。下降接管必须父真
+ABORTED/false且没有内部Land；收尾接管须唯一Executing内部Land，
+之后对精确UUID查询GetResult获真ABORTED/false及对应接管原因，父
+真ABORTED/false与精确释放。注入前实测位置输出正向基线，确认后
+至少2.5s观察，平台+.5s／四下游+1.5s均无输出，不重新夺取OFFBOARD。
+全部所属PID/start_ticks清理、保留原FAIL，负向PASS不等于降落成功。
+仍保持三相机30Hz／.2m标签／.6/.5m高度及现有TTL、配对与失标门槛。
+
+实现边界：新增四个显式direct-action仿真场景，保留原AUTO.LAND
+下降场景；只扩展测试注入／观察／验收，不先修改飞行控制。CLI
+未显式授权飞行时拒绝所有场景注入，不提供任意模式字符串旁路。
+组件先覆盖阶段／UUID／状态新鲜度／真实输出基线／独立模式源／
+发送响应不是模式确认等反例，通过后才串行真实仿真，不与组件
+压力回归并行；任一飞行FAIL立即保留并停止矩阵，不自动重发Goal。
+
+33.1 夹具与组件：新增四场景及独立模式证据检查、收尾精确Land
+GetResult查询、OFFBOARD重夺监测，生产飞控/桥接/转换/感知/PX4未改。
+65项场景组件pytest通过；精降全包29个CTest返回通过（82.27s），
+其中21项行为、7项实际lint通过，cppcheck XML仍3skip，不能计为
+实际cppcheck分析通过。独立模式监测最后补“源必须推进”的旧帧
+反例后，65项组件与两改动文件flake8再次通过；不是新飞行证明。
+本agent新增参数化列表缩进产生两次flake8 FAIL，日志分别保留，
+修正后changed-lint-accepted/scenario-lint-final通过，未删除原FAIL。
+构建通过，工作树空白检查通过。当前入口源码7d05bae8457ffc5a
+67674bfc618e645eca0dcd973c06f289a2a5605989f59ba6，夹具源码
+0bc04120bfe527fadca145390416a8b03f175e431b2eab24dab5943054a59ab9。
+
+33.2 首个真实场景未验收：external-posctl-descent/result.json为
+FAIL，/takeoff UUID 0cdaa4e3cf594a4b95af4ac94b140ed4 accepted=false，
+错误/takeoff: goal rejected；没有PrecisionLand Goal、没有接管注入，
+没有请求POSCTL，也没有任何平台/下游控制输出基线。本轮是起飞
+准入准备失败，不是已验证POSCTL接管失败/通过。3组exit0、child
+失败空、leftovers空；final-audit.json核对当前源码/生产ELF/PX4/
+参数指纹及所属PID/start_ticks全部清理。full_matrix_passed=false，
+其它三个场景未启动；原失败目录和日志完整保留，未重发Goal。
+
+33.3 只读检查：外部observer起飞前可见AUTO.LOITER/disarmed，
+ROS now=7.7s、状态stamp_sec=7，不能证明flight_controller内部已
+收到第一帧状态或/clock。flight_controller启动至退出日志只有
+Start与正常信号退出，无拒绝决策快照；Takeoff准入确实检查自身
+state_received、源/receipt新鲜度、clock、定位/姿态、控制锁/模式等，
+但拒绝分支没有保存实际决定原因。目标1.0m/.3m/s在默认50m/20m/s
+范围内；仍不能凭observer推出实际内部快照或唯一根因。
+仿真入口目前只在启动precision进程后固定观察1s，再等待Action
+server发现后提交Takeoff；进程创建/发现与内部状态/clock已就绪
+并不等价。这是确定的准备证明缺口，是否为本轮唯一触发原因未知。
+
+当前停在准入前置问题，尚未实施生产接口/控制行为变化。建议下步
+补Takeoff拒绝的实际决策快照，并提供内部只读就绪证据给仿真入口；
+组件验证之后再独立安排新矩阵运行，不能靠加固定等待、放宽安全
+新鲜度或自动重发Goal通过。POSCTL收尾与AUTO.RTL两项仍待真实
+执行，未知命令故障锁的实际飞行覆盖仍不属于本轮完成项。
+所有本轮改动尚未提交或push，用户.codex与CLI删除保持原样。
+最终按实际夹具版本补验test_simulation_scenarios/flake8/pep257三项
+CTest 3/3通过，日志final-changed-tests.log；没有追加飞行运行。
+
+## 34. 起飞准备缺口修复与 AUTO.RTL 两阶段验收（完成，POSCTL暂缓，2026-10-11）
+
+用户批准补拒绝快照／内部就绪检查并持续处理直到解决。主agent
+单独执行，证据根artifacts/d5-takeoff-readiness-20261011.LMeJJQ/，
+第33节首个起飞REJECT原FAIL完整保留。目标是解决外部observer与
+Action服务发现不能证明飞控内部收到状态／clock的准备缺口；不
+追认未知的历史拒绝唯一原因，不放宽任何准入阈值或自动重发Goal。
+
+设计与验收：新增只读/platform/flight_control/capabilities（现有
+GetCapabilities类型），Takeoff查询与真实Goal共用原准入条件，
+保存实际state/source/receipt/clock/锁与fault决策快照。查询不预留
+控制权、不清故障锁、不调用arm/mode、不发布setpoint；Goal请求
+与accepted处理仍重新校验。仿真入口在服务发现后、唯一Goal发送
+前查询内部实时就绪证据；替换固定1s外部等待，不自动重试飞行。
+先用无实机／无飞行的真实ROS进程和组件验证缺state、缺clock、
+旧源新receipt、准入后证据失效及查询无副作用等边界，再串行补
+POSCTL两阶段／AUTO.RTL两阶段真实SITL，严格按真终态／精确释放／
+内部Land真结果／独立模式／实际停流／进程清理判定。
+
+34.1 准备缺口修复与组件证据：Takeoff原状态／锁／模式准入条件
+保持不变，共用takeoff_readiness快照用于Goal判定与只读查询；
+Goal回调加flight锁后再取状态，查询不预留action／precision、
+不清command_uncertain、不调用MAVROS。拒绝日志含真实UUID与
+实际使用的flight_ready、源／receipt／clock及锁字段，非法目标
+另标invalid_goal。服务ready不验证目标参数、不保证稍后的准入，
+实际Goal和accepted回调仍重查，不能当作安全认证或控制许可。
+
+真实ROS组件以明确合成反馈证明：外部observer先获得状态及clock，
+再暂停volatile流并启动真实flight_control；Action与查询服务均可
+发现，内部state_sequence=0／clock=0时仍正确REJECT；只有状态
+进入后clock仍0时正确REJECT；二者到齐查询变为ready，连续查询
+没有任何arm／mode调用或setpoint。clock推进到12s、state仍10s而
+新回调不断到达时，准入仍以source_stale_or_future拒绝。最终
+独立ROS_DOMAIN_ID=208证据存ros-readiness-final，原始快照与
+带UUID拒绝日志完整保留。这证明准备缺口和防护，不追认第33节
+缺快照的旧REJECT唯一根因。
+
+新增C++反例验证查询不占锁、证据在ready后失效仍拒绝、缺state／
+clock分别可诊断、旧源不续期、fault锁不清；Python消费端拒绝错
+能力名／旧响应／迟到查询／假clock／无状态／坏JSON等。相关129
+项pytest通过。飞控最终13/13 CTest（84.96s）通过，三项C++ lint
+实际执行、无skip；精降29/29 CTest（82.26s）返回通过，但其
+cppcheck XML原3skip不计实际分析，实际21行为与7lint通过。
+
+开发中原FAIL保留：一次cpplint多行else诊断与一次pep257非祈使
+首行已修正；本agent曾在首轮CTest尾段同时重链接，两个测试启动
+ELF遇PermissionError，导致该轮10/13。完成构建后串行完整13/13
+通过；不是飞行异常或掩盖生产逻辑FAIL。最终构建指纹Flight ELF
+f9c3af725a9e9e411faec1dc4ab37d4f7066e1ce3e7a7f7859e90b20d1b52d5e，
+入口37f28690e6aa50ddb0f177f213a0bf3dd12da977ace8dc6577456fc079795af1；
+其余桥接／感知／转换／PX4保持原指纹。SITL不与组件／构建并行。
+
+34.2 接续首轮：新目录external-posctl-descent，内部查询真ready
+（state_sequence4、state源6.7s、clock6.8s、receipt约.0419s），
+仅提交一次Takeoff 75f2d84e1b2a4502a3a46caf825435f8，真4/true；
+已经跨过起飞准备阻断。精降ec3aed6149a0479cac94269505443169
+实际进入descend、注入一次POSCTL，前一秒下游40条position正向
+基线。但模式未切入，动作继续正常Land后真4/true，而接管预期
+是6/false，整个场景仍FAIL／scenario unexpected true terminal。
+保留原FAIL，停止原四项矩阵；没有把正常降落当接管验收成功。
+新一轮也出现lost/reacquire，不能关闭第32节间歇失标问题。
+
+原生posctl-native-evidence.json核对ULog及sha：模式请求21.000s
+main_mode3/sub_mode0（POSCTL），ACK21.012s command176/result1
+（临时拒绝），nav_state仍14/OFFBOARD；此前记录manual_control
+valid0、manual_control_signal_lost1，姿态／角速度／本地高度／
+宽松本地位置等相关失效均0。COM_RC_IN_MODE=1未改。
+当前PX4本地源码POSCTL要求manual输入、modeCheck在丢失时清
+canRun，UserModeIntention在已armed时校验canRun；因此无手动输入
+是本轮真实模式拒绝的确定准入缺口，而不是平台抢回OFFBOARD。
+
+34.3 用户明确选择暂缓POSCTL、先验AUTO.RTL。不新增中位摇杆／
+RC／MAVLink手动输入，不改PX4参数、不关闭保护。POSCTL两个阶段
+不签收，原已失败下降轮完整保留、收尾未运行。正在同一新版本
+串行执行AUTO.RTL下降／收尾各一次；audit_matrix.py复用第33节
+只读审计定义并独立核对内部就绪，原四项full_matrix不得因用户
+缩小范围写true，另列requested_matrix_passed只对应当前两项RTL。
+
+34.4 最终真实AUTO.RTL结果：两个新空目录串行、首次运行通过，
+不与构建或组件并行；每轮仅一次Takeoff与PrecisionLand Goal，
+两次Takeoff均由新鲜内部ready证据准入并真4/true。
+
+| 场景 | 精降真实结果及UUID | 内部Land | 停流验收 |
+| --- | --- | --- | --- |
+| RTL下降 | 6/false，1f234a0fc1cd45ed908e02d7e8f409be；flight evidence/control lost | 未启动 | 前1s平台20/位置出口40；确认后观测2.529s，+.5s平台及+1.5s四下游均0 |
+| RTL收尾 | 6/false，2f08d8f52ce74412b114cd0a1be395ff；external mode takeover during Land | a599e55b08b2e33227723828eec91452由Executing变6，精确GetResult真6/false/对应接管原因 | 同样20/40正向基线；确认后观测2.532s，规定窗口后均0 |
+
+两父动作同UUID RELEASED；独立FlightStatus与UAVState均确认新鲜
+armed/connected/AUTO.RTL，原模式源推进（下降21.5→22.5s、收尾
+31.7→32.7s），源年龄均.1s，未抢回OFFBOARD。原生ULog另核对
+下降22.432s与收尾31.780s的main_mode4/sub_mode5请求及command176
+真ACK/result0，分别存rtl-*-native-evidence.json；不以MAVROS的
+mode_sent替代真实模式或把负向终态写成降落成功。
+
+final-audit.json当前用户授权的两RTL场景requested_matrix_passed=true，
+所有原始终态／精确父释放／子结果／内部就绪／源推进／参数／源码
+与ELF指纹／实际出口正向基线／尾流／记录上限／进程清理均复核。
+每轮3组exit0、child失败空、leftovers空、所属PID/start_ticks消失。
+第33节旧REJECT及本节POSCTL真实拒绝均保留FAIL。未确认模式的
+POSCTL没有有效停流时间锚，审计将其晚流／重夺字段标为不可判定，
+不把全部正常飞行输出误标为“接管后仍输出”；原始输入不删除。
+原四项full_matrix_passed=false，POSCTL下降未签收、收尾未执行，
+这两项按用户决定暂缓而非宣称解决。
+
+结论：起飞内部就绪准备缺口已修复，组件反例与真实起飞证明闭环，
+当前获授权的AUTO.RTL两阶段真实接管验收完成；旧拒绝唯一触发
+快照缺失仍不可还原。未放宽任何安全阈值、未增加manual输入／
+RC或改PX4参数，不关闭间歇失标、RC实机、未知命令真实飞行全
+矩阵及旧崩溃等未完成项。最终git diff --check通过，未提交/push，
+用户.codex三文件与CLI删除保持原样。
+新增CMake测试注册的ament_lint_cmake也通过（cmake-lint-final.log）。

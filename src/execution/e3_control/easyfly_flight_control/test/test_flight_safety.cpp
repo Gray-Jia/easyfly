@@ -26,6 +26,21 @@ namespace easyfly_flight_control
 class FlightSafetyTestPeer
 {
 public:
+  static easyfly_msgs::srv::GetCapabilities::Response readiness(FlightController & node)
+  {
+    std::lock_guard<std::recursive_mutex> lock(node.flight_mtx_);
+    return node.takeoff_readiness();
+  }
+  static void forgetState(FlightController & node)
+  {
+    std::lock_guard<std::recursive_mutex> flight_lock(node.flight_mtx_);
+    std::lock_guard<std::mutex> lock(node.state_mtx_);
+    node.uav_ = easyfly_msgs::msg::UAVState();
+    node.state_received_ = false;
+    node.state_sequence_ = 0;
+    node.state_receipt_ = {};
+  }
+  static void faultLatch(FlightController & node) {node.command_uncertain_ = true;}
   static void prepare(FlightController & node, uint8_t mode = 7)
   {
     std::lock_guard<std::recursive_mutex> lock(node.flight_mtx_);
@@ -886,5 +901,72 @@ TEST_F(FlightSafety, RetiredAcceptedCallbackCannotClearNewGoalReservation)
   ASSERT_EQ(result.wait_for(0s), std::future_status::ready);
   EXPECT_EQ(result.get().code, rclcpp_action::ResultCode::SUCCEEDED);
   EXPECT_EQ(disarm_calls_.load(), 0);
+}
+TEST_F(FlightSafety, TakeoffReadinessObservesWithoutReservingAndAdmissionRechecks)
+{
+  FlightSafetyTestPeer::idle(*node_, 2);
+  for (int index = 0; index < 5; ++index) {
+    const auto response = FlightSafetyTestPeer::readiness(*node_);
+    ASSERT_EQ(response.names, std::vector<std::string>({"takeoff"}));
+    ASSERT_TRUE(response.ready.at(0));
+    EXPECT_TRUE(FlightSafetyTestPeer::isIdle(*node_));
+  }
+  auto goal = std::make_shared<FlightController::Takeoff::Goal>();
+  goal->target_altitude = 1.0;
+  FlightSafetyTestPeer::invalid(*node_);
+  EXPECT_FALSE(FlightSafetyTestPeer::readiness(*node_).ready.at(0));
+  EXPECT_EQ(
+    FlightSafetyTestPeer::admit<FlightController::Takeoff>(*node_, {}, goal),
+    rclcpp_action::GoalResponse::REJECT);
+  EXPECT_TRUE(FlightSafetyTestPeer::isIdle(*node_));
+  FlightSafetyTestPeer::idle(*node_, 2);
+  EXPECT_EQ(
+    FlightSafetyTestPeer::admit<FlightController::Takeoff>(*node_, {}, goal),
+    rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE);
+  EXPECT_FALSE(FlightSafetyTestPeer::readiness(*node_).ready.at(0));
+  EXPECT_EQ(arm_calls_.load(), 0);
+  EXPECT_EQ(mode_calls_.load(), 0);
+}
+
+TEST_F(FlightSafety, TakeoffReadinessDistinguishesMissingStateAndUninitializedClock)
+{
+  FlightSafetyTestPeer::idle(*node_, 2);
+  FlightSafetyTestPeer::forgetState(*node_);
+  auto response = FlightSafetyTestPeer::readiness(*node_);
+  ASSERT_FALSE(response.ready.at(0));
+  EXPECT_NE(response.details.at(0).find("state_not_received"), std::string::npos);
+  auto goal = std::make_shared<FlightController::Takeoff::Goal>();
+  goal->target_altitude = 1.0;
+  EXPECT_EQ(
+    FlightSafetyTestPeer::admit<FlightController::Takeoff>(*node_, {}, goal),
+    rclcpp_action::GoalResponse::REJECT);
+  FlightSafetyTestPeer::idle(*node_, 2);
+  ASSERT_EQ(rcl_set_ros_time_override(node_->get_clock()->get_clock_handle(), 0), RCL_RET_OK);
+  response = FlightSafetyTestPeer::readiness(*node_);
+  ASSERT_FALSE(response.ready.at(0));
+  EXPECT_NE(response.details.at(0).find("clock_not_initialized"), std::string::npos);
+  EXPECT_EQ(
+    FlightSafetyTestPeer::admit<FlightController::Takeoff>(*node_, {}, goal),
+    rclcpp_action::GoalResponse::REJECT);
+  EXPECT_TRUE(FlightSafetyTestPeer::isIdle(*node_));
+  EXPECT_EQ(arm_calls_.load(), 0);
+}
+
+TEST_F(FlightSafety, TakeoffReadinessDoesNotRenewFrozenSourceOrClearFaultLatch)
+{
+  FlightSafetyTestPeer::idle(*node_, 2);
+  ASSERT_EQ(
+    rcl_set_ros_time_override(node_->get_clock()->get_clock_handle(), 12000000000LL), RCL_RET_OK);
+  FlightSafetyTestPeer::badStamp(*node_, 2);
+  auto response = FlightSafetyTestPeer::readiness(*node_);
+  ASSERT_FALSE(response.ready.at(0));
+  EXPECT_NE(response.details.at(0).find("source_stale_or_future"), std::string::npos);
+  FlightSafetyTestPeer::idle(*node_, 2);
+  FlightSafetyTestPeer::faultLatch(*node_);
+  response = FlightSafetyTestPeer::readiness(*node_);
+  EXPECT_FALSE(response.ready.at(0));
+  EXPECT_NE(response.details.at(0).find("command_uncertain"), std::string::npos);
+  EXPECT_TRUE(FlightSafetyTestPeer::fault(*node_));
+  EXPECT_TRUE(FlightSafetyTestPeer::isIdle(*node_));
 }
 }  // namespace easyfly_flight_control

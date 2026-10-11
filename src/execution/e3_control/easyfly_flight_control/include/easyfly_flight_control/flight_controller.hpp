@@ -183,6 +183,7 @@ private:
   // ---- service clients ----
   rclcpp::Client<easyfly_msgs::srv::ArmMotors>::SharedPtr cli_arm_;
   rclcpp::Client<easyfly_msgs::srv::SetFlightMode>::SharedPtr cli_mode_;
+  rclcpp::Service<easyfly_msgs::srv::GetCapabilities>::SharedPtr srv_flight_capabilities_;
 
   // ---- 独立 callback group (client 与 action 回调分离，避免死锁) ----
   rclcpp::CallbackGroup::SharedPtr cli_cb_group_;
@@ -216,6 +217,8 @@ private:
   bool state_evidence_fresh(
     const easyfly_msgs::msg::UAVState & uav,
     std::chrono::steady_clock::time_point receipt) const;
+  // Caller holds flight_mtx_; query observes admission without reserving it.
+  easyfly_msgs::srv::GetCapabilities::Response takeoff_readiness() const;
   void stop_owned_actions(const std::string & reason);
   // Accepted goal 的所有失败/竞态退出统一经这些 helper 收尾，确保 reservation
   // 与 goal handle 不会在 action 已接受后悬挂。

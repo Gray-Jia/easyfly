@@ -65,7 +65,9 @@ def test_reader_queue_age_and_burst(count, delay, slow_clock, diagnostics, tmp_p
         "-p", "landing_plane_z_m:=0.0",
         "-p", f"camera_quaternion_xyzw:=[{root}, {-root}, 0.0, 0.0]",
     ], stdout=stream, stderr=subprocess.STDOUT)
-    inputs, publish_times = [], []
+    inputs, publish_times, readiness_sources = [], [], []
+    baseline_confirmed = []
+    readiness_last_sent = [0.0]
 
     def pump(predicate, budget=3):
         deadline = time.monotonic() + budget
@@ -119,9 +121,20 @@ def test_reader_queue_age_and_burst(count, delay, slow_clock, diagnostics, tmp_p
                 return False
 
             pump(clock_ready)
-        initial = send()
-        pump(lambda: any(m.valid and m.header.stamp.sec * 1000000000
-                         + m.header.stamp.nanosec == initial for m in outputs))
+
+        def baseline_ready():
+            # Graph discovery is not one-shot delivery proof for a best-effort
+            # reader. Establish a live fresh stream before the measured stall;
+            # the fault injection below still sends exactly count samples.
+            if time.monotonic() - readiness_last_sent[0] >= 0.02:
+                readiness_sources.append(send())
+                readiness_last_sent[0] = time.monotonic()
+            return any(m.valid and m.header.stamp.sec * 1000000000
+                       + m.header.stamp.nanosec in readiness_sources for m in outputs)
+
+        pump(baseline_ready)
+        baseline_confirmed = [m.header.stamp.sec * 1000000000 + m.header.stamp.nanosec
+                              for m in outputs if m.valid]
         outputs.clear()
         blocker.publish(Float64(data=delay))
         pump(lambda: any(m.data == "started" for m in markers))
@@ -165,6 +178,8 @@ def test_reader_queue_age_and_burst(count, delay, slow_clock, diagnostics, tmp_p
         traces = [json.loads(line.split("timing_take ", 1)[1])
                   for line in log.splitlines() if "timing_take " in line]
         evidence = {"count": count, "stall_s": delay, "inputs": inputs,
+                    "readiness_sources": readiness_sources,
+                    "baseline_confirmed_sources": baseline_confirmed,
                     "slow_clock": slow_clock,
                     "diagnostics": diagnostics,
                     "publish_wall_s": publish_times, "takes": traces,
