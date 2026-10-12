@@ -37,7 +37,7 @@ from ament_index_python.packages import (
     get_package_prefix,
     get_package_share_directory,
 )
-from easyfly_msgs.action import ExecuteMission, PrecisionLand, Takeoff
+from easyfly_msgs.action import ExecuteMission, Land, PrecisionLand, Takeoff
 from easyfly_px4_sitl.hrt_compatibility import select_px4_directory
 from easyfly_msgs.msg import (
     FlightStatus,
@@ -73,6 +73,12 @@ from easyfly_precision_landing.simulation_scenarios import (
     SCENARIOS, PrecisionScenario, ScenarioComplete, owned_descendants, remaining_owned,
 )
 from easyfly_precision_landing.simulation_faults import FAULT_SCENARIOS, ModeFaultScenario
+from easyfly_precision_landing.simulation_land_cancel_faults import (
+    LAND_CANCEL_FAULT_SCENARIOS, CancelLandModeScenario,
+)
+from easyfly_precision_landing.simulation_precision_cancel_faults import (
+    PRECISION_CANCEL_FAULT_SCENARIOS, CancelPrecisionModeScenario,
+)
 from easyfly_precision_landing.simulation_bridge_faults import (
     BRIDGE_FAULT_SCENARIOS, BridgeModeFaultScenario,
 )
@@ -86,7 +92,9 @@ from easyfly_precision_landing.simulation_transaction_faults import (
 
 OWNED_BRIDGE_FAULT_SCENARIOS = (
     *BRIDGE_FAULT_SCENARIOS, *BRIDGE_ARM_FAULT_SCENARIOS, *CANCEL_TRANSACTION_SCENARIOS)
-FLIGHT_PROXY_FAULT_SCENARIOS = (*FAULT_SCENARIOS, *UPSTREAM_ARM_SCENARIOS)
+FLIGHT_PROXY_FAULT_SCENARIOS = (
+    *FAULT_SCENARIOS, *UPSTREAM_ARM_SCENARIOS, *PRECISION_CANCEL_FAULT_SCENARIOS,
+    *LAND_CANCEL_FAULT_SCENARIOS)
 ALL_FAULT_SCENARIOS = (*FLIGHT_PROXY_FAULT_SCENARIOS, *OWNED_BRIDGE_FAULT_SCENARIOS)
 
 
@@ -469,6 +477,12 @@ def main():
             "transaction_fault_helper_sha256": hashlib.sha256(
                 Path(__file__).with_name("simulation_transaction_faults.py")
                 .read_bytes()).hexdigest(),
+            "precision_cancel_fault_helper_sha256": hashlib.sha256(
+                Path(__file__).with_name("simulation_precision_cancel_faults.py")
+                .read_bytes()).hexdigest(),
+            "land_cancel_fault_helper_sha256": hashlib.sha256(
+                Path(__file__).with_name("simulation_land_cancel_faults.py")
+                .read_bytes()).hexdigest(),
             "px4_sha256": hashlib.sha256(Path(staging["binary"]).read_bytes()).hexdigest(),
             "bridge_binary_sha256": hashlib.sha256((Path(
                 get_package_prefix("easyfly_mavlink_bridge")) /
@@ -538,7 +552,10 @@ def main():
     closing = [False]
     observer_timing = {}
     observer_executor = None
-    scenario_kind = (TRANSACTION_SCENARIO_TYPES[args.scenario]
+    scenario_kind = (CancelLandModeScenario if args.scenario in LAND_CANCEL_FAULT_SCENARIOS else
+                     CancelPrecisionModeScenario
+                     if args.scenario in PRECISION_CANCEL_FAULT_SCENARIOS else
+                     TRANSACTION_SCENARIO_TYPES[args.scenario]
                      if args.scenario in TRANSACTION_SCENARIO_TYPES else
                      BridgeArmFaultScenario if args.scenario in BRIDGE_ARM_FAULT_SCENARIOS else
                      BridgeModeFaultScenario if args.scenario in BRIDGE_FAULT_SCENARIOS else
@@ -762,7 +779,8 @@ def main():
                 tracked_at[0] = time.monotonic()
             if scenario is not None:
                 scenario.tick()
-                if isinstance(scenario, CancelTransactionScenario):
+                if isinstance(scenario, (CancelTransactionScenario, CancelPrecisionModeScenario,
+                                         CancelLandModeScenario)):
                     scenario.record_pending(wait)
             if hover_observer[0] is not None and hover_observer[0]():
                 report.setdefault("hover_z_m", latest["/uav_state"].position_z)
@@ -1260,6 +1278,8 @@ def main():
             wait(stable_hover, 30)
             report["hover_z_m"] = latest["/uav_state"].position_z
         if not args.mission:
+            if args.scenario in LAND_CANCEL_FAULT_SCENARIOS:
+                action('/land', Land, Land.Goal(), 15)
             wait(
                 lambda: "/landing/guidance_target" in latest
                 and latest["/landing/guidance_target"].valid,

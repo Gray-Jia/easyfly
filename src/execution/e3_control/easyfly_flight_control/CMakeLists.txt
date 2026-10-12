@@ -76,6 +76,8 @@ if(BUILD_TESTING)
   set_tests_properties(test_stop_stream_chain PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=196")
   ament_add_pytest_test(test_precision_ros test/test_precision_ros.py TIMEOUT 75)
   set_tests_properties(test_precision_ros PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=191")
+  ament_add_pytest_test(test_land_cancel_unknown_ros test/test_land_cancel_unknown_ros.py TIMEOUT 65)
+  set_tests_properties(test_land_cancel_unknown_ros PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=211")
   find_package(std_msgs REQUIRED)
   ament_add_gtest(test_precision_queue test/test_precision_queue.cpp
     src/flight_controller.cpp src/precision_controller.cpp TIMEOUT 30)

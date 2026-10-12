@@ -427,6 +427,14 @@ void FlightController::control_loop()
   }
 
   if (active_ == LAND_PREPARING) {
+    // An accepted parent cancel must stop output while its exact child drains
+    // the already issued AUTO.LAND transaction. Keep both reservations and
+    // the transaction intact; known LANDING cancellation recovery is unchanged.
+    if (precision_reserved_ && precision_handoff_ && precision_cancel_requested_ && gh_land_ &&
+      gh_land_->get_goal()->precision_landing_session_id == precision_session())
+    {
+      return;
+    }
     // AUTO.LAND 请求/确认期间仍保持锁存的 hover setpoint，直到 accepted
     // callback 确认 PX4 已进入 LANDING。这样模式服务阻塞或确认延迟时，
     // OFFBOARD 数据流不会中断，也不会用实时反馈覆盖发起降落前的悬停点。

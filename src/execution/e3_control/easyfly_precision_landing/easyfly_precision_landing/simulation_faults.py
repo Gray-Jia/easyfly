@@ -67,6 +67,8 @@ class ModeFaultScenario(PrecisionScenario):
 
     scenario_names = FAULT_SCENARIOS
     fault_layer = 'flight controller service reply only'
+    terminal_status = 6
+    parent_message_prefix = 'command_result_unknown:'
 
     def __init__(self, name, node, report, latest, receipts, started):
         """Expose isolated test endpoints only for an explicit fault scenario."""
@@ -247,9 +249,9 @@ class ModeFaultScenario(PrecisionScenario):
     def accept_terminal(self, value, wait):
         """Require true child drain and persistent fault before and after a late reply."""
         self.terminal = True
-        if value.status != 6 or value.result.success:
+        if value.status != self.terminal_status or value.result.success:
             raise RuntimeError('scenario unexpected true terminal')
-        if not value.result.message.startswith('command_result_unknown:'):
+        if not value.result.message.startswith(self.parent_message_prefix):
             raise RuntimeError('unknown command outcome reported as a known failure')
         if self.injected is None:
             raise RuntimeError('scenario completed before requested injection')
@@ -262,34 +264,8 @@ class ModeFaultScenario(PrecisionScenario):
                 entry.get('upstream_message') != 'mode=AUTO.LAND' or
                 time.monotonic() - entry['received_steady'] < 4.9):
             raise RuntimeError('real successful upstream reply and local timeout not proven')
-        owner = self.node.create_client(GetActionOwnership, '/precision_landing/ownership')
-        child = self.node.create_client(Land.Impl.GetResultService, '/land/_action/get_result')
-        try:
-            wait(owner.service_is_ready, 5)
-            future = owner.call_async(GetActionOwnership.Request(goal_id=self.identity))
-            wait(future.done, 3)
-            response = future.result()
-            if (response is None or response.goal_id != self.identity or
-                    response.state != GetActionOwnership.Response.RELEASED):
-                raise RuntimeError('exact precision action drain not confirmed')
-            self.report['scenario']['ownership_released_uuid'] = self.identity
-            identity = next(iter(self.report['scenario']['internal_land_at_injection']))
-            wait(lambda: self.land_statuses == {identity: 6}, 5)
-            wait(child.service_is_ready, 5)
-            request = Land.Impl.GetResultService.Request()
-            request.goal_id.uuid = list(bytes.fromhex(identity))
-            future = child.call_async(request)
-            wait(future.done, 3)
-            result = future.result()
-            if (result is None or result.status != 6 or result.result.success
-                    or result.result.message != value.result.message):
-                raise RuntimeError('matching true child abort result not confirmed')
-            self.report['scenario']['internal_land_result'] = {
-                'goal_uuid': identity, 'status': result.status,
-                'success': result.result.success, 'message': result.result.message}
-        finally:
-            self.node.destroy_client(child)
-            self.node.destroy_client(owner)
+        self.audit_action_drain(value, wait)
+        self.before_terminal_audit(wait)
         fault_began = self.query_fault(wait, 'terminal_before_reply')
         self.check_stopped(wait, fault_began, 'before_reply')
         # Native PX4 AUTO.LAND may complete physically; this is not Action success.
@@ -310,6 +286,44 @@ class ModeFaultScenario(PrecisionScenario):
         self.report['scenario'].update(internal_land_statuses=dict(self.land_statuses),
                                        passed=True, negative_terminal_expected=True)
         raise ScenarioComplete()
+
+    def audit_action_drain(self, value, wait):
+        """Check exact precision ownership release and its sole child GetResult."""
+        owner = self.node.create_client(GetActionOwnership, '/precision_landing/ownership')
+        child = self.node.create_client(Land.Impl.GetResultService, '/land/_action/get_result')
+        try:
+            wait(owner.service_is_ready, 5)
+            future = owner.call_async(GetActionOwnership.Request(goal_id=self.identity))
+            wait(future.done, 3)
+            response = future.result()
+            if (response is None or response.goal_id != self.identity or
+                    response.state != GetActionOwnership.Response.RELEASED):
+                raise RuntimeError('exact precision action drain not confirmed')
+            self.report['scenario']['ownership_released_uuid'] = self.identity
+            identity = next(iter(self.report['scenario']['internal_land_at_injection']))
+            wait(lambda: self.land_statuses == {identity: 6}, 5)
+            wait(child.service_is_ready, 5)
+            request = Land.Impl.GetResultService.Request()
+            request.goal_id.uuid = list(bytes.fromhex(identity))
+            future = child.call_async(request)
+            wait(future.done, 3)
+            result = future.result()
+            if (result is None or result.status != 6 or result.result.success
+                    or result.result.message != self.expected_child_message(value)):
+                raise RuntimeError('matching true child abort result not confirmed')
+            self.report['scenario']['internal_land_result'] = {
+                'goal_uuid': identity, 'status': result.status,
+                'success': result.result.success, 'message': result.result.message}
+        finally:
+            self.node.destroy_client(child)
+            self.node.destroy_client(owner)
+
+    def expected_child_message(self, value):
+        """Keep the default parent and child fault result messages identical."""
+        return value.result.message
+
+    def before_terminal_audit(self, wait):
+        """Allow a bounded subclass to audit an accepted pending parent cancellation."""
 
     def wait_disarmed(self, wait):
         """Observe real native disarming before probes; never send a disarm command."""

@@ -514,3 +514,56 @@ GetResult未结束及内部预留同时成立，取消等待期间真实停流�
 详见schedule-v4 §38。正常生产逻辑、5s等待与安全参数不改。
 本批不覆盖普通Land/精降收尾取消交叉、上游未知再叠加取消、实机
 或故障后新鲜控制输入注入的SITL验证。
+
+## 精降父取消与子 Land 未知回复交叉（2026-10-12）
+
+在实际flight_control_node＋合成ROS反馈中复现：精降父动作取消已
+接受，但其内部Land仍在AUTO.LAND模式事务等待阶段时，平台继续
+发布悬停指令。父/子执行锁与终态排空正确，仍不能以“不继续下降”
+代替“取消等待期间停流”。用户批准后，仅在LAND_PREPARING、精降
+父取消已接受且子session匹配时停流；不提前清锁或结束模式事务。
+已确认AUTO.LAND后的普通Land恢复OFFBOARD流程不改。
+
+四项限定ROS组件回归通过，原错误断言、实际停流FAIL及原证据保留。
+仿真新增显式direct-action入口 `cancel-precision-mode-late` /
+`cancel-precision-mode-withheld`：只转发一次真实AUTO.LAND、保留真实
+服务回复后扣留；实际PX4模式源推进确认，再精确取消父UUID。
+两项真实SITL及独立原始输出/原生PX4/生命周期审计通过：父CANCELING
+时父子GetResult尚未完成、所有权OWNED和执行锁同时成立；取消后
+平台与四路下游停止输出。子Land最终ABORTED/false/unknown，父
+CANCELED/false并在子真实终态后RELEASED；不能解读为安全降落成功。
+晚到回复不清故障锁，持续扣留只在控制进程退出后释放用于排空。
+
+每项先有20/40条平台/position正向输出基线；后续两批8个不同动作
+均因flight故障锁被拒绝。原生PX4单次arm、OFFBOARD及AUTO.LAND
+与实际ACK可见，无模式补偿或平台disarm。阈值、相机30Hz、固定
+下视外参、PX4原安装与失控参数均不改。详见schedule-v4 §39及
+artifacts/d5-land-cancel-20261012.O9SkFZ/。普通Land未知结果叠加取消
+目前仅组件通过，不能用本批精降SITL替代；真实设备仍未开放。
+
+另一次正常 `cancel-handoff` 回归确认实际父/子取消状态及
+AUTO.LAND→OFFBOARD恢复悬停，原生模式ACK对应；但清理阶段
+gzserver在SIGINT/SIGTERM期限内未退出，被启动器SIGKILL，整轮
+result仍FAIL/CLI exit1。该原FAIL和日志保留，PID均无残留；只记录
+退出超时，不推定self-join或追认完整通过，不恢复已搁置Gazebo专项。
+
+## 普通 Land 原模式未知与取消（2026-10-12）
+
+普通Land没有精降父/子；先正常Takeoff＋独立稳定1m悬停，再只
+提交一个原Land。新增显式direct-action入口 `cancel-land-mode-late` /
+`cancel-land-mode-withheld`，仅扣留真实AUTO.LAND模式服务回复。
+两项实际SITL及独立raw/native/生命周期审计通过，详见schedule-v4 §40。
+
+实际AUTO.LAND源推进后精确取消原UUID：原GetResult与cancel
+回应仍未返回时，Land状态EXECUTING及原事务执行锁同时成立；
+约5s未知事务结束后cancel code1/空goals（拒绝），原Land状态与
+精确GetResult为ABORTED/false/unknown，不能当成CANCELED成功。
+故障后平台和下游停流，晚到不清锁，不重试或补偿模式/arm。
+两项都有20/40条真实输出基线、三次fault快照和两批拒绝准入；
+四组进程、observer及扣留回调正常退出，没有PID残留。
+
+此轮未改生产控制语义。普通Land取消恢复OFFBOARD请求本身
+回复未知、桥内Land未知再叠加取消等仍未飞行验收，不借本批
+原AUTO.LAND回复未知通过代替。实机、POSCTL、UI及旧Gazebo
+专项继续搁置。最终precision包完整CTest35/35通过（cppcheck原
+内部SKIP不算实际静态分析）；本批新增修复/验证尚未另行提交。
