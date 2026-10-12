@@ -91,6 +91,14 @@ public:
   {
     return node.cli_mode_->prune_pending_requests();
   }
+  static size_t pendingArms(FlightController & node)
+  {
+    return node.cli_arm_->prune_pending_requests();
+  }
+  static bool commandMatched(FlightController & node)
+  {
+    return node.pub_uav_cmd_->get_subscription_count() > 0;
+  }
   static void idle(FlightController & node, uint8_t mode = 3, double z = 0.0)
   {
     prepare(node, mode);
@@ -336,6 +344,90 @@ protected:
     auto sent = client->async_send_goal(goal);
     ASSERT_EQ(sent.wait_for(2s), std::future_status::ready);
     EXPECT_EQ(sent.get(), nullptr);
+  }
+  void unknownCancellation(bool arming)
+  {
+    auto replied = std::make_shared<std::atomic<bool>>(false);
+    if (arming) {
+      arm_hook_ = [this, replied](auto, auto response) {
+          FlightSafetyTestPeer::armed(*node_, true);
+          std::this_thread::sleep_for(6s);
+          response->success = true;
+          *replied = true;
+        };
+    } else {
+      mode_hook_ = [this, replied](auto request, auto response) {
+          FlightSafetyTestPeer::confirmMode(*node_, request->flight_mode);
+          std::this_thread::sleep_for(6s);
+          response->success = true;
+          *replied = true;
+        };
+    }
+    startGraph();
+    FlightSafetyTestPeer::idle(*node_, arming ? 3 : 2);
+    auto received = std::make_shared<std::atomic<int>>(0);
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = peer_group_;
+    auto commands = peer_->create_subscription<easyfly_msgs::msg::UAVCommand>(
+      "/uav_command", 10,
+      [received](easyfly_msgs::msg::UAVCommand::SharedPtr) {++*received;}, options);
+    auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!FlightSafetyTestPeer::commandMatched(*node_) &&
+      std::chrono::steady_clock::now() < deadline)
+    {
+      std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_TRUE(FlightSafetyTestPeer::commandMatched(*node_));
+    auto client = rclcpp_action::create_client<FlightController::Takeoff>(peer_, "/takeoff");
+    ASSERT_TRUE(client->wait_for_action_server(2s));
+    FlightController::Takeoff::Goal goal;
+    goal.target_altitude = 1.0;
+    auto sent = client->async_send_goal(goal);
+    ASSERT_EQ(sent.wait_for(2s), std::future_status::ready);
+    auto handle = sent.get();
+    ASSERT_NE(handle, nullptr);
+    auto result = client->async_get_result(handle);
+    deadline = std::chrono::steady_clock::now() + 3s;
+    while ((arming ? arm_calls_.load() : mode_calls_.load()) == 0 &&
+      std::chrono::steady_clock::now() < deadline)
+    {
+      std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_EQ(arming ? arm_calls_.load() : mode_calls_.load(), 1);
+    ASSERT_GE(received->load(), 1);
+    auto cancel = client->async_cancel_goal(handle);
+    ASSERT_EQ(cancel.wait_for(500ms), std::future_status::ready);
+    ASSERT_EQ(cancel.get()->goals_canceling.size(), 1U);
+    EXPECT_EQ(cancel.get()->goals_canceling.front().goal_id.uuid, handle->get_goal_id());
+    EXPECT_TRUE(FlightSafetyTestPeer::owns(*node_, handle->get_goal_id()));
+    EXPECT_FALSE(FlightSafetyTestPeer::fault(*node_));
+    EXPECT_EQ(result.wait_for(100ms), std::future_status::timeout);
+    const auto baseline = received->load();
+    for (int tick = 0; tick < 8; ++tick) {
+      FlightSafetyTestPeer::tick(*node_);
+      std::this_thread::sleep_for(20ms);
+    }
+    EXPECT_EQ(received->load(), baseline);
+    ASSERT_EQ(result.wait_for(6s), std::future_status::ready);
+    EXPECT_EQ(result.get().code, rclcpp_action::ResultCode::CANCELED);
+    EXPECT_FALSE(result.get().result->success);
+    EXPECT_EQ(
+      result.get().result->message,
+      "command_result_unknown: flight fault latch set; manual audit required");
+    EXPECT_TRUE(FlightSafetyTestPeer::fault(*node_));
+    EXPECT_TRUE(FlightSafetyTestPeer::isIdle(*node_));
+    EXPECT_EQ(FlightSafetyTestPeer::pendingModes(*node_), 0U);
+    EXPECT_EQ(FlightSafetyTestPeer::pendingArms(*node_), 0U);
+    deadline = std::chrono::steady_clock::now() + 2s;
+    while (!*replied && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_TRUE(*replied);
+    EXPECT_TRUE(FlightSafetyTestPeer::fault(*node_));
+    rejectFreshFault<FlightController::Takeoff>("/takeoff", goal);
+    EXPECT_EQ(mode_calls_.load(), arming ? 0 : 1);
+    EXPECT_EQ(arm_calls_.load(), arming ? 1 : 0);
+    EXPECT_EQ(disarm_calls_.load(), 0);
   }
   std::shared_ptr<rclcpp::Context> context_;
   std::shared_ptr<FlightController> node_;
@@ -652,6 +744,16 @@ TEST_F(FlightSafety, DelayedArmCancellationStopsStreamAndWaitsForLocalTransactio
   EXPECT_EQ(result.get().code, rclcpp_action::ResultCode::CANCELED);
   EXPECT_TRUE(FlightSafetyTestPeer::isIdle(*node_));
   EXPECT_EQ(disarm_calls_.load(), 0);
+}
+
+TEST_F(FlightSafety, UnknownArmCancellationDrainsThenRetainsFaultAfterLateReply)
+{
+  unknownCancellation(true);
+}
+
+TEST_F(FlightSafety, UnknownModeCancellationNeverArmsAndRetainsFaultAfterLateReply)
+{
+  unknownCancellation(false);
 }
 
 TEST_F(FlightSafety, FailedModeConfirmationNeverArmsOrDisarmsFromLowLocalZ)

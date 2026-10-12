@@ -4458,3 +4458,377 @@ bridge故障锁、取消与未知结果交叉等尚未纳入本轮真实飞行�
 不能用当前两项替代。POSCTL继续暂缓，间歇失标/历史启动拒绝缺
 快照/旧崩溃仍按原记录处理；未恢复UI、实机或G9后复验。故障后
 人工核查并重启仍是既定策略，本轮没有新增自动解锁/补偿恢复。
+
+## 36. 桥接层→MAVROS 未知模式结果的独立故障锁验收（本轮完成，2026-10-12）
+
+用户批准先提交第35节，再做本项。第35节已提交5b2bf1c，不push；
+用户.codex三文件及CLI删除未纳入。仍主agent单独执行，证据根
+artifacts/d5-bridge-unknown-20261011.aIBiym/；UI/POSCTL/实机/旧崩溃/
+G9后复验不恢复。本轮先限普通Land模式事务，不混入arming未知
+或取消交叉矩阵，不改变任何原5s等待期限或PX4参数/安全阈值。
+
+目标：显式bridge-mode-late/bridge-mode-withheld场景只重映射所属
+bridge的MAVROS mode/arming客户端到代理。真实MAVROS服务保持原名，
+模式命令原样单次转发，只有内部Land的mode_sent回复被扣留；
+flight→bridge公共服务不代理。MAVROS mode_sent不是FCU COMMAND_ACK，
+仍须新鲜独立FlightStatus/UAVState及原生PX4日志确认真实AUTO.LAND。
+
+验收：父子真实ABORTED/false、精确父释放和原有flight fault锁；
+另用新增只读/platform/mavlink_bridge/capabilities证明独立command_fault。
+查询只看命令传输的服务发现/context/fault，不授权飞行、不预留、
+不清锁、不发命令。后续实际准入仍原回调校验。5s外层/内层等待
+可能竞速，绝不从flight超时推断bridge已锁；明确分别查询。
+真实新鲜disarmed后，直接调用bridge的合法mode/arm请求须被其
+自身fault拒绝、无任何MAVROS转发；迟到回复与持续扣留均不得解锁。
+原正向输出基线到真实平台/四下游停流，精确Land GetResult和
+进程/observer身份清理与第35节相同。扣留场景只在所属flight及
+bridge退出后释放清理门，排空回调后保存报告，不重现过早PASS。
+先组件/真实ROS代理，再串行SITL，原FAIL完整保留，不重发未知Goal。
+
+36.1 实现/组件：新增bridge只读命令传输查询与独立fault诊断日志，
+原fault guard、5s期限、编码停止与原有状态发布机制不变。普通launch
+start_bridge默认true，只有本轮显式SITL owner设false并单独启动原
+bridge参数的实例，重映射其MAVROS客户端；MAVROS/RC及时间策略
+保持原配置。飞控使用原公共EasyFly服务，不经过第35节上游代理。
+仿真在任何飞行Goal前只读等待真实MAVROS peers发现，不靠重试Goal。
+新鲜bridge查询、合法请求载荷、独立拒绝与有界callback排空写入证据。
+
+bridge构建通过，最终7/7 CTest通过（25.81s）：3项实际C++ lint无
+skip，新增真实ROS组件显式合成MAVROS peer，验证5s真实bridge超时，
+pending期间查询响应、late/withheld独立fault、合法mode/arm(true/false)
+拒绝不转发、encoder实际正向基线之后新鲜输入仍无出口。这是
+组件证据，不是物理MAVROS/PX4飞行证据。首轮6/7仅uncrustify
+三元表达式缩进FAIL，原日志保留，修正重建再全7/7通过。
+新增Python首轮flake8七处格式FAIL保留，修正后精降完整31/31 CTest
+通过（83.81s），23项行为和7项实际lint通过，cppcheck原3skip仍不
+计实际分析。新增typed MAVROS代理真实ROS对照验证原始mode_sent
+与CommandBool ACK原样传递、门前关闭不补发、扣留后drain/shutdown。
+就绪/诊断补记录后5/5与4/4针对性回归再次通过；bridge新增Python
+flake8/pep257/CMake lint另通过。没有与SITL并行跑组件/构建。
+
+36.2 真实SITL两项串行验收与独立审计完成。late入口2026-10-11、
+withheld入口2026-10-12均实际exit0，根目录保留初始日期，不覆盖旧记录。
+两项均先真实Takeoff SUCCEEDED/true，再只对唯一内部Land的实际
+MAVROS mode_sent回复设门。正常OFFBOARD和arming不扣留；合法
+请求原样转发一次，没有重复Goal、自动补偿、上锁或PX4参数变更。
+
+- bridge-mode-late：Takeoff UUID9680f61944d34f6f8077584627257c94；
+  PrecisionLand UUID18ea9f90d899480494e5ce0de68fa267，内部Land
+  UUID9e50570613d02247d102e63a71dd7c3f，父子均真实ABORTED(6)/false，
+  message为command_result_unknown: flight fault latch set; manual audit required。
+  精确父RELEASED与子GetResult已核对。AUTO.LAND命令steady7709.833973
+  单次发送，真实mode_sent收到7709.834360，但扣留到7717.370896；
+  flight锁7714.851205、bridge锁7714.852564分别查证。新鲜disarmed
+  后先检查拒绝，再释放迟到回复，重复检查仍两层锁、仍拒绝。
+- bridge-mode-withheld：Takeoff UUID895ca0cfe0164c259b6cbc71c7527373；
+  PrecisionLand UUID2cf6365a7c0f4aa7b5072516a8e524c7，内部Land
+  UUIDe0027bbb9b777ab93fe7dbde1ad8e672，父子均同样真实6/false、
+  匹配unknown message，父精确释放。AUTO.LAND steady58668.031823
+  单次发送，真实mode_sent收到58668.032578；运行期没有returned_steady。
+  flight锁58673.046199、bridge锁58673.047886分别查证。持续扣留仍
+  保锁；仅flight/bridge_control真实exit0后，清理门58691.872254打开，
+  cleanup_returned_steady58691.872369，回调排空再关闭观察器保存报告。
+
+每项都有20条平台/40条真实position出口正向基线；四出口均监听，
+平台故障后+.5s、下游+1.5s至观察结束均零新增。首次停流窗口至少
+2.5s，late最终约5.05s、withheld约17.80s，独立审计重新计算计数。
+这不是空记录验收。每项三次bridge只读快照均command_fault=true、
+ready=false、context与mode/arm peers仍可用，查询约0.41–0.65ms；
+新鲜disarmed后两批共8个不同Action Goal全部准入拒绝，直接合法
+mode=3/arm=true共4次返回桥接自身fault locked、不转发MAVROS。
+代理实际仅OFFBOARD/AUTO.LAND各一次、arm=true一次，无补偿请求。
+此直接服务拒绝区分了flight上层锁和bridge自身锁，查询不会清锁。
+
+原生PX4 ULog独立确认两项各只有原OFFBOARD与AUTO.LAND模式命令，
+AUTO.LAND对应main4/sub6，cmd176/result0 ACK在100ms候选关联窗口，
+nav_state包含18、arming_state包含1/2；ACK时间关联不声称ROS事务身份。
+late ULog SHA256 09c0e9fb13886ffb912afc785c4654d7dcfac16be4e0e5cdd5be2e64cf70d251，
+withheld 2be34930df7a728419520a146760fb22b27dc1c5b9dcc9a4d466dc720d5be107。
+仍使用独立新鲜FlightStatus确认模式，不把mode_sent当FCU ACK。
+两项高度校准均通过，plane_z分别-.013299797/-.012979363m；原三相机
+30Hz/.2m标签、TTL.3s、配对.1s、重获5帧/失标2s、对准.08m、交接.6m/
+下降下限.5m保持原值。PX4兼容版与飞控/感知/转换二进制不改。
+
+36.3 清理与完成标准：每项flight/precision/bridge_control/bridge/
+simulation五组exit0，child_exit_failures全空、leftovers空，真实
+observer shutdown与fixture_callbacks_drained均true。独立审计按
+PID+start_ticks检查每项owned进程及observer已退出，不只信报告flag；
+外部CLI也exit0，最终进程检查无SITL/observer/测试残留。
+audit-late.json单项及final-audit.json两项原始JSON/ULog/指纹复核通过，
+full_matrix_passed=true。审计复用第35节固定SHA的生命周期/native
+函数，仅适配场景名及新增所属bridge进程，另追加独立bridge断言。
+报告和原始日志均在本节证据根，不将父子ABORTED记作降落成功。
+
+Bridge ELF38dda300f75332a2146e868f09cc7ca8c91fbf20d5bc8f038b0e32493b5ced52，
+Flight ELF仍455929ed2efdd1b71b0c6b7d9d0e120558f6da6f65dfa9c6e2c130a77e9ee31c，
+入口872242fafba170de8b527f5438a1e8699deb60684fe1a82ff541af0ea129d522，
+基础fault helper be2b6a0eff1edc7d1cb7009c003f8a99e2e1af0b4a626610435ad82cfa9d51a0，
+bridge helper c3fd1f598d3a0d8487a718df214dbcd041f413cae32ae248c212b8b8885268ff。
+原首轮lint FAIL完整保留；本轮新增实现/测试/文档暂未提交或push，
+上批提交5b2bf1c，用户配置及CLI删除仍未纳入。
+
+剩余边界：真实arming命令回复未知（模式故障后拒绝arm不等于此项）、
+取消与未知结果交叉仍未验证。本轮真实SITL没有注入故障后的新鲜
+控制命令；“encoder收到新鲜输入仍不输出”只由显式合成ROS组件
+验证，不混记真实SITL证据。故障后必须人工核查远端并重启，不能
+因查询/新鲜遥测/迟到回复自动恢复。POSCTL/UI/实机/G9后复验保持
+暂缓，历史间歇失标、缺快照的启动拒绝及旧偶发崩溃不追认解决。
+
+## 37. 解锁命令回复未知的真实SITL验收（本轮完成，2026-10-12）
+
+用户批准继续验证。先限定bridge→MAVROS解锁回复未知的late/withheld
+两项，Takeoff准备阶段实际命令单次发送，真实MAVROS CommandBool ACK
+原样保留但扣留投递；flight→bridge公共服务不代理。已有两层锁、
+5s期限和PX4原配置不改。只加显式仿真夹具/组件与只读观察，不自动
+补偿、Land、返航、上锁或清锁；main agent单独执行，UI/POSCTL/实机/
+G9后复验继续暂缓。证据根artifacts/d5-arm-unknown-20261012.ktOvZA/。
+
+目标与验收：新鲜独立OFFBOARD/未解锁、唯一真实Executing Takeoff
+及实际平台/下游正向基线成立后才开转发门。单次CommandBool(true)
+获得真实ACK且独立UAVState/FlightStatus推进确认实际armed；随后
+真实Takeoff ABORTED/false和精确UUID GetResult一致，两层查询分别
+确认故障锁及无动作/预留，平台与四下游停流。先等待PX4自身新鲜
+disarmed（不发平台上锁请求）再做两批合法动作/桥接服务拒绝探针。
+迟到回复不能恢复，持续扣留仅所属flight/bridge退出后释放清理门。
+真实CLI/五组进程exit0、callback drain及observer关闭、PID身份无
+残留，原生PX4日志/二进制/输入指纹独立复核。任何FAIL完整保留，
+不重发未知Goal，不降低阈值。先组件测试，再串行SITL；上批尚未提交。
+
+37.1 夹具/组件完成：新增BridgeArmFaultScenario，仅显式direct-action
+选中Takeoff。门前要求唯一匹配EXECUTING UUID、新鲜独立未解锁
+OFFBOARD与真实平台/下游正向基线；门后真实CommandBool ACK的success/
+result原样保留，独立源推进证明armed，ACK本身不替代状态。真实
+Takeoff GetResult、flight/bridge分别查询、先native disarmed后两批
+拒绝探针及排空清理复用原规则；不用外部模式接管的OFFBOARD拒绝
+逻辑错误解释“解锁确认”。base模式夹具只提取原disarmed观察函数，
+允许arm扣留回调cleanup字段完成drain，不改原模式门/验收规则。
+bridge/flight生产ELF分别仍38dda300/455929ed，原5s超时和控制逻辑不改。
+
+构建通过。bridge完整7/7 CTest通过39.01s，新增真实ROS bridge组件
+共4项：mode/arm × late/withheld，真实5s超时、pending查询、迟到不
+清锁、mode/arm(true/false)直接拒绝不转发、新鲜命令仍无encoder输出
+（实际正向基线）与正常退出。MAVROS peers/clock明确是合成组件，
+不是物理FCU。额外bridge Python flake8/pep257通过。
+precision完整32/32 CTest通过84.40s：24项行为、7项实际lint；原
+cppcheck三skip不计实际分析。新arming夹具53个pytest检查，覆盖
+显式授权、两路fresh/一致状态与各自source推进、匹配Executing
+Goal门、真实ROS typed ACK(true0/false2)原样迟到/扣留、门前关闭
+不发命令、重复arm/补偿disarm拒绝及drain/shutdown。原base模式/
+bridge模式组件也回归。首次完整31/32仅flake8六处格式/unused FAIL，
+第二次仍两处续行格式FAIL；两份原日志均保留，包括名称为
+precision-tests-final.log的失败文件；最终签收用precision-tests-accepted.log。
+先单独flake8通过再第三次完整回归全通过；不与SITL并行测试/构建。
+
+37.2 两项真实SITL入口均实际exit0，一次各用新空目录，不重发Goal。
+
+- bridge-arm-late：Takeoff UUIDf33cd9389160407eb2389be5247e0370，
+  真实ABORTED(6)/false，message为command_result_unknown: flight fault latch set;
+  manual audit required，精确UUID GetResult与状态6一致。CommandBool(true)
+  steady60060.213813单次转发，60060.230565收到真实success=true/result0
+  ACK但不投递；60061.036449独立新鲜源推进确认实际armed/OFFBOARD。
+  flight锁60065.237090、bridge锁60065.238368分别查询成立。先新鲜
+  disarmed及第一批拒绝探针，再60070.216649释放实际迟到回复；第二批
+  拒绝、两层锁与停流仍成立，没有爬升/重试/补偿。
+- bridge-arm-withheld：Takeoff UUID6ec877454b194e74a8437d3caf73f8ee，
+  同样真实6/false及匹配unknown message/GetResult。steady60189.353042
+  单次转发，60189.360356获得真实success=true/result0；60190.076692
+  独立新鲜源推进确认实际armed/OFFBOARD。flight锁60194.362057、
+  bridge锁60194.363654分别查证。运行期无returned_steady；两批拒绝
+  探针期间持续扣留并保锁。所属flight/bridge_control真实exit0后
+  60202.898878才打开清理门，60202.899132原回调cleanup返回、drain
+  完成再关闭observer保存报告，没有清理期间补发命令。
+
+每项注入前平台20/真实position出口40条正向基线，四出口全部监听。
+独立审计重新计算平台+.5s及下游+1.5s之后零新增；首次窗口至少2.5s，
+最终约7.52/7.51s。全部平台position指令保持初始地面位置、没有
+爬升ramp（逐条有限性/坐标不变断言），不是把中止记为成功起飞。
+每项3次flight快照确认command_uncertain及active0/无动作/精降预留，
+3次bridge快照独立command_fault=true、ready=false、context/mode/arm
+peers仍可用，查询约.53–.75ms。真实新鲜disarmed后，两批8个不同
+Action Goal全部被拒绝、4次直接合法mode3/armtrue返回bridge fault
+locked，代理及原生日志均无新增模式/解锁/上锁事务。
+
+两项原生PX4 ULog均只有外部cmd176 OFFBOARD一次与cmd400 arm=true
+一次，param2(force)=0；各真实result0 ACK在100ms候选关联窗口，
+不声称ROS事务身份。native armed→disarmed推进分别7808000→16880000us、
+8100000→17064000us。PX4日志均Armed by external command、Failsafe activated、
+Disarmed by landing；平台没有请求Land或disarm。nav_state含2/4/14，
+这是PX4原配置的原生保护/模式变化，不是本项目外部POSCTL验收。
+COM_RC_IN_MODE1、COM_DISARM_PRFLT10、COM_OF_LOSS_T1、COM_OBL_RC_ACT0
+保持原值，独立审计逐项复核。late ULog SHA256
+972e16b5079a9024f956e3dc3a55e7b8e00a8b005fb50f090e0dcd0dbab8cb1f，
+withheld dba84b151001dfd56b407d1e2869a19a1c6ee4663a18092d7d4764be49ce7938。
+原高度校准通过，plane_z分别-.011850212/-.023233269m；三相机30Hz/
+.2m标签及所有精降安全参数仍原值，未进入精降动作或正式任务。
+
+37.3 独立审计第一次late FAIL保留在audit-late.json：原审计错误
+假定每5条记录一次的flight_samples含精确disarmed源帧；门事件是
+17.6s，采样却为17.4s(armed)/17.7s(disarmed)。修正为邻近采样只作
+佐证，仍强制精确源推进的门证据、完整FlightStatus序列、原生armed→
+disarmed日志及新鲜内部flight disarm查询；不降低实际飞行TTL或
+准入/控制阈值。没有为此重跑SITL，原raw JSON不改；修正审计得到
+audit-late-accepted.json和final-audit.json两项均通过full_matrix_passed=true。
+全部输入指纹/UUID/真实ACK/停流与进程身份独立复核，不只信raw PASS。
+
+两项flight/precision/bridge_control/bridge/simulation五组exit0，
+child_exit_failures全空、leftovers空，fixture_callbacks_drained与
+observer_shutdown_confirmed均true；外部CLI实际退出0。独立审计检查
+每项owned进程及observer的PID/start_ticks不再存在，最后进程检查
+无SITL/测试残留，未依赖过早保存的结果文件。最终diff空白检查通过。
+
+生产bridge/flight ELF未改，仿真入口SHA256
+8eebfb6851a3bf5386a3e763158b570a7c78d415903ae2194e70caaac38f8b2b，
+基础fault helper dfdc55b65b0e41bb3c7de59a3dfcdac104fc4484adfa3e482abfad3210ee35c0，
+arming helper 51b33c2ee8db253d04810b96574dfe882245b8bbb89058d87117151f11e6f119，
+bridge helper/原感知/转换/PX4指纹与第36节相同。本项未发现需要修改
+生产安全行为的失败，只修复夹具/审计与lint。新增测试/入口/文档
+暂未提交/push，前批commit仍5b2bf1c；用户配置与CLI删除保持原样。
+
+剩余：取消与未知结果交叉、仅flight→bridge上游arming回复被扣留的
+单独矩阵尚未执行，本项不能替代。故障后新鲜控制输入的encoder拒绝
+只有合成ROS组件证据，真实SITL没有注入该输入。故障必须人工核查
+远端并重启，状态恢复/实际disarm/迟到回复都不自动解锁。没有恢复
+UI/POSCTL/实机/G9后复验，历史间歇失标或旧偶发崩溃也不追认解决。
+
+## 38. 起飞取消与未知结果交叉、上游解锁回复丢失（本轮限定范围完成，2026-10-12）
+
+用户批准按1→2继续。本轮先限定Takeoff准备阶段，不混记普通Land/
+精降收尾取消交叉。先4项bridge切模式/解锁 × late/withheld取消，再
+2项仅flight→bridge上游解锁回复扣留。证据根
+artifacts/d5-cancel-upstream-20261012.LqXNFQ/，主agent单独执行。
+生产控制逻辑/5s期限/PX4配置不改，不新增重试、补偿或清锁，不恢复
+UI/POSCTL/实机/G9后复验或旧崩溃专项。前批仍未提交，用户配置不动。
+
+目标/验收：正向输出及实际Executing Goal/新鲜独立状态成立才单次
+转发；真实远端OFFBOARD或armed确认且正向原始回复已收到、仍扣留
+时精确取消。cancel ACK/真实CANCELING期间内部动作仍预留且GetResult
+未结束；取消确认后的平台+.5s/四下游+1.5s须停流，不能只验5s故障
+后的停流。等待原请求真实本地超时、Takeoff精确CANCELED/false及
+unknown message/GetResult、两层锁；迟到不恢复/扣留清理门仍受控。
+上游2项只锁flight，bridge只读必须证明独立无fault且transport可用，
+不向健康bridge发送直接mode/arm探针。不把ACK替代状态；真实disarmed
+后合法动作拒绝、无爬升/重试/补偿、原生PX4日志与指纹/进程身份/
+退出与callback排空独立审计。所有FAIL保留，不重发未知Goal。
+
+38.1 实现/组件通过：新增显式事务夹具，仅Takeoff上按原Goal精确
+取消，真实CancelGoal return_code/UUID列表、GetResult未完成及内部
+预留快照单独记录；nested wait使用guard，不能递归查询同一快照。
+门和原回复typed传递、fault审计复用第37节，通过terminal/reply/
+call-count hooks分别区分CANCELED5与ABORTED6、MAVROS模式/解锁及
+EasyFly上游回复，不伪造状态或ACK。上游只重映射所属flight客户端，
+普通launch仍启动默认bridge，owns_bridge=false，查询必须transport
+available且command_fault=false，不调用健康bridge的飞行服务探针。
+所有故障夹具在飞行Goal前只读等待真实服务peers就绪，不重试Goal。
+
+构建通过。首轮新增C++测试泛型订阅回调被Humble function_traits
+拒绝，改为明确UAVCommand::SharedPtr；原build-first.log保留。
+新Python首轮5处格式、随后1处测试行长FAIL，修正后全包flake8/
+pep257通过。flight首轮12/13，仅新测试EXPECT_EQ续行uncrustify
+FAIL，原log保留；按formatter修正、重建后完整13/13 CTest通过
+98.44s，3项C++ lint实际执行无skip。新增两个真实ROS飞控组件用
+合成状态/服务，原服务6s迟到、本地5s超时，精确cancel ACK、pending
+slot保留/GetResult未结束、真实输出基线到取消后停流、真实5/false/
+unknown、pending请求移除、迟到不清锁与无补偿/后续动作拒绝均通过。
+组件是实际生产飞控实现执行，不是物理PX4证据。
+precision完整33/33 CTest通过86.06s：25项行为、7项实际lint，原
+cppcheck三skip不计实际分析。新增事务夹具54个pytest检查，显式
+direct-action/所有权/终态分层、独立健康bridge快照及typed原始正负
+回复迟到/扣留/门前清理不发命令通过；第35–37节旧夹具组件也回归。
+两包串行测试，不与SITL/构建并行；flight/bridge生产ELF仍原指纹。
+
+38.2 六项真实SITL依次实际CLI exit0，每项独立审计后才开始下一项。
+没有重发未知或已接受Goal。每项只有一个初始Takeoff，终态与精确
+UUID GetResult一致，均success=false和command_result_unknown: flight fault
+latch set; manual audit required，不将负向安全终态记成起飞成功。
+
+| 指定场景 | Takeoff UUID | 真实终态 | flight / bridge command fault |
+| --- | --- | --- | --- |
+| cancel-bridge-arm-late | 33a2e00f015c48c7a7695463604444ce | CANCELED(5)/false | true / true |
+| cancel-bridge-arm-withheld | 6ddc90fae7034d41839faa99e4bc35eb | CANCELED(5)/false | true / true |
+| cancel-bridge-mode-late | f355a488b0614997b2aa5ad944e34101 | CANCELED(5)/false | true / true |
+| cancel-bridge-mode-withheld | e2de210b6ea64db49bbd7f61efce8327 | CANCELED(5)/false | true / true |
+| upstream-arm-late | d1dceae61b7f4b0aa562bd81f2e161a1 | ABORTED(6)/false | true / false |
+| upstream-arm-withheld | 8570bb9bbee6460ebf515cb59679928f | ABORTED(6)/false | true / false |
+
+四项cancel实际return_code0且goals_canceling只含所属UUID。取消确认
+时实际状态3/CANCELING，内部reason=busy、active1、action_reserved=true、
+command_uncertain=false，原GetResult未完成。实测取消确认至终态审计
+窗口分别约4.05/3.96/4.55/4.76s，平台+.5s/四下游+1.5s后均零新增。
+这单独证明等待期间停流，不用稍后5s未知结果故障掩盖取消尾流。
+随后原请求达到本地5s未知结果，action/precision预留真实释放且
+fault保留。晚回复必须在第一批新鲜disarmed/拒绝探针后才释放，
+持续扣留只有所属控制节点真实退出0后清理门打开；均不能恢复。
+切模式两项只实际请求OFFBOARD一次、未解锁，真mode_sent回复
+原样扣留，独立OFFBOARD源推进与native接受ACK另证，不把它当FCU ACK。
+解锁两项OFFBOARD及arm=true各一次，实际armed/OFFBOARD源推进、
+真实CommandBool success=true/result0和native ACK各自复核。
+
+上游两项EasyFly真实arm success=true/message=armed回复分别在
+steady62836.684719/62924.908864已从健康bridge收到，只有对flight
+的投递被扣留。flight本地故障后真实6/false；查询时刻分别为
+62841.693615/62929.910134。
+三次独立bridge快照始终command_fault=false、ready=true、reason=
+command_transport_available，context/mode/arm peers有效；transport
+ready不是飞行权限或新动作预留。没有直接调用健康bridge的mode/arm
+服务，八个合法后续Action Goal仍由flight fault拒绝。晚回复及新鲜
+disarm不能解除flight故障。两个原SetMode/Arm事务仍各一次，无补偿。
+
+各项均有实际正向输出：arm cancel 20/40条平台/position，两项mode
+cancel各11/21，上游late 20/39、withheld20/40。四下游全监听，独立
+审计重新计算故障后+.5/+1.5s的零新增与取消窗口，不是空观察通过。
+全部平台指令保持初始地面position（逐条有限性/坐标不变），不爬升。
+每项3次flight fault新鲜快照、3次bridge fault/healthy新鲜快照，
+bridge查询约.44–.86ms；新鲜disarmed后两批8个不同Action准入均拒绝。
+四项bridge fault另各4次合法mode3/armtrue直接请求被自身fault拒绝，
+无MAVROS转发；上游没有此探针，不能因transport健康追加飞行命令。
+
+原生PX4 ULog分别记录一条外部OFFBOARD，mode-cancel无cmd400且全程
+没有armed状态，另四项单次cmd400 arm=true且force0；无外部模式
+补偿、Land或disarm。每项native对应cmd176/cmd400 result0 ACK均在
+100ms唯一候选关联窗口，不声明ROS事务身份；arming四项均确认
+native armed→disarmed真实推进。PX4参数COM_RC_IN_MODE1、
+COM_DISARM_PRFLT10、COM_OF_LOSS_T1、COM_OBL_RC_ACT0不变，三相机
+30Hz/.2m标签及.3s TTL/.1s配对/5帧重获/2s失标/.08m对准/.6/.5m
+边界不变。没有增加RC输入或开展POSCTL人工接管。
+
+38.3 另有一次启动准备失败，不能删除或混记六项成功：原目录
+cancel-bridge-mode-late/在校准阶段报fixture not stationary on the expected
+ground，actions为空、代理mode/arm calls为空、native cmd176/cmd400为空。
+Gazebo base_link z≈.054m、线速度≈1e-9，实体静止；PX4 odom z从
+.287至.352再下降，native local_position vz约.26m/s，超过原.05m/s
+静止门限，安全拒绝符合条件。为何该轮启动估计波动的唯一来源未知，
+本轮没有放宽门限、改PX4或启动新的定位专项。三组exit0、observer
+及callback正常关闭，PID/start_ticks无残留；不是一次未知Goal重发。
+原result SHA256 9ffeca6ace9d75a0e86a6f9b066642fed8f53622135461e1694e060e046e04d2，
+ULog fae39a68d95a3145887860f89abc7294f3eafa82aa1a06cf773e289dc74e268d。
+其失败审计audit-cancel-bridge-mode-late-startup-fail.json保留。确认
+无飞行命令及完整清理后，只另建cancel-bridge-mode-late-verified/
+按相同指纹/参数准备一次并通过本节指定飞行验收。独立审计用显式
+case→directory映射，不覆盖原FAIL，不追认启动估计波动已经修复。
+
+38.4 最终原始结果/native/指纹/真实终态/停流及生命周期审计通过，
+final-audit.json的full_matrix_passed=true仅对应上表六项限定场景。
+四个bridge故障场景五组进程exit0，上游两个四组exit0，child_exit_failures
+全空、leftovers空、fixture_callbacks_drained及observer_shutdown_confirmed
+均true。持续扣留回调只在全部所属控制进程退出后释放，排空后才
+保存报告；外部CLI确已退出0。审计检查各owned/observer PID+start_ticks
+已不在/proc，最终无SITL/observer/测试残留。
+六份单项审计及最终汇总在本节根。audit.py SHA256
+1eb33ce9558cfafc01cfec422b0ded6422aec7c97dd246395d886c0ae211282a，
+final-audit.json 0e038b17155f1d55c747d3f11d08645699955ccd2837059539b26a399f9ca8f6。
+
+最终仿真入口f09e5f2d7d1e95ae11c352ccf3570d0d7a8b7e8c284742baaec844fac92bb5e9，
+arm helper 785e0f6e18b91a65c1f87c316f670a78321d1433e0e9f5caedb5648414e07f4d，
+bridge helper 8c44a3455c81a0a368dd2c90528bbd4015f5d2251495c869ddcefe85742f909d，
+transaction helper 5ed0cb62389158e7719f8e49bbe6313879a7fc0750de6aae3e00cb0e69f9c461，
+基础fault helper与生产bridge/flight/感知/转换/PX4指纹同第37节。
+新夹具只改测试/隔离入口及typed hooks，生产控制逻辑与安全行为不改。
+最终diff空白检查通过。改动暂未提交/push，head仍5b2bf1c；用户.codex/
+CLI/codex-safety-notice.md删除及本轮出现的scene-resource-candidates.md
+均保持原样、不纳入。
+
+剩余范围：普通Land/精降收尾的取消与未知结果交叉、上游回复丢失
+再叠加取消尚未在真实SITL验证，不能以本轮Takeoff准备场景替代。
+故障后新鲜控制输入只由合成ROS encoder组件证明，真实SITL未注入；
+原定位启动波动只分类记录未修复。仍不恢复UI/POSCTL/实机/G9后复验
+或旧崩溃专项，不宣称复杂障碍/负载、精降长期性能或全仓lint完成。

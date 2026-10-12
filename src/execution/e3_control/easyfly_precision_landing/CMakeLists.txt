@@ -28,6 +28,12 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_simulation_scenarios test/test_simulation_scenarios.py TIMEOUT 15)
   ament_add_pytest_test(test_simulation_faults test/test_simulation_faults.py TIMEOUT 20
     ENV ROS_DOMAIN_ID=209)
+  ament_add_pytest_test(test_simulation_bridge_faults test/test_simulation_bridge_faults.py TIMEOUT 20
+    ENV ROS_DOMAIN_ID=211)
+  ament_add_pytest_test(test_simulation_arm_faults test/test_simulation_arm_faults.py TIMEOUT 25
+    ENV ROS_DOMAIN_ID=213)
+  ament_add_pytest_test(test_simulation_transaction_faults
+    test/test_simulation_transaction_faults.py TIMEOUT 25 ENV ROS_DOMAIN_ID=214)
   ament_add_pytest_test(test_signal_order test/test_signal_order.py TIMEOUT 15
     ENV ROS_DOMAIN_ID=125 ROS_LOG_DIR=/tmp/easyfly_d5_signal_order)
   ament_add_pytest_test(test_signal_take_ros test/test_signal_take_ros.py TIMEOUT 30

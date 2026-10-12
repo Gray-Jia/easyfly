@@ -61,6 +61,8 @@ if(BUILD_TESTING)
   set_tests_properties(test_bridge_freshness PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=197")
   ament_add_pytest_test(test_bridge_shutdown test/test_bridge_shutdown.py TIMEOUT 20)
   set_tests_properties(test_bridge_shutdown PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=195")
+  ament_add_pytest_test(test_bridge_fault_ros test/test_bridge_fault_ros.py TIMEOUT 65)
+  set_tests_properties(test_bridge_fault_ros PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=210")
   add_test(
     NAME mavlink_bridge_sim_time_contract
     COMMAND ${Python3_EXECUTABLE}

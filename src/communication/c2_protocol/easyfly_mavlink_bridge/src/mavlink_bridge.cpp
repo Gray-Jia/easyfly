@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <initializer_list>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 
@@ -166,6 +167,12 @@ MavlinkBridge::MavlinkBridge(const rclcpp::NodeOptions & options)
   // ---- mavros 客户端（预创建，避免每次回调内新建） ----
   client_arming_ = create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
   client_set_mode_ = create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
+  srv_capabilities_ = create_service<easyfly_msgs::srv::GetCapabilities>(
+    "/platform/mavlink_bridge/capabilities", [this](
+      easyfly_msgs::srv::GetCapabilities::Request::SharedPtr,
+      easyfly_msgs::srv::GetCapabilities::Response::SharedPtr response) {
+      *response = command_capabilities();
+    });
 
   // ---- 定时器 ----
   timer_state_ = create_wall_timer(
@@ -644,6 +651,32 @@ void MavlinkBridge::publish_setpoint()
 // service handlers: arm / set_mode (封装 mavros2 服务调用)
 // ================================================================
 
+easyfly_msgs::srv::GetCapabilities::Response MavlinkBridge::command_capabilities() const
+{
+  const bool fault = command_fault_.load();
+  const bool context = rclcpp::ok(get_node_options().context());
+  const bool mode_available = client_set_mode_->service_is_ready();
+  const bool arm_available = client_arming_->service_is_ready();
+  const bool ready = !fault && context && mode_available && arm_available;
+  const auto clock = now();
+  std::ostringstream details;
+  details << std::boolalpha << "{\"reason\":\""
+          << (fault ? "command_fault_locked" :
+  ready ? "command_transport_available" : "command_transport_unavailable")
+          << "\",\"command_fault\":" << fault << ",\"ready\":" << ready
+          << ",\"context_ok\":" << context << ",\"clock_ns\":" << clock.nanoseconds()
+          << ",\"mode_service_ready\":" << mode_available
+          << ",\"arming_service_ready\":" << arm_available << "}";
+  easyfly_msgs::srv::GetCapabilities::Response response;
+  response.header.stamp = clock;
+  response.header.frame_id = "odom";
+  response.names = {"flight_command_transport"};
+  response.implemented = {true};
+  response.ready = {ready};
+  response.details = {details.str()};
+  return response;
+}
+
 void MavlinkBridge::cb_arm_motors(
   const std::shared_ptr<easyfly_msgs::srv::ArmMotors::Request> req,
   std::shared_ptr<easyfly_msgs::srv::ArmMotors::Response> res)
@@ -663,7 +696,12 @@ void MavlinkBridge::cb_arm_motors(
   const auto mav_res = request_bounded<mavros_msgs::srv::CommandBool>(
     client_arming_, mav_req, get_node_base_interface()->get_context(), uncertain);
   if (!mav_res) {
-    if (uncertain) {command_fault_.store(true);}
+    if (uncertain) {
+      command_fault_.store(true);
+      RCLCPP_ERROR(
+        get_logger(), "MAVROS arming command outcome uncertain: bridge fault latch set; "
+        "manual audit required");
+    }
     res->success = false;
     res->message = uncertain ? "command_result_unknown: MAVROS arming response unconfirmed" :
       "mavros /cmd/arming unavailable or context stopped before send";
@@ -706,7 +744,12 @@ void MavlinkBridge::cb_set_flight_mode(
   const auto mav_res = request_bounded<mavros_msgs::srv::SetMode>(
     client_set_mode_, mav_req, get_node_base_interface()->get_context(), uncertain);
   if (!mav_res) {
-    if (uncertain) {command_fault_.store(true);}
+    if (uncertain) {
+      command_fault_.store(true);
+      RCLCPP_ERROR(
+        get_logger(), "MAVROS mode command outcome uncertain: bridge fault latch set; "
+        "manual audit required");
+    }
     res->success = false;
     res->message = uncertain ? "command_result_unknown: MAVROS mode response unconfirmed" :
       "mavros /set_mode unavailable or context stopped before send";

@@ -41,6 +41,7 @@
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <easyfly_msgs/srv/arm_motors.hpp>
 #include <easyfly_msgs/srv/set_flight_mode.hpp>
+#include <easyfly_msgs/srv/get_capabilities.hpp>
 
 namespace easyfly_mavlink_bridge
 {
@@ -83,6 +84,7 @@ private:
   void cb_set_flight_mode(
     const std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Request> req,
     std::shared_ptr<easyfly_msgs::srv::SetFlightMode::Response> res);
+  easyfly_msgs::srv::GetCapabilities::Response command_capabilities() const;
 
   // ---- 静态转换工具 ----
   static double quat_to_yaw(double x, double y, double z, double w);
@@ -109,6 +111,7 @@ private:
   // ---- 服务端 ----
   rclcpp::Service<easyfly_msgs::srv::ArmMotors>::SharedPtr srv_arm_;
   rclcpp::Service<easyfly_msgs::srv::SetFlightMode>::SharedPtr srv_mode_;
+  rclcpp::Service<easyfly_msgs::srv::GetCapabilities>::SharedPtr srv_capabilities_;
 
   // ---- mavros 客户端 (预创建，避免每次回调重建) ----
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr client_arming_;

@@ -65,12 +65,26 @@ def fault_snapshot(response, ros_now, elapsed):
 class ModeFaultScenario(PrecisionScenario):
     """Delay only an actual internal Land reply and audit independent ownership."""
 
+    scenario_names = FAULT_SCENARIOS
+    fault_layer = 'flight controller service reply only'
+
     def __init__(self, name, node, report, latest, receipts, started):
         """Expose isolated test endpoints only for an explicit fault scenario."""
-        if name not in FAULT_SCENARIOS:
+        if name not in self.scenario_names:
             raise ValueError('explicit fault scenario required')
         super().__init__(name, node, report, latest, receipts, started)
         group = ReentrantCallbackGroup()
+        self.init_services(group)
+        self.admission_gate, self.reply_gate = Future(), Future()
+        self.pending_since = None
+        self.tearing_down = False
+        self.mode_calls, self.arm_calls = [], []
+        report['scenario'].update(mode_calls=self.mode_calls, arm_calls=self.arm_calls,
+                                  fault_layer=self.fault_layer, reply_policy=name)
+
+    def init_services(self, group):
+        """Bind only the original flight-level proxy endpoints for this fixture."""
+        node = self.node
         self.real_mode = node.create_client(SetFlightMode, '/set_flight_mode',
                                             callback_group=group)
         self.real_arm = node.create_client(ArmMotors, '/arm_motors', callback_group=group)
@@ -78,13 +92,6 @@ class ModeFaultScenario(PrecisionScenario):
                                               self.mode_request, callback_group=group)
         self.proxy_arm = node.create_service(ArmMotors, '/d5_test/arm_motors',
                                              self.arm_request, callback_group=group)
-        self.admission_gate, self.reply_gate = Future(), Future()
-        self.pending_since = None
-        self.tearing_down = False
-        self.mode_calls, self.arm_calls = [], []
-        report['scenario'].update(mode_calls=self.mode_calls, arm_calls=self.arm_calls,
-                                  fault_layer='flight controller service reply only',
-                                  reply_policy=name)
 
     async def arm_request(self, request, response):
         """Forward the unchanged real arm command and retain compensation evidence."""
@@ -286,7 +293,26 @@ class ModeFaultScenario(PrecisionScenario):
         fault_began = self.query_fault(wait, 'terminal_before_reply')
         self.check_stopped(wait, fault_began, 'before_reply')
         # Native PX4 AUTO.LAND may complete physically; this is not Action success.
+        self.wait_disarmed(wait)
+        self.query_fault(wait, 'fresh_disarmed_before_reply')
+        self.deny_followup(wait, 'before_reply')
+        if self.name.endswith('-late'):
+            self.report['scenario']['late_release_steady'] = time.monotonic()
+            self.reply_gate.set_result(True)
+            wait(lambda: 'returned_steady' in entry, 3)
+        self.query_fault(wait, 'after_late_reply' if self.reply_gate.done() else 'still_withheld')
+        self.deny_followup(wait, 'after_reply' if self.reply_gate.done() else 'still_withheld')
+        self.check_stopped(wait, fault_began, 'final')
+        if [item['mode'] for item in self.mode_calls] != [3, 7]:
+            raise RuntimeError('mode retries or compensating commands detected')
+        if [item['arm'] for item in self.arm_calls] != [True]:
+            raise RuntimeError('compensating arm/disarm detected')
+        self.report['scenario'].update(internal_land_statuses=dict(self.land_statuses),
+                                       passed=True, negative_terminal_expected=True)
+        raise ScenarioComplete()
 
+    def wait_disarmed(self, wait):
+        """Observe real native disarming before probes; never send a disarm command."""
         def disarmed():
             state, status = self.latest.get('/uav_state'), self.latest.get('/flight_status')
             now, clock = time.monotonic(), self.node.get_clock().now().nanoseconds
@@ -313,22 +339,6 @@ class ModeFaultScenario(PrecisionScenario):
             'mode_source_ns': status.header.stamp.sec * 1000000000 + status.header.stamp.nanosec,
             'state_armed': state.armed, 'status_armed': status.armed,
             'state_mode': state.flight_mode_name, 'status_mode': status.flight_mode_name}
-        self.query_fault(wait, 'fresh_disarmed_before_reply')
-        self.deny_followup(wait, 'before_reply')
-        if self.name == 'unknown-mode-late':
-            self.report['scenario']['late_release_steady'] = time.monotonic()
-            self.reply_gate.set_result(True)
-            wait(lambda: 'returned_steady' in entry, 3)
-        self.query_fault(wait, 'after_late_reply' if self.reply_gate.done() else 'still_withheld')
-        self.deny_followup(wait, 'after_reply' if self.reply_gate.done() else 'still_withheld')
-        self.check_stopped(wait, fault_began, 'final')
-        if [item['mode'] for item in self.mode_calls] != [3, 7]:
-            raise RuntimeError('mode retries or compensating commands detected')
-        if [item['arm'] for item in self.arm_calls] != [True]:
-            raise RuntimeError('compensating arm/disarm detected')
-        self.report['scenario'].update(internal_land_statuses=dict(self.land_statuses),
-                                       passed=True, negative_terminal_expected=True)
-        raise ScenarioComplete()
 
     def drain(self, spin_once):
         """Drain held callbacks only after flight teardown, while the executor still runs."""
@@ -342,7 +352,8 @@ class ModeFaultScenario(PrecisionScenario):
             spin_once()
             if (all('returned_steady' in row or 'cleanup_returned_steady' in row
                     for row in self.mode_calls)
-                    and all('returned_steady' in row for row in self.arm_calls)):
+                    and all('returned_steady' in row or 'cleanup_returned_steady' in row
+                            for row in self.arm_calls)):
                 self.report['scenario']['fixture_callbacks_drained'] = True
                 return
         raise RuntimeError('fixture service callbacks did not drain before shutdown')

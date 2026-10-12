@@ -82,6 +82,10 @@ public:
   static void tick(MavlinkBridge & node) {node.publish_setpoint();}
   static bool modeReady(MavlinkBridge & node) {return node.client_set_mode_->service_is_ready();}
   static bool fault(MavlinkBridge & node) {return node.command_fault_;}
+  static easyfly_msgs::srv::GetCapabilities::Response capabilities(MavlinkBridge & node)
+  {
+    return node.command_capabilities();
+  }
   static size_t pending(MavlinkBridge & node)
   {
     return node.client_set_mode_->prune_pending_requests();
@@ -166,6 +170,29 @@ protected:
   int status_count_{0};
   int setpoints_{0};
 };
+
+TEST_F(BridgeFreshness, CapabilityQueriesAreReadOnlyAndCannotClearACommandFault)
+{
+  const auto initial = BridgeFreshnessTestPeer::capabilities(*node_);
+  ASSERT_EQ(initial.names, std::vector<std::string>{"flight_command_transport"});
+  ASSERT_EQ(initial.implemented, std::vector<bool>{true});
+  EXPECT_EQ(initial.ready, std::vector<bool>{false});
+  EXPECT_NE(initial.details.front().find("\"command_fault\":false"), std::string::npos);
+  EXPECT_FALSE(BridgeFreshnessTestPeer::fault(*node_));
+  // The real service callback uses the same read-only snapshot. Exercise it
+  // repeatedly before and after a real unanswered request sets the fault.
+  auto query = peer_->create_client<easyfly_msgs::srv::GetCapabilities>(
+    "/platform/mavlink_bridge/capabilities");
+  ASSERT_TRUE(query->wait_for_service(2s));
+  for (int i = 0; i < 3; ++i) {
+    auto future = query->async_send_request(
+      std::make_shared<easyfly_msgs::srv::GetCapabilities::Request>());
+    spin();
+    ASSERT_EQ(future.wait_for(0ms), std::future_status::ready);
+    EXPECT_EQ(future.get()->details, initial.details);
+  }
+  EXPECT_EQ(setpoints_, 0);
+}
 
 TEST_F(BridgeFreshness, ModeSourceDoesNotBecomeAggregatePublicationTime)
 {
@@ -315,6 +342,12 @@ TEST_F(BridgeFreshness, UnansweredMavrosModeLocksBridgeAndClearsPending)
   EXPECT_EQ(response.message.find("command_result_unknown:"), 0U);
   EXPECT_TRUE(BridgeFreshnessTestPeer::fault(*node_));
   EXPECT_EQ(BridgeFreshnessTestPeer::pending(*node_), 0U);
+  for (int i = 0; i < 3; ++i) {
+    const auto capability = BridgeFreshnessTestPeer::capabilities(*node_);
+    EXPECT_EQ(capability.ready, std::vector<bool>{false});
+    EXPECT_NE(capability.details.front().find("\"command_fault\":true"), std::string::npos);
+    EXPECT_NE(capability.details.front().find("command_fault_locked"), std::string::npos);
+  }
   EXPECT_FALSE(BridgeFreshnessTestPeer::arm(*node_).success);
   EXPECT_EQ(BridgeFreshnessTestPeer::mode(*node_).message.find("command_result_unknown:"), 0U);
   BridgeFreshnessTestPeer::command(*node_);

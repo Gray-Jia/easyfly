@@ -443,3 +443,74 @@ wall比较，ROS源年龄只与同域ROS时间比较；native字段为0或时钟
 一致。不会捕获或忽略正常执行的RuntimeError。真实native typed take
 紧邻两种信号的测试验证转换期间context有效；这只验证退出顺序，
 不代表已解决间歇观测延迟、所有历史退出故障或完整D5长期鲁棒性。
+
+## 模式回复未知的两层故障锁（2026-10-12）
+
+隔离仿真入口新增显式 `--direct-action --scenario bridge-mode-late`
+与 `bridge-mode-withheld`。只重映射所属bridge的MAVROS客户端，
+flight→bridge公共服务及真实MAVROS服务名保持不变。唯一内部Land
+的实际AUTO.LAND请求单次原样转发，真实mode_sent回复被迟到释放
+或运行期持续扣留；mode_sent不是FCU COMMAND_ACK。原5s等待期限、
+所有飞行安全参数和正常launch默认均不变，不默认注入故障。
+
+桥接新增只读 `/platform/mavlink_bridge/capabilities`，独立报告
+command_fault及context/clock/mode与arming服务发现状态。它只描述
+命令传输，不代表飞行准入、FCU接受或控制权预留；查询不能清锁。
+真实SITL两项都确认独立新鲜AUTO.LAND、父子真实ABORTED/false、精确
+释放、flight与bridge两层故障锁、新鲜disarmed后动作和合法桥接服务
+请求被拒绝，迟到回复及持续扣留都不恢复；正向20/40条平台/下游
+基线后的停流已复核。所属五组进程、observer及扣留回调均正常清理，
+独立原生PX4日志/UUID/指纹/进程身份审计通过，详见schedule-v4 §36。
+
+这是Land模式回复未知的故障验收，不是降落任务成功或实机签收。
+故障后新鲜命令输入的encoder拒绝只有合成ROS组件证据；真实arming
+回复未知及取消交叉尚未纳入飞行矩阵。人工核查远端并重启的策略
+保持不变，不新增重试、模式补偿、自动上锁或自动清锁。
+
+## 解锁回复未知的显式仿真入口（2026-10-12）
+
+`--direct-action --scenario bridge-arm-late` / `bridge-arm-withheld`
+限定真实Takeoff准备阶段，先观察唯一Executing Goal、新鲜独立未解锁
+OFFBOARD及平台/下游实际输出基线，才放行单次MAVROS CommandBool(true)。
+只扣留实际解锁ACK的回复，success/result原样保留，不制造飞控状态。
+真实UAVState/FlightStatus各自源时间推进且均armed，才确认远端执行。
+起飞应因未知结果真实ABORTED/false，两层fault独立查询，不开始爬升。
+
+后续探针先等待PX4原配置的保护自行disarm，不发平台补偿上锁；
+模式/arming事务应仍各一次，迟到回复不清锁，持续扣留仅在所属
+flight/bridge退出后释放清理门。真实精确Takeoff GetResult、查询、
+停流和进程身份/原生日志验收记录见schedule-v4 §37。正常任务入口、
+5s等待、安全阈值及PX4参数不变。这不是实机或取消交叉的验收入口。
+
+本轮两项真实SITL/独立原生PX4与生命周期审计通过，Takeoff真实
+ABORTED/false并保持两层锁，两批动作/直接服务请求被拒绝；先有
+20/40条平台/下游正向基线再停流，实际ACK后仍不爬升、不重试、
+不补偿上锁。全部所属进程/observer/callback正常退出。初次审计的
+每5条采样与精确disarmed帧不匹配FAIL保留，修正审计后复核同一份
+raw证据，没有重跑或放宽控制阈值。仅上游arming回复扣留、取消交叉
+及真实设备仍未验证；故障后的人工核查/重启策略不变。
+
+## 起飞取消交叉与上游回复丢失（2026-10-12）
+
+显式direct-action场景新增 `cancel-bridge-arm-late` /
+`cancel-bridge-arm-withheld`、`cancel-bridge-mode-late` /
+`cancel-bridge-mode-withheld`，均仅Takeoff准备阶段。真实远端armed
+或OFFBOARD已由独立源推进确认，但原服务回复被扣留时，只取消所属
+Goal。四项真实SITL及独立审计通过：精确cancel ACK后的CANCELING/
+GetResult未结束及内部预留同时成立，取消等待期间真实停流，原
+请求超时后真实CANCELED/false/unknown并保留两层故障锁。模式两项
+不解锁，arm两项不爬升；不追加模式补偿、Land或上锁，迟到不恢复。
+
+`upstream-arm-late` / `upstream-arm-withheld` 只重映射flight客户端
+到上游代理，正常bridge启动与MAVROS原服务不变。两项真实SITL/
+独立审计通过：flight真实ABORTED/false/unknown及持久fault，bridge
+三次独立只读查询始终无fault、transport可用。健康transport不等于
+飞行权限；不直接命令健康bridge，flight拒绝后续动作。六项均有
+实际输出基线到停流、精确UUID GetResult、原生PX4 ACK及正常清理。
+
+一轮在任何Goal前因Gazebo静止而PX4定位估计速度波动被原静止校准
+门拒绝。保留原FAIL、空飞行命令和正常退出证据，同指纹新空目录
+只再准备一次才完成模式迟到场景；没有放宽阈值或追认波动修复。
+详见schedule-v4 §38。正常生产逻辑、5s等待与安全参数不改。
+本批不覆盖普通Land/精降收尾取消交叉、上游未知再叠加取消、实机
+或故障后新鲜控制输入注入的SITL验证。

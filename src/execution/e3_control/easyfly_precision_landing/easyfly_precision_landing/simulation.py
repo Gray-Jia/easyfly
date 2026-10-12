@@ -73,6 +73,21 @@ from easyfly_precision_landing.simulation_scenarios import (
     SCENARIOS, PrecisionScenario, ScenarioComplete, owned_descendants, remaining_owned,
 )
 from easyfly_precision_landing.simulation_faults import FAULT_SCENARIOS, ModeFaultScenario
+from easyfly_precision_landing.simulation_bridge_faults import (
+    BRIDGE_FAULT_SCENARIOS, BridgeModeFaultScenario,
+)
+from easyfly_precision_landing.simulation_arm_faults import (
+    BRIDGE_ARM_FAULT_SCENARIOS, BridgeArmFaultScenario,
+)
+from easyfly_precision_landing.simulation_transaction_faults import (
+    CANCEL_TRANSACTION_SCENARIOS, UPSTREAM_ARM_SCENARIOS, TRANSACTION_SCENARIO_TYPES,
+    CancelTransactionScenario,
+)
+
+OWNED_BRIDGE_FAULT_SCENARIOS = (
+    *BRIDGE_FAULT_SCENARIOS, *BRIDGE_ARM_FAULT_SCENARIOS, *CANCEL_TRANSACTION_SCENARIOS)
+FLIGHT_PROXY_FAULT_SCENARIOS = (*FAULT_SCENARIOS, *UPSTREAM_ARM_SCENARIOS)
+ALL_FAULT_SCENARIOS = (*FLIGHT_PROXY_FAULT_SCENARIOS, *OWNED_BRIDGE_FAULT_SCENARIOS)
 
 
 class StartupComplete(Exception):
@@ -253,8 +268,9 @@ def parse_arguments(argv=None):
         help="execute the formal demo through mission FSM and SDK",
     )
     parser.add_argument("--fixture-scale", type=float, default=1.0)
-    parser.add_argument("--scenario", choices=(*SCENARIOS, *FAULT_SCENARIOS), default="nominal",
-                        help="Explicit direct-action lifecycle test; default nominal only")
+    parser.add_argument(
+        "--scenario", choices=(*SCENARIOS, *ALL_FAULT_SCENARIOS), default="nominal",
+        help="Explicit direct-action lifecycle test; default nominal only")
     parser.add_argument("--handoff-height", type=float, default=None)
     parser.add_argument("--descent-floor-height", type=float, default=None)
     parser.add_argument(
@@ -446,6 +462,13 @@ def main():
                 Path(__file__).with_name("simulation_scenarios.py").read_bytes()).hexdigest(),
             "fault_helper_sha256": hashlib.sha256(
                 Path(__file__).with_name("simulation_faults.py").read_bytes()).hexdigest(),
+            "bridge_fault_helper_sha256": hashlib.sha256(
+                Path(__file__).with_name("simulation_bridge_faults.py").read_bytes()).hexdigest(),
+            "arm_fault_helper_sha256": hashlib.sha256(
+                Path(__file__).with_name("simulation_arm_faults.py").read_bytes()).hexdigest(),
+            "transaction_fault_helper_sha256": hashlib.sha256(
+                Path(__file__).with_name("simulation_transaction_faults.py")
+                .read_bytes()).hexdigest(),
             "px4_sha256": hashlib.sha256(Path(staging["binary"]).read_bytes()).hexdigest(),
             "bridge_binary_sha256": hashlib.sha256((Path(
                 get_package_prefix("easyfly_mavlink_bridge")) /
@@ -515,7 +538,11 @@ def main():
     closing = [False]
     observer_timing = {}
     observer_executor = None
-    scenario_kind = ModeFaultScenario if args.scenario in FAULT_SCENARIOS else PrecisionScenario
+    scenario_kind = (TRANSACTION_SCENARIO_TYPES[args.scenario]
+                     if args.scenario in TRANSACTION_SCENARIO_TYPES else
+                     BridgeArmFaultScenario if args.scenario in BRIDGE_ARM_FAULT_SCENARIOS else
+                     BridgeModeFaultScenario if args.scenario in BRIDGE_FAULT_SCENARIOS else
+                     ModeFaultScenario if args.scenario in FAULT_SCENARIOS else PrecisionScenario)
     scenario = (scenario_kind(args.scenario, node, report, latest, receipts, started)
                 if args.scenario != "nominal" else None)
     owned = {}
@@ -735,6 +762,8 @@ def main():
                 tracked_at[0] = time.monotonic()
             if scenario is not None:
                 scenario.tick()
+                if isinstance(scenario, CancelTransactionScenario):
+                    scenario.record_pending(wait)
             if hover_observer[0] is not None and hover_observer[0]():
                 report.setdefault("hover_z_m", latest["/uav_state"].position_z)
             if any(
@@ -799,7 +828,8 @@ def main():
                 "goal_uuid": bytes(handle.goal_id.uuid).hex(),
             }), flush=True)
             result = handle.get_result_async()
-            if name == "/precision_land" and scenario is not None:
+            if (scenario is not None
+                    and name == getattr(scenario, "action_name", "/precision_land")):
                 scenario.attach(handle)
             try:
                 wait(result.done, budget)
@@ -825,7 +855,8 @@ def main():
                 "goal_uuid": bytes(handle.goal_id.uuid).hex(),
             }
             print(json.dumps(report["actions"][name]), flush=True)
-            if name == "/precision_land" and scenario is not None:
+            if (scenario is not None
+                    and name == getattr(scenario, "action_name", "/precision_land")):
                 scenario.accept_terminal(value, wait)
             if name == "/execute_mission":
                 wait_mission_release(handle)
@@ -1026,9 +1057,29 @@ def main():
                 "easyfly_mavlink_bridge",
                 "mavlink_bridge.launch.py",
                 "use_sim_time:=true",
+                "start_bridge:=" + (
+                    "false" if args.scenario in OWNED_BRIDGE_FAULT_SCENARIOS else "true"),
             ],
         )
+        if args.scenario in OWNED_BRIDGE_FAULT_SCENARIOS:
+            start("bridge_control", [
+                get_package_prefix("easyfly_mavlink_bridge")
+                + "/lib/easyfly_mavlink_bridge/mavlink_bridge_node",
+                "--ros-args", "--params-file", str(Path(
+                    get_package_share_directory("easyfly_mavlink_bridge"))
+                    / "config/mavlink_bridge.yaml"),
+                "-p", "use_sim_time:=true",
+                "-r", "/mavros/set_mode:=/d5_test/mavros/set_mode",
+                "-r", "/mavros/cmd/arming:=/d5_test/mavros/cmd/arming",
+            ])
         wait(preflight_ready, 80)
+        if isinstance(scenario, ModeFaultScenario):
+            wait(lambda: scenario.real_mode.service_is_ready()
+                 and scenario.real_arm.service_is_ready(), 15)
+            report["fault_proxy_peers_prepared_steady"] = time.monotonic()
+            if getattr(scenario, "owns_bridge", False):
+                report["bridge_proxy_peers_prepared_steady"] = (
+                    report["fault_proxy_peers_prepared_steady"])
         reference = calibrate_ground_reference()
         report["ground_reference"] = reference
         expected_plane_z = reference["plane_z_m"]
@@ -1043,17 +1094,19 @@ def main():
             "ros2", "launch", "easyfly_precision_landing", "precision_landing.launch.py",
             "config_file:=" + str(config_path),
             "start_flight_controller:=" + (
-                "false" if args.scenario in FAULT_SCENARIOS else "true"),
+                "false" if args.scenario in ALL_FAULT_SCENARIOS else "true"),
         ]
-        if args.scenario in FAULT_SCENARIOS:
-            start("flight", [
+        if args.scenario in ALL_FAULT_SCENARIOS:
+            flight_command = [
                 get_package_prefix("easyfly_flight_control")
                 + "/lib/easyfly_flight_control/flight_control_node",
                 "--ros-args", "--params-file", str(config_path),
                 "-r", "__node:=flight_controller", "-p", "use_sim_time:=true",
-                "-r", "/set_flight_mode:=/d5_test/set_flight_mode",
-                "-r", "/arm_motors:=/d5_test/arm_motors",
-            ])
+            ]
+            if args.scenario in FLIGHT_PROXY_FAULT_SCENARIOS:
+                flight_command += ["-r", "/set_flight_mode:=/d5_test/set_flight_mode",
+                                   "-r", "/arm_motors:=/d5_test/arm_motors"]
+            start("flight", flight_command)
         if args.scenario.startswith("loss-"):
             precision_command.append("image_topic:=/d5_test/image_raw")
         start(
@@ -1297,7 +1350,7 @@ def main():
     finally:
         closing[0] = True
         owned.update(owned_descendants(os.getpid()))
-        for name in ("mission", "flight", "precision", "bridge", "simulation"):
+        for name in ("mission", "flight", "precision", "bridge_control", "bridge", "simulation"):
             process = processes.get(name)
             if process is None:
                 continue
@@ -1341,6 +1394,10 @@ def main():
             flight_process = processes.get("flight")
             report["flight_exit_before_fixture_drain"] = (
                 flight_process.returncode if flight_process is not None else None)
+            if getattr(scenario, "owns_bridge", False):
+                bridge_process = processes.get("bridge_control")
+                report["bridge_exit_before_fixture_drain"] = (
+                    bridge_process.returncode if bridge_process is not None else None)
             try:
                 scenario.drain(spin_once)
             except Exception as teardown_error:

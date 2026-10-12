@@ -11,6 +11,7 @@ mavlink_bridge.launch.py — 启动 mavros2 + easyfly_mavlink_bridge
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterFile, ParameterValue
@@ -29,6 +30,9 @@ def generate_launch_description():
         "use_sim_time",
         default_value="false",
         description="Use /clock (true for simulation, false for real hardware)")
+    start_bridge_arg = DeclareLaunchArgument(
+        "start_bridge", default_value="true", choices=["true", "false"],
+        description="Disable only when an explicit owner starts its own bridge instance")
 
     fcu_url = LaunchConfiguration("fcu_url")
     use_sim_time = LaunchConfiguration("use_sim_time")
@@ -91,6 +95,7 @@ def generate_launch_description():
         executable="mavlink_bridge_node",
         output="screen",
         name="mavlink_bridge",
+        condition=IfCondition(LaunchConfiguration("start_bridge")),
         parameters=[
             os.path.join(get_package_share_directory("easyfly_mavlink_bridge"),
                          "config", "mavlink_bridge.yaml"),
@@ -110,6 +115,7 @@ def generate_launch_description():
     return LaunchDescription([
         fcu_url_arg,
         use_sim_time_arg,
+        start_bridge_arg,
         timesync_mode_arg,
         timesync_rate_arg,
         system_time_rate_arg,

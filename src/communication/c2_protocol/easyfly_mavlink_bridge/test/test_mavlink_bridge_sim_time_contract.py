@@ -214,5 +214,24 @@ class MavlinkBridgeSimTimeContractTest(unittest.TestCase):
         )
 
 
+class BridgeOwnershipContract(unittest.TestCase):
+    """Keep normal launch ownership unchanged when SITL owns a separate bridge."""
+
+    def test_default_bridge_enabled_and_explicit_disabled_condition(self):
+        for override, expected in ((None, True), ("true", True), ("false", False)):
+            description = _load_launch_module().generate_launch_description()
+            context = LaunchContext()
+            if override is not None:
+                context.launch_configurations["start_bridge"] = override
+            for entity in description.entities:
+                if isinstance(entity, DeclareLaunchArgument):
+                    entity.execute(context)
+            bridge = [entity for entity in description.entities
+                      if isinstance(entity, Node) and
+                      entity.node_package == "easyfly_mavlink_bridge"]
+            self.assertEqual(len(bridge), 1)
+            self.assertEqual(bridge[0].condition.evaluate(context), expected)
+
+
 if __name__ == "__main__":
     unittest.main()
